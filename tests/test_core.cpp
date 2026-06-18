@@ -62,6 +62,7 @@ void TestConfigDefaultsAndRoundTrip() {
     const AppPaths paths(root);
     const AppConfig defaults = ConfigStore::Load(paths);
 
+    Require(fs::is_regular_file(paths.configPath()), "default config should be created on first load");
     Require(defaults.quality == L"max", "default quality mismatch");
     Require(defaults.container == L"auto", "default container mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
@@ -287,6 +288,27 @@ void TestGitHubReleaseParsing() {
 
     const ReleaseAssetInfo missing = ParseGitHubReleaseAsset(appRelease, "missing.zip");
     Require(!missing.found, "missing asset should not be found");
+}
+
+void TestYtDlpUpdateDecision() {
+    ReleaseAssetInfo latest;
+    latest.found = true;
+    latest.version = L"2026.06.10";
+
+    ToolInstallStatus current;
+    current.installed = true;
+    current.version = L"2026.06.09";
+    Require(ShouldInstallYtDlpUpdate(current, latest), "older yt-dlp should be updated");
+
+    current.version = L"2026.06.10";
+    Require(!ShouldInstallYtDlpUpdate(current, latest), "current yt-dlp should not be updated");
+
+    current.installed = false;
+    current.version.clear();
+    Require(ShouldInstallYtDlpUpdate(current, latest), "missing yt-dlp should be installed");
+
+    latest.found = false;
+    Require(!ShouldInstallYtDlpUpdate(current, latest), "missing release metadata should not trigger update");
 }
 
 void TestFfmpegResolutionPrecedence() {
@@ -1007,6 +1029,7 @@ int main() {
     TestYtDlpDownloadArguments();
     TestYtDlpProgressParsing();
     TestGitHubReleaseParsing();
+    TestYtDlpUpdateDecision();
     TestFfmpegResolutionPrecedence();
     TestFfmpegUserPathAndExtractedTreeResolution();
     TestProcessRunnerCapturesOutputAndExitCode();

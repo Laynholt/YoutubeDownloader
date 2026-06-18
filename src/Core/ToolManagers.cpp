@@ -2,6 +2,7 @@
 
 #include "BackendText.h"
 #include "ProcessRunner.h"
+#include "Version.h"
 #include "WinHttpClient.h"
 
 #include <nlohmann/json.hpp>
@@ -323,6 +324,16 @@ FfmpegStatus FfmpegManager::InstallEssentials(
 
 YtDlpManager::YtDlpManager(AppPaths paths)
     : m_paths(std::move(paths)) {
+}
+
+bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest) {
+    if (!latest.found || latest.version.empty()) {
+        return false;
+    }
+    if (!current.installed || current.version.empty()) {
+        return true;
+    }
+    return CompareVersions(current.version, latest.version) < 0;
 }
 
 ToolInstallStatus YtDlpManager::Status() const {

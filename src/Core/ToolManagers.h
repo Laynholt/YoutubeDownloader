@@ -57,6 +57,8 @@ struct ToolInstallStatus {
     std::wstring version;
 };
 
+bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
+
 class YtDlpManager {
 public:
     explicit YtDlpManager(AppPaths paths);

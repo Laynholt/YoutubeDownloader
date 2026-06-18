@@ -72,6 +72,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
 
     std::ifstream in(paths.configPath(), std::ios::binary);
     if (!in) {
+        Save(paths, config);
         return config;
     }
 

@@ -72,6 +72,8 @@ struct ButtonState {
 struct ToolCheckResult {
     bool ready = false;
     ToolInstallStatus status;
+    ReleaseAssetInfo latestRelease;
+    std::wstring latestCheckAt;
     std::wstring message;
 };
 
@@ -265,6 +267,23 @@ std::wstring BuildToolReadyStatus(const ToolInstallStatus& ytDlpStatus, const Ff
         status += L" · ffmpeg найден";
     }
     return status;
+}
+
+std::wstring CurrentUtcTimestamp() {
+    SYSTEMTIME now = {};
+    GetSystemTime(&now);
+    wchar_t buffer[32] = {};
+    swprintf_s(
+        buffer,
+        L"%04u-%02u-%02uT%02u:%02u:%02uZ",
+        now.wYear,
+        now.wMonth,
+        now.wDay,
+        now.wHour,
+        now.wMinute,
+        now.wSecond
+    );
+    return buffer;
 }
 
 size_t CountTasksInState(const std::vector<DownloadTaskSnapshot>& tasks, DownloadTaskState state) {
@@ -898,6 +917,15 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             std::unique_ptr<ToolCheckResult> result(reinterpret_cast<ToolCheckResult*>(lParam));
             m_ytDlpReady = result->ready;
             m_ytDlpStatus = result->status;
+            if (m_paths && result->latestRelease.found && !result->latestCheckAt.empty()) {
+                m_config.lastYtDlpCheckAt = result->latestCheckAt;
+                m_config.lastYtDlpVersion = result->latestRelease.version;
+                try {
+                    ConfigStore::Save(*m_paths, m_config);
+                } catch (...) {
+                    // The tool check result should still be usable even if config persistence fails.
+                }
+            }
             if (m_ytDlpReady && m_paths) {
                 YtDlpClientOptions options;
                 options.ytDlpExePath = m_ytDlpStatus.executable;
@@ -1686,9 +1714,17 @@ void Application::StartToolCheck() {
         try {
             YtDlpManager manager(paths);
             result->status = manager.Status();
-            if (!result->status.installed) {
-                result->message = L"Установка yt-dlp...";
-                result->status = manager.InstallOrUpdate();
+            try {
+                result->latestRelease = manager.CheckLatestRelease();
+                result->latestCheckAt = CurrentUtcTimestamp();
+                if (ShouldInstallYtDlpUpdate(result->status, result->latestRelease)) {
+                    result->message = result->status.installed ? L"Обновление yt-dlp..." : L"Установка yt-dlp...";
+                    result->status = manager.InstallOrUpdate();
+                }
+            } catch (...) {
+                if (!result->status.installed) {
+                    throw;
+                }
             }
             result->ready = result->status.installed;
             result->message = result->ready
