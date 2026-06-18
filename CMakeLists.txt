@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(YoutubeDownloader
-    VERSION 0.1.0
+    VERSION 1.0.0
     DESCRIPTION "Portable Win32 YouTube downloader"
     LANGUAGES CXX RC
 )
@@ -15,31 +15,31 @@ if(WIN32)
 endif()
 
 set(CORE_SOURCES
-    src/AppPaths.cpp
-    src/BackendText.cpp
-    src/Config.cpp
-    src/DownloadQueue.cpp
-    src/KeyboardShortcuts.cpp
-    src/Logger.cpp
-    src/ProcessRunner.cpp
-    src/ToolManagers.cpp
-    src/Version.cpp
-    src/WinHttpClient.cpp
-    src/YtDlpClient.cpp
+    src/Core/AppPaths.cpp
+    src/Core/BackendText.cpp
+    src/Core/Config.cpp
+    src/Core/DownloadQueue.cpp
+    src/Core/KeyboardShortcuts.cpp
+    src/Core/Logger.cpp
+    src/Core/ToolManagers.cpp
+    src/Core/Version.cpp
+    src/Core/YtDlpClient.cpp
+    src/Platform/ProcessRunner.cpp
+    src/Platform/WinHttpClient.cpp
 )
 
 set(CORE_HEADERS
-    src/AppPaths.h
-    src/BackendText.h
-    src/Config.h
-    src/DownloadQueue.h
-    src/KeyboardShortcuts.h
-    src/Logger.h
-    src/ProcessRunner.h
-    src/ToolManagers.h
-    src/Version.h
-    src/WinHttpClient.h
-    src/YtDlpClient.h
+    src/Core/AppPaths.h
+    src/Core/BackendText.h
+    src/Core/Config.h
+    src/Core/DownloadQueue.h
+    src/Core/KeyboardShortcuts.h
+    src/Core/Logger.h
+    src/Core/ToolManagers.h
+    src/Core/Version.h
+    src/Core/YtDlpClient.h
+    src/Platform/ProcessRunner.h
+    src/Platform/WinHttpClient.h
 )
 
 add_library(YoutubeDownloaderCore STATIC
@@ -48,7 +48,8 @@ add_library(YoutubeDownloaderCore STATIC
 )
 
 target_include_directories(YoutubeDownloaderCore PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Core
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Platform
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
@@ -61,15 +62,19 @@ target_link_libraries(YoutubeDownloaderCore PUBLIC
 )
 
 add_executable(YoutubeDownloader WIN32
-    src/main.cpp
-    src/Application.cpp
-    src/Application.h
-    src/DialogWindows.cpp
-    src/DialogWindows.h
-    src/resource.h
-    src/resource.rc
-    src/UiRenderer.cpp
-    src/UiRenderer.h
+    src/App/main.cpp
+    src/UI/Application.cpp
+    src/UI/Application.h
+    src/UI/DialogWindows.cpp
+    src/UI/DialogWindows.h
+    src/UI/resource.h
+    src/UI/resource.rc
+    src/UI/UiRenderer.cpp
+    src/UI/UiRenderer.h
+)
+
+target_include_directories(YoutubeDownloader PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/UI
 )
 
 target_link_libraries(YoutubeDownloader PRIVATE

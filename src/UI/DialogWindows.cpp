@@ -1548,7 +1548,7 @@ void ShowAboutDialog(HWND owner, HINSTANCE instance) {
     state->message =
         L"YouTube Downloader\n\n"
         L"Портативный Win32 загрузчик видео с YouTube.\n\n"
-        L"Версия: 0.1.0";
+        L"Версия: 1.0.0";
     ShowModal(state, 560, 360);
 }
 
