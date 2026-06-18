@@ -31,6 +31,10 @@ struct YtDlpProgress {
     std::uint64_t totalBytes = 0;
     std::uint64_t speedBytesPerSecond = 0;
     std::uint64_t etaSeconds = 0;
+    std::wstring mediaKind;
+    std::wstring formatId;
+    std::wstring extension;
+    std::wstring resolution;
 };
 
 struct VideoPreview {

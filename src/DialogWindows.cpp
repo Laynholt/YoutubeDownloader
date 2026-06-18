@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 
@@ -59,7 +60,6 @@ enum DialogCommand {
     IdAbout = 11,
     IdFfmpeg = 12,
     IdInstall = 13,
-    IdChoose = 14,
     IdSkip = 15,
     IdCheckUpdates = 16,
     IdChooseFolder = 17,
@@ -98,6 +98,8 @@ struct DialogState {
     AppConfig workingConfig;
     bool* savedResult = nullptr;
     HWND progressBar = nullptr;
+    HWND tooltip = nullptr;
+    std::vector<HWND> tooltips;
     HANDLE cancelEvent = nullptr;
     bool progressDone = false;
     bool progressSuccess = false;
@@ -146,6 +148,9 @@ void PaintBuffered(HWND window, const std::function<void(HDC, const RECT&)>& pai
     HDC bufferDc = CreateCompatibleDC(screenDc);
     HBITMAP bitmap = CreateCompatibleBitmap(screenDc, width, height);
     HGDIOBJ oldBitmap = SelectObject(bufferDc, bitmap);
+    HBRUSH background = CreateSolidBrush(kPanelColor);
+    FillRect(bufferDc, &client, background);
+    DeleteObject(background);
 
     paintContent(bufferDc, client);
     BitBlt(screenDc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
@@ -178,35 +183,6 @@ void CopyToClipboard(HWND owner, const std::wstring& text) {
     CloseClipboard();
 }
 
-std::optional<std::filesystem::path> PickFfmpegExe(HWND owner) {
-    IFileOpenDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
-        return std::nullopt;
-    }
-
-    COMDLG_FILTERSPEC filters[] = {
-        {L"ffmpeg.exe", L"ffmpeg.exe"},
-        {L"Executable files", L"*.exe"}
-    };
-    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-    dialog->SetTitle(L"Выберите ffmpeg.exe");
-
-    std::optional<std::filesystem::path> result;
-    if (SUCCEEDED(dialog->Show(owner))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item))) {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                result = std::filesystem::path(path);
-                CoTaskMemFree(path);
-            }
-            item->Release();
-        }
-    }
-    dialog->Release();
-    return result;
-}
-
 std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
@@ -235,6 +211,53 @@ std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     return result;
 }
 
+HWND CreateTooltip(HWND parent, HWND tool, const wchar_t* text) {
+    HWND tooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        parent,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+    if (!tooltip) {
+        return nullptr;
+    }
+
+    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL, 500);
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_RESHOW, 100);
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 10000);
+    SendMessageW(tooltip, TTM_SETTIPBKCOLOR, RGB(35, 35, 38), 0);
+    SendMessageW(tooltip, TTM_SETTIPTEXTCOLOR, kTextColor, 0);
+    SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
+    SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    TOOLINFOW info = {};
+    info.cbSize = sizeof(info);
+    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS | TTF_TRANSPARENT;
+    info.hwnd = parent;
+    info.uId = reinterpret_cast<UINT_PTR>(tool);
+    info.lpszText = const_cast<LPWSTR>(text);
+    SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
+    return tooltip;
+}
+
+void AddDialogTooltip(DialogState* state, HWND tool, const wchar_t* text) {
+    if (!state || !tool || !text) {
+        return;
+    }
+    HWND tooltip = CreateTooltip(state->window, tool, text);
+    if (tooltip) {
+        state->tooltips.push_back(tooltip);
+    }
+}
+
 bool ApplySelectedFfmpegPath(HWND owner, HINSTANCE instance, AppConfig& config, const std::filesystem::path& path) {
     const FfmpegStatus status = FfmpegManager::ResolveUserPath(path);
     if (!status.available) {
@@ -242,8 +265,32 @@ bool ApplySelectedFfmpegPath(HWND owner, HINSTANCE instance, AppConfig& config, 
         return false;
     }
     config.ffmpegPath = status.ffmpegExe;
-    ShowInfoDialog(owner, instance, L"FFmpeg выбран", L"Используется:\n" + status.ffmpegExe.wstring());
     return true;
+}
+
+FfmpegStatus ResolveDialogFfmpegStatus(const DialogState* state) {
+    if (!state || !state->config) {
+        return {};
+    }
+    if (state->paths) {
+        return FfmpegManager::Resolve(*state->paths, *state->config);
+    }
+    if (!state->config->ffmpegPath.empty()) {
+        return FfmpegManager::ResolveUserPath(state->config->ffmpegPath);
+    }
+    return {};
+}
+
+std::wstring FfmpegDialogTitle(const FfmpegStatus& status) {
+    return status.available ? L"FFmpeg указан" : L"FFmpeg не найден";
+}
+
+std::wstring FfmpegDialogMessage(const FfmpegStatus& status) {
+    if (status.available) {
+        return L"FFmpeg найден и будет использоваться для объединения видео/аудио дорожек и переконвертации.\n\nПуть:\n" +
+            status.ffmpegExe.wstring();
+    }
+    return L"FFmpeg не найден. Без него приложение сможет скачивать только готовые единые файлы без переконвертации и объединения отдельных видео/аудио дорожек.";
 }
 
 void RegisterDialogClasses(HINSTANCE instance);
@@ -382,7 +429,10 @@ void RunModal(HWND owner, HWND window) {
 
     if (owner && IsWindow(owner)) {
         EnableWindow(owner, TRUE);
-        SetActiveWindow(owner);
+        if (IsIconic(owner)) {
+            ShowWindow(owner, SW_RESTORE);
+        }
+        BringWindowToTop(owner);
     }
 }
 
@@ -448,8 +498,8 @@ void LayoutFfmpegDialog(DialogState* state, int width, int height) {
     const int buttonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
     const int buttonLeft = panelLeft + kDialogButtonInset;
     const int availableWidth = panelRight - panelLeft - (kDialogButtonInset * 2);
-    const int buttonWidth = (availableWidth - (kDialogButtonGap * 3)) / 4;
-    const std::array<int, 4> ids = {IdInstall, IdChoose, IdChooseFolder, IdSkip};
+    const int buttonWidth = (availableWidth - (kDialogButtonGap * 2)) / 3;
+    const std::array<int, 3> ids = {IdInstall, IdChooseFolder, IdSkip};
     int x = buttonLeft;
     for (int id : ids) {
         HWND button = GetDlgItem(state->window, id);
@@ -520,10 +570,10 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         MoveWindow(parallelPlus, 520, 296, 34, 34, TRUE);
     }
     if (ffmpeg) {
-        MoveWindow(ffmpeg, 24, 358, 178, 34, TRUE);
+        MoveWindow(ffmpeg, 24, 416, 178, 34, TRUE);
     }
     if (about) {
-        MoveWindow(about, 214, 358, 150, 34, TRUE);
+        MoveWindow(about, 214, 416, 150, 34, TRUE);
     }
     const int panelRight = width - kDialogPanelInset;
     const int panelBottom = height - kDialogPanelInset;
@@ -600,7 +650,7 @@ void DrawFfmpegDialog(DialogState* state, HDC dc, const RECT& client) {
     RECT messageRect = {24, 76, client.right - 24, 206};
     DrawTextBlock(
         dc,
-        L"FFmpeg не найден. Без него приложение сможет скачивать только готовые единые файлы без переконвертации и объединения отдельных видео/аудио дорожек.",
+        state->message,
         messageRect,
         kTextColor,
         textFont,
@@ -646,7 +696,6 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     RECT behaviorLabel = {24, 266, client.right - 24, 292};
     DrawTextBlock(dc, L"Поведение", behaviorLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    RECT behaviorText = {24, 292, client.right - 24, 318};
     DrawTextBlock(dc, L"Параллельные загрузки", {238, 296, 410, 330}, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     DrawTextBlock(
         dc,
@@ -657,6 +706,22 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         DT_CENTER | DT_VCENTER | DT_SINGLELINE
     );
 
+    RECT ffmpegLabel = {24, 354, client.right - 24, 380};
+    DrawTextBlock(dc, L"FFmpeg", ffmpegLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+    std::wstring ffmpegText = L"Не выбран";
+    if (state->paths) {
+        const FfmpegStatus status = FfmpegManager::Resolve(*state->paths, state->workingConfig);
+        if (status.available) {
+            ffmpegText = L"Найден: " + status.ffmpegExe.wstring();
+        }
+    } else if (!state->workingConfig.ffmpegPath.empty()) {
+        const FfmpegStatus status = FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath);
+        ffmpegText = status.available ? L"Найден: " + status.ffmpegExe.wstring() : L"Указанный путь недоступен";
+    }
+    RECT ffmpegTextRect = {24, 380, client.right - 24, 406};
+    DrawTextBlock(dc, ffmpegText, ffmpegTextRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
     DeleteObject(titleFont);
     DeleteObject(labelFont);
     DeleteObject(textFont);
@@ -665,17 +730,28 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
 void CreateMessageControls(DialogState* state) {
     state->scrollText = CreateScrollText(state->window, state->instance, state->message);
     if (state->type == DialogType::About) {
-        CreateDarkButton(state->window, state->instance, L"Проверить обновление", IdCheckUpdates, false);
+        HWND updateButton = CreateDarkButton(state->window, state->instance, L"Проверить обновление", IdCheckUpdates, false);
+        AddDialogTooltip(state, updateButton, L"Проверяет наличие новой версии приложения.");
     }
-    CreateDarkButton(state->window, state->instance, L"Скопировать", IdCopy, false);
-    CreateDarkButton(state->window, state->instance, L"OK", IdOk, true);
+    HWND copyButton = CreateDarkButton(state->window, state->instance, L"Скопировать", IdCopy, false);
+    HWND okButton = CreateDarkButton(state->window, state->instance, L"OK", IdOk, true);
+    AddDialogTooltip(state, copyButton, L"Копирует текст этого окна в буфер обмена.");
+    AddDialogTooltip(state, okButton, L"Закрывает окно.");
 }
 
 void CreateFfmpegControls(DialogState* state) {
-    CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true);
-    CreateDarkButton(state->window, state->instance, L"Выбрать exe", IdChoose, false);
-    CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false);
-    CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false);
+    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false);
+    HWND skipButton = CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false);
+    AddDialogTooltip(state, installButton, L"Скачивает и настраивает локальный FFmpeg для объединения видео и аудио.");
+    AddDialogTooltip(state, skipButton, L"Закрывает окно без настройки FFmpeg.");
+    if (folderButton) {
+        state->tooltip = CreateTooltip(
+            state->window,
+            folderButton,
+            L"Выберите папку, где находится ffmpeg.exe, или папку выше, содержащую bin\\ffmpeg.exe, ffprobe.exe и ffplay.exe."
+        );
+    }
 }
 
 void StartFfmpegInstallWorker(DialogState* state) {
@@ -732,7 +808,8 @@ void CreateProgressControls(DialogState* state) {
         SendMessageW(state->progressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
         SendMessageW(state->progressBar, PBM_SETPOS, 0, 0);
     }
-    CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
+    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
+    AddDialogTooltip(state, cancelButton, L"Отменяет текущую установку FFmpeg.");
     StartFfmpegInstallWorker(state);
 }
 
@@ -753,7 +830,8 @@ void CreateSettingsControls(DialogState* state) {
             (id == 104 && state->workingConfig.quality == L"720p") ||
             (id == 105 && state->workingConfig.quality == L"1080p") ||
             (id == 106 && state->workingConfig.quality == L"max");
-        CreateDarkButton(state->window, state->instance, text, id, selected);
+        HWND button = CreateDarkButton(state->window, state->instance, text, id, selected);
+        AddDialogTooltip(state, button, L"Выбирает качество, которое будет использоваться для новых задач.");
     }
 
     const std::array<std::pair<int, const wchar_t*>, 4> containerButtons = {{
@@ -768,22 +846,30 @@ void CreateSettingsControls(DialogState* state) {
             (id == 112 && state->workingConfig.container == L"mp4") ||
             (id == 113 && state->workingConfig.container == L"mkv") ||
             (id == 114 && state->workingConfig.container == L"webm");
-        CreateDarkButton(state->window, state->instance, text, id, selected);
+        HWND button = CreateDarkButton(state->window, state->instance, text, id, selected);
+        AddDialogTooltip(state, button, L"Выбирает контейнер итогового файла для новых задач.");
     }
 
-    CreateDarkButton(state->window, state->instance, L"FFmpeg", IdFfmpeg, false);
-    CreateDarkButton(
+    HWND ffmpegButton = CreateDarkButton(state->window, state->instance, L"FFmpeg", IdFfmpeg, false);
+    HWND autoUpdateButton = CreateDarkButton(
         state->window,
         state->instance,
         state->workingConfig.autoUpdateApp ? L"Автопроверка: Вкл" : L"Автопроверка: Выкл",
         IdAutoUpdate,
         state->workingConfig.autoUpdateApp
     );
-    CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
-    CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
-    CreateDarkButton(state->window, state->instance, L"О программе", IdAbout, false);
-    CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
-    CreateDarkButton(state->window, state->instance, L"Сохранить", IdOk, true);
+    HWND minusButton = CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
+    HWND plusButton = CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
+    HWND aboutButton = CreateDarkButton(state->window, state->instance, L"О программе", IdAbout, false);
+    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
+    HWND saveButton = CreateDarkButton(state->window, state->instance, L"Сохранить", IdOk, true);
+    AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg.");
+    AddDialogTooltip(state, autoUpdateButton, L"Включает или отключает автоматическую проверку обновлений приложения.");
+    AddDialogTooltip(state, minusButton, L"Уменьшает количество параллельных загрузок.");
+    AddDialogTooltip(state, plusButton, L"Увеличивает количество параллельных загрузок.");
+    AddDialogTooltip(state, aboutButton, L"Показывает информацию о приложении.");
+    AddDialogTooltip(state, cancelButton, L"Закрывает настройки без сохранения изменений.");
+    AddDialogTooltip(state, saveButton, L"Сохраняет выбранные настройки.");
 }
 
 void RegisterDialogClasses(HINSTANCE instance) {
@@ -957,6 +1043,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdFfmpeg:
                 if (state->paths && state->config && ShowFfmpegDialog(window, state->instance, *state->paths, state->workingConfig)) {
                     RefreshSettingsButtons(state);
+                    InvalidateRect(window, nullptr, FALSE);
+                    *state->config = state->workingConfig;
                     if (state->savedResult) {
                         *state->savedResult = true;
                     }
@@ -967,19 +1055,6 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdInstall:
                 if (state->type == DialogType::Ffmpeg && state->paths && state->config) {
                     if (ShowFfmpegInstallProgress(window, state->instance, *state->paths, *state->config)) {
-                        if (state->savedResult) {
-                            *state->savedResult = true;
-                        }
-                        DestroyWindow(window);
-                    }
-                    return 0;
-                }
-                DestroyWindow(window);
-                return 0;
-            case IdChoose:
-                if (state->type == DialogType::Ffmpeg && state->config) {
-                    const std::optional<std::filesystem::path> selected = PickFfmpegExe(window);
-                    if (selected && ApplySelectedFfmpegPath(window, state->instance, *state->config, *selected)) {
                         if (state->savedResult) {
                             *state->savedResult = true;
                         }
@@ -1075,6 +1150,18 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 0;
 
     case WM_NCDESTROY:
+        if (state && state->tooltip) {
+            DestroyWindow(state->tooltip);
+            state->tooltip = nullptr;
+        }
+        if (state) {
+            for (HWND tooltip : state->tooltips) {
+                if (tooltip) {
+                    DestroyWindow(tooltip);
+                }
+            }
+            state->tooltips.clear();
+        }
         if (state && state->cancelEvent) {
             CloseHandle(state->cancelEvent);
             state->cancelEvent = nullptr;
@@ -1398,7 +1485,7 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, A
     state->workingConfig = config;
     bool saved = false;
     state->savedResult = &saved;
-    ShowModal(state, 620, 560);
+    ShowModal(state, 620, 580);
     return saved;
 }
 
@@ -1426,9 +1513,11 @@ bool ShowFfmpegDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, App
     state->type = DialogType::Ffmpeg;
     state->instance = instance;
     state->owner = owner;
-    state->title = L"FFmpeg не найден";
     state->paths = paths.root().empty() ? nullptr : &paths;
     state->config = &config;
+    const FfmpegStatus status = ResolveDialogFfmpegStatus(state);
+    state->title = FfmpegDialogTitle(status);
+    state->message = FfmpegDialogMessage(status);
     bool saved = false;
     state->savedResult = &saved;
     ShowModal(state, 600, 370);

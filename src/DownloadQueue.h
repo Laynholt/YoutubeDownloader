@@ -3,6 +3,7 @@
 #include "YtDlpClient.h"
 
 #include <condition_variable>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -26,16 +27,26 @@ struct DownloadTaskSnapshot {
     int id = 0;
     YtDlpDownloadRequest request;
     std::wstring title;
+    std::filesystem::path thumbnailPath;
     DownloadTaskState state = DownloadTaskState::Queued;
     double percent = 0.0;
     std::wstring statusText;
     std::wstring lastOutputLine;
     std::wstring errorText;
+    std::uint64_t downloadedBytes = 0;
+    std::uint64_t totalBytes = 0;
+    std::uint64_t speedBytesPerSecond = 0;
+    std::uint64_t etaSeconds = 0;
+    std::wstring mediaKind;
+    std::wstring formatId;
+    std::wstring extension;
+    std::wstring resolution;
     std::vector<std::filesystem::path> outputFiles;
 };
 
 struct DownloadTaskCallbacks {
     std::function<void(double percent, const std::wstring& status)> onProgress;
+    std::function<void(const YtDlpProgress& progress)> onProgressDetails;
     std::function<void(const std::wstring& line)> onOutputLine;
     std::function<bool()> isCanceled;
 };
@@ -60,14 +71,17 @@ public:
     DownloadQueue& operator=(const DownloadQueue&) = delete;
 
     void SetExecutor(DownloadTaskExecutor executor);
-    int Enqueue(const YtDlpDownloadRequest& request, std::wstring title);
+    int Enqueue(const YtDlpDownloadRequest& request, std::wstring title, std::filesystem::path thumbnailPath = {});
+    bool EnrichMetadata(const std::wstring& url, std::wstring title, std::filesystem::path thumbnailPath = {});
     bool Cancel(int id);
     bool Retry(int id);
     bool DeleteFiles(int id);
-    void ClearFinished();
+    size_t ClearQueued();
+    size_t ClearFinished();
 
     DownloadTaskSnapshot GetTask(int id) const;
     std::vector<DownloadTaskSnapshot> Snapshot() const;
+    std::uint64_t Revision() const;
     void WaitForIdle();
     void Shutdown();
 
@@ -85,6 +99,7 @@ private:
     int m_maxParallelDownloads = 1;
     int m_nextId = 1;
     int m_activeCount = 0;
+    std::uint64_t m_revision = 0;
     bool m_shutdown = false;
     mutable std::mutex m_mutex;
     std::condition_variable m_cv;
@@ -92,4 +107,3 @@ private:
     std::thread m_scheduler;
     DownloadTaskExecutor m_executor;
 };
-

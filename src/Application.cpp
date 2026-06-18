@@ -14,9 +14,11 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <sstream>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include "ProcessRunner.h"
 
@@ -33,9 +35,19 @@ constexpr COLORREF kBackgroundColor = RGB(20, 20, 22);
 constexpr COLORREF kPanelColor = RGB(28, 28, 31);
 constexpr COLORREF kInputColor = RGB(25, 25, 28);
 constexpr COLORREF kTextColor = RGB(242, 242, 242);
+constexpr COLORREF kMutedTextColor = RGB(172, 172, 178);
 constexpr UINT kMsgToolCheckComplete = WM_APP + 1;
 constexpr UINT kMsgPreviewComplete = WM_APP + 2;
 constexpr UINT_PTR kQueueRefreshTimer = 1;
+constexpr UINT_PTR kStatusRestoreTimer = 2;
+constexpr UINT_PTR kPreviewLoadingTimer = 3;
+constexpr UINT kStatusRestoreDelayMs = 3000;
+constexpr UINT kPreviewLoadingDelayMs = 500;
+constexpr int kQueueRowHeight = 92;
+constexpr int kQueueRowGap = 10;
+constexpr int kQueueActionCancel = 1;
+constexpr int kQueueActionRetry = 2;
+constexpr int kQueueActionDelete = 3;
 
 enum ControlId {
     IdUrlEdit = 1001,
@@ -43,7 +55,8 @@ enum ControlId {
     IdChooseFolderButton = 1003,
     IdDownloadButton = 1004,
     IdClearButton = 1005,
-    IdSettingsButton = 1006
+    IdSettingsButton = 1006,
+    IdClearFinishedButton = 1007
 };
 
 struct ButtonState {
@@ -63,6 +76,7 @@ struct ToolCheckResult {
 
 struct PreviewFetchResult {
     unsigned long requestId = 0;
+    std::wstring url;
     bool ok = false;
     VideoPreview preview;
     std::wstring error;
@@ -123,6 +137,301 @@ std::wstring TaskStateText(DownloadTaskState state) {
         return L"Отменено";
     }
     return L"";
+}
+
+bool IsRunningTaskState(DownloadTaskState state) {
+    return state == DownloadTaskState::Queued ||
+           state == DownloadTaskState::Preparing ||
+           state == DownloadTaskState::Downloading ||
+           state == DownloadTaskState::PostProcessing;
+}
+
+void AddRoundedRect(Gdiplus::GraphicsPath& path, const RECT& rect, int radius) {
+    const int diameter = radius * 2;
+    path.AddArc(rect.left, rect.top, diameter, diameter, 180.0f, 90.0f);
+    path.AddArc(rect.right - diameter, rect.top, diameter, diameter, 270.0f, 90.0f);
+    path.AddArc(rect.right - diameter, rect.bottom - diameter, diameter, diameter, 0.0f, 90.0f);
+    path.AddArc(rect.left, rect.bottom - diameter, diameter, diameter, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void DrawTextBlock(HDC dc, const std::wstring& text, RECT rect, COLORREF color, HFONT font, UINT format) {
+    HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, color);
+    DrawTextW(dc, text.c_str(), -1, &rect, format | DT_NOPREFIX);
+    SelectObject(dc, oldFont);
+}
+
+void PaintBuffered(HWND window, const std::function<void(HDC, const RECT&)>& paintContent) {
+    PAINTSTRUCT paint = {};
+    HDC screenDc = BeginPaint(window, &paint);
+
+    RECT client = {};
+    GetClientRect(window, &client);
+    const int width = std::max(1, static_cast<int>(client.right - client.left));
+    const int height = std::max(1, static_cast<int>(client.bottom - client.top));
+
+    HDC bufferDc = CreateCompatibleDC(screenDc);
+    HBITMAP bitmap = CreateCompatibleBitmap(screenDc, width, height);
+    HGDIOBJ oldBitmap = SelectObject(bufferDc, bitmap);
+
+    paintContent(bufferDc, client);
+    BitBlt(screenDc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
+
+    SelectObject(bufferDc, oldBitmap);
+    DeleteObject(bitmap);
+    DeleteDC(bufferDc);
+    EndPaint(window, &paint);
+}
+
+HFONT CreateUiFont(int height, int weight = FW_NORMAL) {
+    LOGFONTW font = {};
+    font.lfHeight = height;
+    font.lfWeight = weight;
+    wcscpy_s(font.lfFaceName, L"Segoe UI");
+    return CreateFontIndirectW(&font);
+}
+
+std::wstring FormatBytes(std::uint64_t bytes) {
+    if (bytes == 0) {
+        return L"";
+    }
+
+    constexpr double kKiB = 1024.0;
+    constexpr double kMiB = kKiB * 1024.0;
+    constexpr double kGiB = kMiB * 1024.0;
+
+    double value = static_cast<double>(bytes);
+    const wchar_t* unit = L"B";
+    if (value >= kGiB) {
+        value /= kGiB;
+        unit = L"GB";
+    } else if (value >= kMiB) {
+        value /= kMiB;
+        unit = L"MB";
+    } else if (value >= kKiB) {
+        value /= kKiB;
+        unit = L"KB";
+    }
+
+    std::wostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision((value >= 10.0 || bytes < 1024) ? 0 : 1);
+    out << value << L" " << unit;
+    return out.str();
+}
+
+std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
+    std::vector<std::wstring> parts;
+    if (!task.mediaKind.empty()) {
+        parts.push_back(task.mediaKind == L"audio" ? L"Аудио" : L"Видео");
+    }
+    if (!task.extension.empty()) {
+        parts.push_back(task.extension);
+    }
+    if (task.mediaKind == L"video" && !task.resolution.empty()) {
+        parts.push_back(task.resolution);
+    }
+    if (task.totalBytes > 0) {
+        parts.push_back(FormatBytes(task.downloadedBytes) + L" / " + FormatBytes(task.totalBytes));
+    } else if (task.downloadedBytes > 0) {
+        parts.push_back(FormatBytes(task.downloadedBytes));
+    }
+    if (task.speedBytesPerSecond > 0) {
+        parts.push_back(FormatBytes(task.speedBytesPerSecond) + L"/s");
+    }
+    if (task.etaSeconds > 0) {
+        parts.push_back(L"ETA " + std::to_wstring(task.etaSeconds) + L"с");
+    }
+
+    std::wstring details;
+    for (const std::wstring& part : parts) {
+        if (!details.empty()) {
+            details += L" · ";
+        }
+        details += part;
+    }
+    return details;
+}
+
+std::wstring BuildToolReadyStatus(const ToolInstallStatus& ytDlpStatus, const FfmpegStatus& ffmpeg) {
+    std::wstring status = ytDlpStatus.installed ? L"youtube-dlp готов" : L"youtube-dlp не найден";
+    if (ytDlpStatus.installed && !ytDlpStatus.version.empty()) {
+        status += L" (" + ytDlpStatus.version + L")";
+    }
+    if (ffmpeg.available) {
+        status += L" · ffmpeg найден";
+    }
+    return status;
+}
+
+size_t CountTasksInState(const std::vector<DownloadTaskSnapshot>& tasks, DownloadTaskState state) {
+    return static_cast<size_t>(std::count_if(tasks.begin(), tasks.end(), [state](const DownloadTaskSnapshot& task) {
+        return task.state == state;
+    }));
+}
+
+RECT QueuePanelRectForClient(const RECT& client) {
+    return {20, 334, client.right - 20, client.bottom - 20};
+}
+
+RECT QueueRowRectAt(const RECT& queueRect, int index) {
+    const int y = queueRect.top + 18 + (index * (kQueueRowHeight + kQueueRowGap));
+    return {queueRect.left + 16, y, queueRect.right - 32, y + kQueueRowHeight};
+}
+
+int QueueVisibleRowCount(const RECT& queueRect) {
+    const int availableHeight = std::max(0, static_cast<int>(queueRect.bottom - 16 - (queueRect.top + 18)));
+    return std::max(1, (availableHeight + kQueueRowGap) / (kQueueRowHeight + kQueueRowGap));
+}
+
+int QueueMaxScrollOffset(const RECT& queueRect, size_t taskCount) {
+    return std::max(0, static_cast<int>(taskCount) - QueueVisibleRowCount(queueRect));
+}
+
+RECT QueueScrollbarTrackRect(const RECT& queueRect) {
+    return {queueRect.right - 20, queueRect.top + 18, queueRect.right - 12, queueRect.bottom - 16};
+}
+
+RECT QueueScrollbarThumbRect(const RECT& queueRect, size_t taskCount, int scrollOffset) {
+    const RECT track = QueueScrollbarTrackRect(queueRect);
+    const int trackHeight = std::max(1, static_cast<int>(track.bottom - track.top));
+    const int visibleRows = QueueVisibleRowCount(queueRect);
+    const int totalRows = std::max(1, static_cast<int>(taskCount));
+    const int thumbHeight = std::clamp((trackHeight * visibleRows) / totalRows, 28, trackHeight);
+    const int maxOffset = std::max(1, totalRows - visibleRows);
+    const int maxTravel = std::max(0, trackHeight - thumbHeight);
+    const int thumbTop = track.top + (std::clamp(scrollOffset, 0, maxOffset) * maxTravel) / maxOffset;
+    return {track.left, thumbTop, track.right, thumbTop + thumbHeight};
+}
+
+void DrawSmallActionButton(HDC dc, const RECT& rect, const std::wstring& text, bool primary, bool hot) {
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    AddRoundedRect(path, rect, 6);
+    const Gdiplus::Color primaryFill = hot ? Gdiplus::Color(255, 245, 91, 104) : Gdiplus::Color(255, 232, 72, 85);
+    const Gdiplus::Color secondaryFill = hot ? Gdiplus::Color(255, 55, 55, 61) : Gdiplus::Color(255, 42, 42, 46);
+    const Gdiplus::Color secondaryBorder = hot ? Gdiplus::Color(255, 86, 86, 94) : Gdiplus::Color(255, 58, 58, 64);
+    Gdiplus::SolidBrush fill(primary ? primaryFill : secondaryFill);
+    Gdiplus::Pen border(primary ? primaryFill : secondaryBorder, 1.0f);
+    graphics.FillPath(&fill, &path);
+    graphics.DrawPath(&border, &path);
+
+    HFONT font = CreateUiFont(-12, FW_NORMAL);
+    DrawTextBlock(dc, text, rect, kTextColor, font, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    DeleteObject(font);
+}
+
+bool DrawImageCover(HDC dc, const RECT& target, const std::filesystem::path& imagePath, int radius) {
+    std::error_code ec;
+    if (imagePath.empty() || !std::filesystem::is_regular_file(imagePath, ec)) {
+        return false;
+    }
+
+    Gdiplus::Image image(imagePath.wstring().c_str());
+    if (image.GetLastStatus() != Gdiplus::Ok || image.GetWidth() == 0 || image.GetHeight() == 0) {
+        return false;
+    }
+
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+
+    Gdiplus::GraphicsPath clipPath;
+    AddRoundedRect(clipPath, target, radius);
+    Gdiplus::Region clipRegion(&clipPath);
+    graphics.SetClip(&clipRegion, Gdiplus::CombineModeReplace);
+
+    const double targetWidth = static_cast<double>(target.right - target.left);
+    const double targetHeight = static_cast<double>(target.bottom - target.top);
+    const double sourceWidth = static_cast<double>(image.GetWidth());
+    const double sourceHeight = static_cast<double>(image.GetHeight());
+    const double targetRatio = targetWidth / targetHeight;
+    const double sourceRatio = sourceWidth / sourceHeight;
+
+    Gdiplus::REAL srcX = 0.0f;
+    Gdiplus::REAL srcY = 0.0f;
+    Gdiplus::REAL srcWidth = static_cast<Gdiplus::REAL>(sourceWidth);
+    Gdiplus::REAL srcHeight = static_cast<Gdiplus::REAL>(sourceHeight);
+    if (sourceRatio > targetRatio) {
+        srcWidth = static_cast<Gdiplus::REAL>(sourceHeight * targetRatio);
+        srcX = static_cast<Gdiplus::REAL>((sourceWidth - srcWidth) / 2.0);
+    } else {
+        srcHeight = static_cast<Gdiplus::REAL>(sourceWidth / targetRatio);
+        srcY = static_cast<Gdiplus::REAL>((sourceHeight - srcHeight) / 2.0);
+    }
+
+    graphics.DrawImage(
+        &image,
+        Gdiplus::RectF(
+            static_cast<Gdiplus::REAL>(target.left),
+            static_cast<Gdiplus::REAL>(target.top),
+            static_cast<Gdiplus::REAL>(target.right - target.left),
+            static_cast<Gdiplus::REAL>(target.bottom - target.top)
+        ),
+        srcX,
+        srcY,
+        srcWidth,
+        srcHeight,
+        Gdiplus::UnitPixel
+    );
+    graphics.ResetClip();
+    return true;
+}
+
+void DrawThumbnailPlaceholder(HDC dc, const RECT& rect) {
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    AddRoundedRect(path, rect, 8);
+    Gdiplus::SolidBrush fill(Gdiplus::Color(255, 35, 35, 38));
+    Gdiplus::Pen border(Gdiplus::Color(255, 46, 46, 50), 1.0f);
+    graphics.FillPath(&fill, &path);
+    graphics.DrawPath(&border, &path);
+}
+
+HWND CreateTooltipWindow(HWND parent) {
+    HWND tooltip = CreateWindowExW(
+        WS_EX_TOPMOST,
+        TOOLTIPS_CLASSW,
+        nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        parent,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+    if (!tooltip) {
+        return nullptr;
+    }
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_INITIAL, 500);
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_RESHOW, 100);
+    SendMessageW(tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 10000);
+    SendMessageW(tooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+    SendMessageW(tooltip, TTM_SETTIPBKCOLOR, RGB(35, 35, 38), 0);
+    SendMessageW(tooltip, TTM_SETTIPTEXTCOLOR, kTextColor, 0);
+    SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
+    SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return tooltip;
+}
+
+void AddTooltip(HWND tooltip, HWND parent, HWND tool, const wchar_t* text) {
+    if (!tooltip || !tool || !text) {
+        return;
+    }
+    TOOLINFOW info = {};
+    info.cbSize = sizeof(info);
+    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS | TTF_TRANSPARENT;
+    info.hwnd = parent;
+    info.uId = reinterpret_cast<UINT_PTR>(tool);
+    info.lpszText = const_cast<LPWSTR>(text);
+    SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
 }
 
 } // namespace
@@ -224,6 +533,10 @@ void Application::Shutdown() {
     if (m_panelBrush) {
         DeleteObject(m_panelBrush);
         m_panelBrush = nullptr;
+    }
+    if (m_tooltip) {
+        DestroyWindow(m_tooltip);
+        m_tooltip = nullptr;
     }
     if (m_backgroundBrush) {
         DeleteObject(m_backgroundBrush);
@@ -365,21 +678,49 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_ERASEBKGND:
         return 1;
 
-    case WM_PAINT:
+    case WM_LBUTTONUP:
         {
-            PAINTSTRUCT paint = {};
-            HDC dc = BeginPaint(m_window, &paint);
-            RECT client = {};
-            GetClientRect(m_window, &client);
+            POINT point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (HandleQueueClick(point)) {
+                return 0;
+            }
+        }
+        break;
+
+    case WM_MOUSEWHEEL:
+        {
+            POINT point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            ScreenToClient(m_window, &point);
+            if (ScrollQueue(GET_WHEEL_DELTA_WPARAM(wParam), point)) {
+                return 0;
+            }
+        }
+        break;
+
+    case WM_MOUSEMOVE:
+        {
+            POINT point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            UpdateQueueHover(point);
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        m_queueMouseTracking = false;
+        ClearQueueHover();
+        break;
+
+    case WM_PAINT:
+        PaintBuffered(m_window, [this](HDC dc, const RECT& client) {
             UiRenderer::DrawBackground(dc, client);
 
             RECT preview = {20, 72, client.right - 20, 218};
             UiRenderer::DrawPreviewCard(dc, preview);
-            RECT queue = {20, 334, client.right - 20, client.bottom - 20};
+            DrawPreviewContent(dc, preview);
+            RECT queue = QueuePanelRectForClient(client);
             UiRenderer::DrawPanel(dc, queue);
+            DrawQueueContent(dc, queue);
             DrawControlFrames(dc);
-            EndPaint(m_window, &paint);
-        }
+        });
         return 0;
 
     case WM_CTLCOLORSTATIC:
@@ -445,7 +786,16 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (LOWORD(wParam) == IdClearButton) {
             if (m_downloadQueue) {
-                m_downloadQueue->ClearFinished();
+                const size_t removed = m_downloadQueue->ClearQueued();
+                SetTransientStatus(L"Очередь очищена: удалено " + std::to_wstring(removed) + L" задач");
+                RefreshQueueText();
+            }
+            return 0;
+        }
+        if (LOWORD(wParam) == IdClearFinishedButton) {
+            if (m_downloadQueue) {
+                const size_t removed = m_downloadQueue->ClearFinished();
+                SetTransientStatus(L"Завершённые задачи очищены: удалено " + std::to_wstring(removed) + L" задач");
                 RefreshQueueText();
             }
             return 0;
@@ -454,7 +804,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (m_paths && ShowSettingsDialog(m_window, m_instance, *m_paths, m_config)) {
                 ConfigStore::Save(*m_paths, m_config);
                 m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
-                SetStatus(L"Настройки сохранены");
+                SetTransientStatus(L"Настройки сохранены");
             }
             return 0;
         }
@@ -463,6 +813,16 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == kQueueRefreshTimer) {
             RefreshQueueText();
+            return 0;
+        }
+        if (wParam == kStatusRestoreTimer) {
+            KillTimer(m_window, kStatusRestoreTimer);
+            m_transientStatusActive = false;
+            RestoreStatusText();
+            return 0;
+        }
+        if (wParam == kPreviewLoadingTimer) {
+            UpdatePreviewLoadingText();
             return 0;
         }
         break;
@@ -482,7 +842,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             } else {
                 EnableWindow(m_downloadButton, FALSE);
             }
-            SetStatus(result->message);
+            SetStatus(result->ready ? BuildToolReadyStatus(result->status, m_ffmpeg) : result->message);
         }
         return 0;
 
@@ -492,6 +852,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             if (result->requestId != m_previewRequestId.load()) {
                 return 0;
             }
+            StopPreviewLoadingText();
             if (result->ok) {
                 {
                     std::lock_guard lock(m_previewMutex);
@@ -502,14 +863,38 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     title += L" — плейлист: " + std::to_wstring(result->preview.entries.size()) + L" видео";
                 }
                 SetWindowTextW(m_previewTitle, title.c_str());
+                if (m_downloadQueue) {
+                    bool enriched = m_downloadQueue->EnrichMetadata(
+                        result->url,
+                        result->preview.title,
+                        result->preview.cachedThumbnailPath
+                    );
+                    if (!result->preview.webpageUrl.empty() && result->preview.webpageUrl != result->url) {
+                        enriched = m_downloadQueue->EnrichMetadata(
+                            result->preview.webpageUrl,
+                            result->preview.title,
+                            result->preview.cachedThumbnailPath
+                        ) || enriched;
+                    }
+                    if (enriched) {
+                        RefreshQueueText();
+                    }
+                }
             } else {
+                {
+                    std::lock_guard lock(m_previewMutex);
+                    m_preview = {};
+                }
                 SetWindowTextW(m_previewTitle, result->error.empty() ? L"Не удалось получить preview" : result->error.c_str());
             }
+            InvalidateRect(m_window, nullptr, FALSE);
         }
         return 0;
 
     case WM_DESTROY:
         KillTimer(m_window, kQueueRefreshTimer);
+        KillTimer(m_window, kStatusRestoreTimer);
+        KillTimer(m_window, kPreviewLoadingTimer);
         PostQuitMessage(0);
         return 0;
     }
@@ -589,6 +974,7 @@ void Application::CreateControls() {
 
     m_downloadButton = CreateButton(L"Скачать", IdDownloadButton, true, false);
     m_clearButton = CreateButton(L"Очистить очередь", IdClearButton, false, false);
+    m_clearFinishedButton = CreateButton(L"X", IdClearFinishedButton, false, false);
     m_settingsButton = CreateButton(L"Настройки", IdSettingsButton, false, false);
     m_statusLabel = CreateChild(m_window, L"STATIC", L"Подготовка интерфейса", SS_LEFT, 0, 0);
     m_queueLabel = CreateChild(m_window, L"STATIC", L"Очередь загрузок", SS_LEFT, 0, 0);
@@ -596,6 +982,15 @@ void Application::CreateControls() {
     EnableWindow(m_downloadButton, FALSE);
 
     SetControlFonts();
+    m_tooltip = CreateTooltipWindow(m_window);
+    AddTooltip(m_tooltip, m_window, m_urlEdit, L"Вставьте ссылку на видео, плейлист или другой поддерживаемый источник.");
+    AddTooltip(m_tooltip, m_window, m_pasteButton, L"Вставляет ссылку из буфера обмена.");
+    AddTooltip(m_tooltip, m_window, m_folderEdit, L"Папка, куда будут сохраняться скачанные файлы.");
+    AddTooltip(m_tooltip, m_window, m_chooseFolderButton, L"Выберите папку для сохранения загрузок.");
+    AddTooltip(m_tooltip, m_window, m_downloadButton, L"Добавляет ссылку в очередь загрузок.");
+    AddTooltip(m_tooltip, m_window, m_clearButton, L"Удаляет из очереди задачи, которые ещё не начали загружаться. Активные загрузки не останавливаются.");
+    AddTooltip(m_tooltip, m_window, m_clearFinishedButton, L"Очищает из списка завершённые и ошибочные задачи. Файлы на диске не удаляются.");
+    AddTooltip(m_tooltip, m_window, m_settingsButton, L"Открывает настройки качества, контейнера, FFmpeg и поведения приложения.");
 
     RECT client = {};
     GetClientRect(m_window, &client);
@@ -659,6 +1054,7 @@ void Application::LayoutControls(int width, int height) {
     MoveWindow(m_statusLabel, margin + 316, 246, width - (margin * 2) - 456, 22, TRUE);
 
     MoveWindow(m_queueLabel, margin, 298, 220, 22, TRUE);
+    MoveWindow(m_clearFinishedButton, width - margin - 34, 292, 34, 30, TRUE);
     MoveWindow(m_queuePlaceholder, margin + 24, 360, width - (margin * 2) - 48, 28, TRUE);
     InvalidateRect(m_window, nullptr, TRUE);
 }
@@ -673,8 +1069,377 @@ void Application::DrawControlFrames(HDC dc) {
     }
 }
 
+void Application::DrawPreviewContent(HDC dc, const RECT& previewRect) {
+    VideoPreview preview;
+    {
+        std::lock_guard lock(m_previewMutex);
+        preview = m_preview;
+    }
+
+    RECT thumb = {previewRect.left + 14, previewRect.top + 14, previewRect.left + 224, previewRect.top + 132};
+    if (!DrawImageCover(dc, thumb, preview.cachedThumbnailPath, 8)) {
+        return;
+    }
+}
+
+void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
+    if (!m_downloadQueue) {
+        return;
+    }
+
+    const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+    if (tasks.empty()) {
+        m_queueScrollOffset = 0;
+        return;
+    }
+
+    HFONT titleFont = CreateUiFont(-15, FW_SEMIBOLD);
+    HFONT textFont = CreateUiFont(-13, FW_NORMAL);
+    HFONT smallFont = CreateUiFont(-12, FW_NORMAL);
+
+    const int maxY = queueRect.bottom - 16;
+    const int visibleRows = QueueVisibleRowCount(queueRect);
+    const int maxOffset = QueueMaxScrollOffset(queueRect, tasks.size());
+    m_queueScrollOffset = std::clamp(m_queueScrollOffset, 0, maxOffset);
+
+    for (int visibleIndex = 0; visibleIndex < visibleRows; ++visibleIndex) {
+        const int taskIndex = m_queueScrollOffset + visibleIndex;
+        if (taskIndex >= static_cast<int>(tasks.size())) {
+            break;
+        }
+        const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
+        RECT row = QueueRowRectAt(queueRect, visibleIndex);
+        if (row.bottom > maxY) {
+            break;
+        }
+
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        Gdiplus::GraphicsPath rowPath;
+        AddRoundedRect(rowPath, row, 8);
+        Gdiplus::SolidBrush rowBrush(Gdiplus::Color(255, 35, 35, 38));
+        Gdiplus::Pen rowBorder(Gdiplus::Color(255, 46, 46, 50), 1.0f);
+        graphics.FillPath(&rowBrush, &rowPath);
+        graphics.DrawPath(&rowBorder, &rowPath);
+
+        RECT thumb = {row.left + 10, row.top + 10, row.left + 106, row.bottom - 10};
+        if (!DrawImageCover(dc, thumb, task.thumbnailPath, 7)) {
+            DrawThumbnailPlaceholder(dc, thumb);
+        }
+
+        const int textLeft = thumb.right + 14;
+        const int buttonRight = row.right - 12;
+        const int buttonWidth = 96;
+        const int buttonHeight = 26;
+        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
+        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+        const int textRight = IsRunningTaskState(task.state)
+            ? cancelButton.left - 12
+            : ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) ? retryButton.left - 12 : deleteButton.left - 12);
+
+        RECT titleRect = {textLeft, row.top + 9, textRight, row.top + 31};
+        const std::wstring title = task.title.empty() ? task.request.url : task.title;
+        DrawTextBlock(dc, title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        std::wstring status = TaskStateText(task.state);
+        if (!task.statusText.empty() && task.statusText != status) {
+            status += L" · " + task.statusText;
+        }
+        if (!task.errorText.empty()) {
+            status += L" · " + task.errorText;
+        }
+        RECT statusRect = {textLeft, row.top + 34, textRight, row.top + 52};
+        DrawTextBlock(dc, status, statusRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+        const std::wstring details = BuildTaskDetails(task);
+        if (!details.empty()) {
+            RECT detailsRect = {textLeft, row.top + 54, textRight, row.top + 72};
+            DrawTextBlock(dc, details, detailsRect, kMutedTextColor, smallFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        }
+
+        RECT progressBack = {textLeft, row.bottom - 13, row.right - 84, row.bottom - 5};
+        const int progressWidth = std::max(1, static_cast<int>(progressBack.right - progressBack.left));
+        double percent = task.percent;
+        if (task.state == DownloadTaskState::Completed) {
+            percent = 100.0;
+        }
+        percent = std::clamp(percent, 0.0, 100.0);
+
+        Gdiplus::GraphicsPath progressPath;
+        AddRoundedRect(progressPath, progressBack, 4);
+        Gdiplus::SolidBrush progressBg(Gdiplus::Color(255, 26, 26, 29));
+        graphics.FillPath(&progressBg, &progressPath);
+        if (percent > 0.0) {
+            RECT progressFill = progressBack;
+            progressFill.right = progressFill.left + static_cast<LONG>((progressWidth * percent) / 100.0);
+            Gdiplus::GraphicsPath fillPath;
+            AddRoundedRect(fillPath, progressFill, 4);
+            Gdiplus::SolidBrush progressFg(Gdiplus::Color(255, 232, 72, 85));
+            graphics.FillPath(&progressFg, &fillPath);
+        }
+
+        RECT percentRect = {row.right - 74, row.bottom - 19, row.right - 14, row.bottom - 1};
+        DrawTextBlock(
+            dc,
+            std::to_wstring(static_cast<int>(percent)) + L"%",
+            percentRect,
+            kMutedTextColor,
+            smallFont,
+            DT_RIGHT | DT_VCENTER | DT_SINGLELINE
+        );
+
+        if (IsRunningTaskState(task.state)) {
+            DrawSmallActionButton(
+                dc,
+                cancelButton,
+                L"Отменить",
+                false,
+                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionCancel
+            );
+        } else if (task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) {
+            DrawSmallActionButton(
+                dc,
+                retryButton,
+                L"Возобновить",
+                true,
+                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionRetry
+            );
+            DrawSmallActionButton(
+                dc,
+                deleteButton,
+                L"Удалить",
+                false,
+                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
+            );
+        } else if (task.state == DownloadTaskState::Completed) {
+            DrawSmallActionButton(
+                dc,
+                deleteButton,
+                L"Закрыть",
+                false,
+                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
+            );
+        }
+
+    }
+
+    if (maxOffset > 0) {
+        Gdiplus::Graphics graphics(dc);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+        const RECT track = QueueScrollbarTrackRect(queueRect);
+        const RECT thumb = QueueScrollbarThumbRect(queueRect, tasks.size(), m_queueScrollOffset);
+        Gdiplus::SolidBrush trackBrush(Gdiplus::Color(255, 39, 39, 43));
+        Gdiplus::SolidBrush thumbBrush(Gdiplus::Color(255, 92, 92, 98));
+        graphics.FillRectangle(
+            &trackBrush,
+            static_cast<INT>(track.left),
+            static_cast<INT>(track.top),
+            static_cast<INT>(track.right - track.left),
+            static_cast<INT>(track.bottom - track.top)
+        );
+        graphics.FillRectangle(
+            &thumbBrush,
+            static_cast<INT>(thumb.left),
+            static_cast<INT>(thumb.top),
+            static_cast<INT>(thumb.right - thumb.left),
+            static_cast<INT>(thumb.bottom - thumb.top)
+        );
+    }
+
+    DeleteObject(titleFont);
+    DeleteObject(textFont);
+    DeleteObject(smallFont);
+}
+
+bool Application::HandleQueueClick(POINT point) {
+    if (!m_downloadQueue) {
+        return false;
+    }
+
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    const RECT queueRect = QueuePanelRectForClient(client);
+    if (!PtInRect(&queueRect, point)) {
+        return false;
+    }
+
+    const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+    const int maxOffset = QueueMaxScrollOffset(queueRect, tasks.size());
+    m_queueScrollOffset = std::clamp(m_queueScrollOffset, 0, maxOffset);
+    const RECT scrollbarTrack = QueueScrollbarTrackRect(queueRect);
+    if (maxOffset > 0 && PtInRect(&scrollbarTrack, point)) {
+        const RECT thumb = QueueScrollbarThumbRect(queueRect, tasks.size(), m_queueScrollOffset);
+        if (point.y < thumb.top) {
+            m_queueScrollOffset = std::max(0, m_queueScrollOffset - QueueVisibleRowCount(queueRect));
+        } else if (point.y > thumb.bottom) {
+            m_queueScrollOffset = std::min(maxOffset, m_queueScrollOffset + QueueVisibleRowCount(queueRect));
+        }
+        InvalidateRect(m_window, &queueRect, FALSE);
+        return true;
+    }
+    const int maxY = queueRect.bottom - 16;
+    const int visibleRows = QueueVisibleRowCount(queueRect);
+    for (int visibleIndex = 0; visibleIndex < visibleRows; ++visibleIndex) {
+        const int taskIndex = m_queueScrollOffset + visibleIndex;
+        if (taskIndex >= static_cast<int>(tasks.size())) {
+            break;
+        }
+        const RECT row = QueueRowRectAt(queueRect, visibleIndex);
+        if (row.bottom > maxY) {
+            break;
+        }
+        if (!PtInRect(&row, point)) {
+            continue;
+        }
+
+        const int buttonRight = row.right - 12;
+        constexpr int buttonWidth = 96;
+        constexpr int buttonHeight = 26;
+        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
+        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+
+        const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
+        bool handled = false;
+        if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
+            handled = m_downloadQueue->Cancel(task.id);
+        } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
+                   PtInRect(&retryButton, point)) {
+            handled = m_downloadQueue->Retry(task.id);
+        } else if ((task.state == DownloadTaskState::Canceled ||
+                    task.state == DownloadTaskState::Failed ||
+                    task.state == DownloadTaskState::Completed) &&
+                   PtInRect(&deleteButton, point)) {
+            handled = m_downloadQueue->DeleteFiles(task.id);
+        }
+
+        if (handled) {
+            RefreshQueueText();
+            return true;
+        }
+        return false;
+    }
+
+    return false;
+}
+
+bool Application::UpdateQueueHover(POINT point) {
+    int hotTaskId = 0;
+    int hotAction = 0;
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    const RECT queueRect = QueuePanelRectForClient(client);
+
+    if (PtInRect(&queueRect, point) && !m_queueMouseTracking) {
+        TRACKMOUSEEVENT track = {};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE;
+        track.hwndTrack = m_window;
+        if (TrackMouseEvent(&track)) {
+            m_queueMouseTracking = true;
+        }
+    }
+
+    if (m_downloadQueue && PtInRect(&queueRect, point)) {
+        const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+        const int maxOffset = QueueMaxScrollOffset(queueRect, tasks.size());
+        m_queueScrollOffset = std::clamp(m_queueScrollOffset, 0, maxOffset);
+        const int maxY = queueRect.bottom - 16;
+        const int visibleRows = QueueVisibleRowCount(queueRect);
+
+        for (int visibleIndex = 0; visibleIndex < visibleRows; ++visibleIndex) {
+            const int taskIndex = m_queueScrollOffset + visibleIndex;
+            if (taskIndex >= static_cast<int>(tasks.size())) {
+                break;
+            }
+
+            const RECT row = QueueRowRectAt(queueRect, visibleIndex);
+            if (row.bottom > maxY) {
+                break;
+            }
+            if (!PtInRect(&row, point)) {
+                continue;
+            }
+
+            const int buttonRight = row.right - 12;
+            constexpr int buttonWidth = 96;
+            constexpr int buttonHeight = 26;
+            RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+            RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
+            RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+
+            const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
+            if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
+                hotTaskId = task.id;
+                hotAction = kQueueActionCancel;
+            } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
+                       PtInRect(&retryButton, point)) {
+                hotTaskId = task.id;
+                hotAction = kQueueActionRetry;
+            } else if ((task.state == DownloadTaskState::Canceled ||
+                        task.state == DownloadTaskState::Failed ||
+                        task.state == DownloadTaskState::Completed) &&
+                       PtInRect(&deleteButton, point)) {
+                hotTaskId = task.id;
+                hotAction = kQueueActionDelete;
+            }
+            break;
+        }
+    }
+
+    if (m_hotQueueTaskId == hotTaskId && m_hotQueueAction == hotAction) {
+        return hotAction != 0;
+    }
+
+    m_hotQueueTaskId = hotTaskId;
+    m_hotQueueAction = hotAction;
+    InvalidateRect(m_window, &queueRect, FALSE);
+    return hotAction != 0;
+}
+
+void Application::ClearQueueHover() {
+    if (m_hotQueueTaskId == 0 && m_hotQueueAction == 0) {
+        return;
+    }
+
+    m_hotQueueTaskId = 0;
+    m_hotQueueAction = 0;
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    const RECT queueRect = QueuePanelRectForClient(client);
+    InvalidateRect(m_window, &queueRect, FALSE);
+}
+
+bool Application::ScrollQueue(int wheelDelta, POINT point) {
+    if (!m_downloadQueue) {
+        return false;
+    }
+
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    const RECT queueRect = QueuePanelRectForClient(client);
+    if (!PtInRect(&queueRect, point)) {
+        return false;
+    }
+
+    const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+    const int maxOffset = QueueMaxScrollOffset(queueRect, tasks.size());
+    if (maxOffset <= 0) {
+        return false;
+    }
+
+    const int previousOffset = m_queueScrollOffset;
+    const int direction = wheelDelta > 0 ? -1 : 1;
+    m_queueScrollOffset = std::clamp(m_queueScrollOffset + direction, 0, maxOffset);
+    if (m_queueScrollOffset != previousOffset) {
+        InvalidateRect(m_window, &queueRect, FALSE);
+    }
+    return true;
+}
+
 void Application::SetControlFonts() {
-    const std::array<HWND, 11> controls = {
+    const std::array<HWND, 12> controls = {
         m_urlEdit,
         m_pasteButton,
         m_previewTitle,
@@ -682,6 +1447,7 @@ void Application::SetControlFonts() {
         m_chooseFolderButton,
         m_downloadButton,
         m_clearButton,
+        m_clearFinishedButton,
         m_settingsButton,
         m_statusLabel,
         m_queueLabel,
@@ -704,6 +1470,62 @@ void Application::SetStatus(const std::wstring& text) {
     if (m_statusLabel) {
         SetWindowTextW(m_statusLabel, text.c_str());
     }
+}
+
+void Application::SetTransientStatus(const std::wstring& text) {
+    m_transientStatusActive = true;
+    SetStatus(text);
+    if (m_window) {
+        SetTimer(m_window, kStatusRestoreTimer, kStatusRestoreDelayMs, nullptr);
+    }
+}
+
+void Application::RestoreStatusText() {
+    if (m_downloadQueue) {
+        const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+        const size_t queuedCount = CountTasksInState(tasks, DownloadTaskState::Queued);
+        if (queuedCount > 0) {
+            SetStatus(L"В очереди осталось " + std::to_wstring(queuedCount) + L" задач");
+            return;
+        }
+    }
+    if (m_ytDlpReady) {
+        SetStatus(BuildToolReadyStatus(m_ytDlpStatus, m_ffmpeg));
+    } else {
+        SetStatus(L"Проверка yt-dlp...");
+    }
+}
+
+void Application::StartPreviewLoadingText() {
+    m_previewLoading = true;
+    m_previewLoadingDots = 3;
+    {
+        std::lock_guard lock(m_previewMutex);
+        m_preview = {};
+    }
+    UpdatePreviewLoadingText();
+    if (m_window) {
+        SetTimer(m_window, kPreviewLoadingTimer, kPreviewLoadingDelayMs, nullptr);
+    }
+    InvalidateRect(m_window, nullptr, FALSE);
+}
+
+void Application::StopPreviewLoadingText() {
+    if (m_window) {
+        KillTimer(m_window, kPreviewLoadingTimer);
+    }
+    m_previewLoading = false;
+}
+
+void Application::UpdatePreviewLoadingText() {
+    if (!m_previewLoading || !m_previewTitle) {
+        return;
+    }
+
+    std::wstring text = L"Идёт считывание информации, подождите";
+    text.append(static_cast<size_t>(m_previewLoadingDots), L'.');
+    SetWindowTextW(m_previewTitle, text.c_str());
+    m_previewLoadingDots = m_previewLoadingDots <= 1 ? 3 : m_previewLoadingDots - 1;
 }
 
 void Application::InitializeBackend() {
@@ -746,8 +1568,8 @@ void Application::InitializeBackend() {
                 callbacks.onOutputLine(line);
             }
             const YtDlpProgress progress = ParseYtDlpProgressLine(line);
-            if (progress.recognized && callbacks.onProgress) {
-                callbacks.onProgress(progress.percent, progress.stage);
+            if (progress.recognized && callbacks.onProgressDetails) {
+                callbacks.onProgressDetails(progress);
             }
         };
         options.onStderrLine = callbacks.onOutputLine;
@@ -824,15 +1646,27 @@ void Application::StartPreviewFetch() {
 
     const std::wstring url = GetWindowTextString(m_urlEdit);
     if (url.size() < 8) {
+        ++m_previewRequestId;
+        StopPreviewLoadingText();
+        {
+            std::lock_guard lock(m_previewMutex);
+            m_preview = {};
+        }
+        if (m_previewTitle) {
+            SetWindowTextW(m_previewTitle, L"Вставьте ссылку, чтобы получить название и превью");
+        }
+        InvalidateRect(m_window, nullptr, FALSE);
         return;
     }
 
     const unsigned long requestId = ++m_previewRequestId;
+    StartPreviewLoadingText();
     const YtDlpClientOptions options{m_ytDlpStatus.executable, m_paths->thumbCacheDir(), m_config.cookiesPath};
     HWND window = m_window;
     std::thread([requestId, url, options, window]() {
         auto* result = new PreviewFetchResult{};
         result->requestId = requestId;
+        result->url = url;
         try {
             YtDlpClient client(options);
             result->preview = client.FetchPreview(url);
@@ -888,12 +1722,19 @@ void Application::EnqueueCurrentUrl() {
     };
 
     if (preview.isPlaylist && !preview.entries.empty()) {
+        size_t remaining = preview.entries.size();
         for (const VideoPreview& entry : preview.entries) {
             const std::wstring itemUrl = entry.webpageUrl.empty() ? url : entry.webpageUrl;
-            m_downloadQueue->Enqueue(makeRequest(itemUrl), entry.title.empty() ? itemUrl : entry.title);
+            m_downloadQueue->Enqueue(makeRequest(itemUrl), entry.title.empty() ? itemUrl : entry.title, entry.cachedThumbnailPath);
+            --remaining;
+            if (remaining > 0) {
+                SetTransientStatus(L"Добавление элементов плейлиста: осталось " + std::to_wstring(remaining));
+            }
         }
+        KillTimer(m_window, kStatusRestoreTimer);
+        m_transientStatusActive = false;
     } else {
-        m_downloadQueue->Enqueue(makeRequest(url), preview.title.empty() ? url : preview.title);
+        m_downloadQueue->Enqueue(makeRequest(url), preview.title.empty() ? url : preview.title, preview.cachedThumbnailPath);
     }
     RefreshQueueText();
 }
@@ -902,25 +1743,36 @@ void Application::RefreshQueueText() {
     if (!m_downloadQueue || !m_queuePlaceholder) {
         return;
     }
+    const std::uint64_t revision = m_downloadQueue->Revision();
+    if (revision == m_lastRenderedQueueRevision) {
+        return;
+    }
+    m_lastRenderedQueueRevision = revision;
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    RECT queueRect = QueuePanelRectForClient(client);
+
     const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
+    const size_t queuedCount = CountTasksInState(tasks, DownloadTaskState::Queued);
     if (tasks.empty()) {
-        SetWindowTextW(m_queuePlaceholder, L"Задач пока нет");
+        if (!m_queuePlaceholderVisible) {
+            ShowWindow(m_queuePlaceholder, SW_SHOW);
+            m_queuePlaceholderVisible = true;
+        }
+        InvalidateRect(m_window, &queueRect, FALSE);
         return;
     }
 
-    std::wostringstream out;
-    for (const DownloadTaskSnapshot& task : tasks) {
-        out << L"#" << task.id << L"  " << TaskStateText(task.state) << L"  ";
-        if (task.percent > 0.0) {
-            out << static_cast<int>(task.percent) << L"%  ";
-        }
-        out << (task.title.empty() ? task.request.url : task.title);
-        if (!task.errorText.empty()) {
-            out << L" — " << task.errorText;
-        }
-        out << L"\r\n";
+    if (m_queuePlaceholderVisible) {
+        ShowWindow(m_queuePlaceholder, SW_HIDE);
+        m_queuePlaceholderVisible = false;
     }
-    SetWindowTextW(m_queuePlaceholder, out.str().c_str());
+    if (queuedCount > 0 && !m_transientStatusActive) {
+        SetStatus(L"В очереди осталось " + std::to_wstring(queuedCount) + L" задач");
+    } else if (queuedCount == 0 && !m_transientStatusActive) {
+        RestoreStatusText();
+    }
+    InvalidateRect(m_window, &queueRect, FALSE);
 }
 
 std::wstring Application::GetWindowTextString(HWND control) const {

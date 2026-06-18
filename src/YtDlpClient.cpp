@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <cwctype>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -85,14 +86,27 @@ std::map<std::wstring, std::wstring> ParseKeyValues(const std::wstring& payload)
     return values;
 }
 
-std::wstring StageFor(const std::wstring& status, const std::wstring& part) {
+std::wstring MediaKindFor(const std::wstring& part, const std::wstring& vcodec, const std::wstring& acodec) {
+    if (part == L"video" || part == L"audio") {
+        return part;
+    }
+    if (!vcodec.empty() && vcodec != L"none" && (acodec.empty() || acodec == L"none")) {
+        return L"video";
+    }
+    if (!acodec.empty() && acodec != L"none" && (vcodec.empty() || vcodec == L"none")) {
+        return L"audio";
+    }
+    return {};
+}
+
+std::wstring StageFor(const std::wstring& status, const std::wstring& mediaKind) {
     if (status == L"finished") {
         return L"Загрузка завершена (часть)";
     }
-    if (part == L"video") {
+    if (mediaKind == L"video") {
         return L"Скачивание видео:";
     }
-    if (part == L"audio") {
+    if (mediaKind == L"audio") {
         return L"Скачивание аудио:";
     }
     return L"Скачивание:";
@@ -125,6 +139,56 @@ std::uint64_t JsonUInt64(const nlohmann::json& json, const char* key) {
     return 0;
 }
 
+std::wstring ResolutionForHeight(const std::wstring& height) {
+    if (height.empty() || height == L"NA" || height == L"none") {
+        return {};
+    }
+    return height + L"p";
+}
+
+std::wstring LowerCopy(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+}
+
+bool LooksGdiFriendlyImageUrl(const std::wstring& url) {
+    const std::wstring lower = LowerCopy(url);
+    return lower.find(L".jpg") != std::wstring::npos ||
+           lower.find(L".jpeg") != std::wstring::npos ||
+           lower.find(L".png") != std::wstring::npos;
+}
+
+std::wstring ChooseThumbnailUrl(const nlohmann::json& object) {
+    const std::wstring direct = JsonWide(object, "thumbnail");
+    if (LooksGdiFriendlyImageUrl(direct)) {
+        return direct;
+    }
+
+    const auto thumbnails = object.find("thumbnails");
+    if (thumbnails != object.end() && thumbnails->is_array()) {
+        std::wstring fallback;
+        for (auto it = thumbnails->rbegin(); it != thumbnails->rend(); ++it) {
+            const std::wstring url = JsonWide(*it, "url");
+            if (url.empty()) {
+                continue;
+            }
+            if (fallback.empty()) {
+                fallback = url;
+            }
+            if (LooksGdiFriendlyImageUrl(url)) {
+                return url;
+            }
+        }
+        if (!fallback.empty()) {
+            return fallback;
+        }
+    }
+
+    return direct;
+}
+
 VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     VideoPreview preview;
     if (!object.is_object()) {
@@ -135,7 +199,7 @@ VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     preview.title = JsonWide(object, "title");
     preview.uploader = JsonWide(object, "uploader");
     preview.durationSeconds = JsonUInt64(object, "duration");
-    preview.thumbnailUrl = JsonWide(object, "thumbnail");
+    preview.thumbnailUrl = ChooseThumbnailUrl(object);
     preview.webpageUrl = JsonWide(object, "webpage_url");
     if (preview.webpageUrl.empty()) {
         preview.webpageUrl = JsonWide(object, "url");
@@ -210,7 +274,7 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     args.push_back((request.outputDirectory / kOutputTemplate).wstring());
 
     args.push_back(L"--progress-template");
-    args.push_back(L"__YTDLP_PROGRESS__ status=%(progress.status)s downloaded=%(progress.downloaded_bytes)s total=%(progress.total_bytes)s total_estimate=%(progress.total_bytes_estimate)s speed=%(progress.speed)s eta=%(progress.eta)s part=%(info.format_note)s");
+    args.push_back(L"__YTDLP_PROGRESS__ status=%(progress.status)s downloaded=%(progress.downloaded_bytes)s total=%(progress.total_bytes)s total_estimate=%(progress.total_bytes_estimate)s speed=%(progress.speed)s eta=%(progress.eta)s part=%(info.format_note)s vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s format=%(info.format_id)s height=%(info.height)s");
 
     if (!request.cookiesPath.empty() && std::filesystem::is_regular_file(request.cookiesPath)) {
         args.push_back(L"--cookies");
@@ -261,8 +325,15 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     if (progress.totalBytes > 0 && progress.downloadedBytes <= progress.totalBytes) {
         progress.percent = (static_cast<double>(progress.downloadedBytes) / static_cast<double>(progress.totalBytes)) * 100.0;
     }
+    if (progress.rawStatus == L"finished") {
+        progress.percent = 100.0;
+    }
 
-    progress.stage = StageFor(progress.rawStatus, get(L"part"));
+    progress.mediaKind = MediaKindFor(get(L"part"), get(L"vcodec"), get(L"acodec"));
+    progress.extension = get(L"ext");
+    progress.formatId = get(L"format");
+    progress.resolution = ResolutionForHeight(get(L"height"));
+    progress.stage = StageFor(progress.rawStatus, progress.mediaKind);
     return progress;
 }
 

@@ -197,7 +197,7 @@ void TestYtDlpDownloadArguments() {
 
 void TestYtDlpProgressParsing() {
     const std::wstring line =
-        L"__YTDLP_PROGRESS__ status=downloading downloaded=512 total=1024 total_estimate=1024 speed=2048 eta=5 part=video";
+        L"__YTDLP_PROGRESS__ status=downloading downloaded=512 total=1024 total_estimate=1024 speed=2048 eta=5 part=video vcodec=av01 acodec=none ext=mp4 format=399 height=1080";
     const YtDlpProgress progress = ParseYtDlpProgressLine(line);
 
     Require(progress.recognized, "progress line was not recognized");
@@ -207,9 +207,29 @@ void TestYtDlpProgressParsing() {
     Require(progress.speedBytesPerSecond == 2048, "progress speed mismatch");
     Require(progress.etaSeconds == 5, "progress eta mismatch");
     Require(progress.totalBytes == 1024, "progress total mismatch");
+    Require(progress.mediaKind == L"video", "progress media kind mismatch");
+    Require(progress.extension == L"mp4", "progress extension mismatch");
+    Require(progress.formatId == L"399", "progress format id mismatch");
+    Require(progress.resolution == L"1080p", "progress resolution mismatch");
 
     const YtDlpProgress ignored = ParseYtDlpProgressLine(L"[download] 50.0% of 1.00MiB");
     Require(!ignored.recognized, "plain yt-dlp line should not be recognized as machine progress");
+
+    const std::wstring audioLine =
+        L"__YTDLP_PROGRESS__ status=downloading downloaded=256 total=1024 total_estimate=1024 speed=1024 eta=7 part=medium vcodec=none acodec=mp4a.40.2 ext=m4a format=140";
+    const YtDlpProgress audio = ParseYtDlpProgressLine(audioLine);
+    Require(audio.recognized, "audio progress line was not recognized");
+    Require(audio.mediaKind == L"audio", "audio media kind mismatch");
+    Require(audio.stage == L"Скачивание аудио:", "audio progress stage mismatch");
+    Require(audio.extension == L"m4a", "audio extension mismatch");
+    Require(audio.formatId == L"140", "audio format id mismatch");
+
+    const std::wstring finishedLine =
+        L"__YTDLP_PROGRESS__ status=finished downloaded=900 total=1000 total_estimate=1000 speed=0 eta=0 part=video vcodec=av01 acodec=none ext=mp4 format=399 height=720";
+    const YtDlpProgress finished = ParseYtDlpProgressLine(finishedLine);
+    Require(finished.recognized, "finished progress line was not recognized");
+    Require(finished.percent == 100.0, "finished video progress should be 100 percent");
+    Require(finished.resolution == L"720p", "finished video resolution mismatch");
 }
 
 void TestGitHubReleaseParsing() {
@@ -349,6 +369,24 @@ void TestYtDlpMetadataParsing() {
     Require(video.thumbnailUrl == L"https://example.invalid/thumb.jpg", "video thumbnail mismatch");
     Require(!video.isPlaylist, "single video should not be playlist");
 
+    const std::string thumbnailFallbackJson = R"json(
+{
+  "id": "thumb1",
+  "title": "Thumbnail Fallback",
+  "thumbnail": "https://example.invalid/thumb.webp",
+  "thumbnails": [
+    {"url": "https://example.invalid/thumb-small.webp"},
+    {"url": "https://example.invalid/thumb-large.jpg"}
+  ]
+}
+)json";
+
+    const VideoPreview thumbnailFallback = ParseVideoPreviewJson(thumbnailFallbackJson);
+    Require(
+        thumbnailFallback.thumbnailUrl == L"https://example.invalid/thumb-large.jpg",
+        "metadata parser should prefer GDI-friendly thumbnails"
+    );
+
     const std::string playlistJson = R"json(
 {
   "id": "playlist1",
@@ -392,16 +430,21 @@ void TestDownloadQueueSchedulingAndRetry() {
     YtDlpDownloadRequest request;
     request.url = L"https://example.invalid/video";
     request.outputDirectory = fs::temp_directory_path();
+    YtDlpDownloadRequest secondRequest = request;
+    secondRequest.url = L"https://example.invalid/video-2";
+    YtDlpDownloadRequest thirdRequest = request;
+    thirdRequest.url = L"https://example.invalid/video-3";
 
     const int first = queue.Enqueue(request, L"First");
-    const int second = queue.Enqueue(request, L"Second");
-    const int third = queue.Enqueue(request, L"Third");
+    const int second = queue.Enqueue(secondRequest, L"Second");
+    const int third = queue.Enqueue(thirdRequest, L"Third");
 
     queue.WaitForIdle();
     Require(maxRunning.load() <= 2, "queue exceeded max parallel downloads");
     Require(queue.GetTask(first).state == DownloadTaskState::Completed, "first task should complete");
     Require(queue.GetTask(second).state == DownloadTaskState::Completed, "second task should complete");
     Require(queue.GetTask(third).state == DownloadTaskState::Completed, "third task should complete");
+    Require(queue.ClearFinished() == 3, "clear finished should remove completed tasks");
 
     queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
         UNREFERENCED_PARAMETER(task);
@@ -425,6 +468,513 @@ void TestDownloadQueueSchedulingAndRetry() {
     Require(attempts.load() >= 5, "executor attempt count mismatch");
 }
 
+void TestDownloadQueueRejectsDuplicateVisibleUrl() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(callbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/duplicate";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int first = queue.Enqueue(request, L"First");
+    const int duplicate = queue.Enqueue(request, L"Duplicate");
+
+    Require(duplicate == first, "duplicate visible URL should return the existing task id");
+    Require(queue.Snapshot().size() == 1, "duplicate visible URL should not create another task row");
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueEnrichesDuplicateVisibleUrl() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(callbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/enrich";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int first = queue.Enqueue(request, request.url);
+    const fs::path thumbnail = fs::temp_directory_path() / L"thumb.jpg";
+    const int duplicate = queue.Enqueue(request, L"Resolved Title", thumbnail);
+
+    const DownloadTaskSnapshot task = queue.GetTask(first);
+    Require(duplicate == first, "duplicate visible URL should return the existing enriched task id");
+    Require(task.title == L"Resolved Title", "duplicate enqueue should enrich placeholder title");
+    Require(task.thumbnailPath == thumbnail, "duplicate enqueue should enrich missing thumbnail");
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueEnrichesExistingTaskAfterPreviewCompletes() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(callbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/late-preview";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, request.url);
+    const fs::path thumbnail = fs::temp_directory_path() / L"late-thumb.jpg";
+    Require(queue.EnrichMetadata(request.url, L"Late Preview Title", thumbnail), "preview completion should enrich existing task");
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.title == L"Late Preview Title", "late preview should update placeholder title");
+    Require(task.thumbnailPath == thumbnail, "late preview should update missing thumbnail");
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueCancelAndDeleteTask() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        for (int i = 0; i < 20; ++i) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/cancel";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Cancelable");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Require(queue.Cancel(id), "running task should accept cancel");
+    queue.WaitForIdle();
+    Require(queue.GetTask(id).state == DownloadTaskState::Canceled, "task should become canceled");
+    Require(queue.DeleteFiles(id), "delete should remove canceled task from queue");
+    Require(queue.Snapshot().empty(), "deleted canceled task should disappear from queue");
+}
+
+void TestDownloadQueueCloseCompletedTaskKeepsOutputFile() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_DeleteOutput");
+    const fs::path output = root / L"video.mp4";
+    {
+        std::ofstream out(output);
+        out << "fake video";
+    }
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + output.wstring());
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/delete-output";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Delete Output");
+    queue.WaitForIdle();
+    Require(fs::is_regular_file(output), "fixture output file should exist before delete");
+    Require(queue.DeleteFiles(id), "close should remove completed task");
+    Require(fs::exists(output), "close should keep completed output file");
+    Require(queue.Snapshot().empty(), "closed completed task should disappear from queue");
+}
+
+void TestDownloadQueueDeleteCanceledTaskRemovesPartialFile() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_DeletePartial");
+    const fs::path output = root / L"video.mp4";
+    const fs::path partial = fs::path(output.wstring() + L".part");
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + output.wstring());
+        {
+            std::ofstream out(partial);
+            out << "partial video";
+        }
+        for (int i = 0; i < 50; ++i) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/delete-partial";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Delete Partial");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Require(queue.Cancel(id), "running task should accept cancel before partial delete");
+    queue.WaitForIdle();
+    Require(fs::is_regular_file(partial), "partial output file should exist before delete");
+    Require(queue.DeleteFiles(id), "delete should remove canceled task");
+    Require(!fs::exists(partial), "delete should remove partial output file");
+    Require(queue.Snapshot().empty(), "deleted canceled task should disappear from queue");
+}
+
+void TestDownloadQueueDeleteCanceledTaskHandlesIndentedDestinationAndFragments() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_DeleteIndentedPartial");
+    const fs::path output = root / L"video.f399.mp4";
+    const fs::path partial = fs::path(output.wstring() + L".part");
+    const fs::path fragment = fs::path(output.wstring() + L".part-Frag42.part");
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"\r  [download] Destination: " + output.wstring());
+        {
+            std::ofstream out(partial);
+            out << "partial video";
+        }
+        {
+            std::ofstream out(fragment);
+            out << "partial fragment";
+        }
+        for (int i = 0; i < 50; ++i) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/delete-indented-partial";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Delete Indented Partial");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Require(queue.Cancel(id), "running indented partial task should accept cancel");
+    queue.WaitForIdle();
+    Require(fs::is_regular_file(partial), "indented partial output file should exist before delete");
+    Require(fs::is_regular_file(fragment), "fragment output file should exist before delete");
+    Require(queue.DeleteFiles(id), "delete should remove canceled task with indented destination");
+    Require(!fs::exists(partial), "delete should remove indented partial output file");
+    Require(!fs::exists(fragment), "delete should remove fragment partial output file");
+}
+
+void TestDownloadQueueDeleteCanceledTaskFindsPartFileByVideoIdWhenDestinationWasNotCaptured() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_DeleteByVideoId");
+    const fs::path orphanPart = root / L"Example Title [SegQA7FyGt0].f137.mp4.part";
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        {
+            std::ofstream out(orphanPart);
+            out << "partial video";
+        }
+        for (int i = 0; i < 50; ++i) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://www.youtube.com/watch?v=SegQA7FyGt0&list=playlist";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Example Title");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Require(queue.Cancel(id), "running by-id partial task should accept cancel");
+    queue.WaitForIdle();
+    Require(fs::is_regular_file(orphanPart), "orphan partial output file should exist before delete");
+    Require(queue.DeleteFiles(id), "delete should remove canceled task with uncaptured destination");
+    Require(!fs::exists(orphanPart), "delete should remove uncaptured partial output file by video id");
+}
+
+void TestDownloadQueueClearQueuedOnlyRemovesWaitingTasks() {
+    std::atomic<bool> release = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        while (!release.load()) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest firstRequest;
+    firstRequest.url = L"https://example.invalid/active";
+    firstRequest.outputDirectory = fs::temp_directory_path();
+    YtDlpDownloadRequest secondRequest = firstRequest;
+    secondRequest.url = L"https://example.invalid/queued-1";
+    YtDlpDownloadRequest thirdRequest = firstRequest;
+    thirdRequest.url = L"https://example.invalid/queued-2";
+
+    const int active = queue.Enqueue(firstRequest, L"Active");
+    const int queuedOne = queue.Enqueue(secondRequest, L"Queued 1");
+    const int queuedTwo = queue.Enqueue(thirdRequest, L"Queued 2");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+    Require(queue.ClearQueued() == 2, "clear queued should remove waiting tasks");
+    Require(queue.GetTask(active).state != DownloadTaskState::Queued, "active task should not be cleared");
+    Require(queue.GetTask(queuedOne).id == 0, "first queued task should be removed");
+    Require(queue.GetTask(queuedTwo).id == 0, "second queued task should be removed");
+
+    release = true;
+    queue.WaitForIdle();
+    Require(queue.GetTask(active).state == DownloadTaskState::Completed, "active task should continue after clearing queue");
+}
+
+void TestDownloadQueueClearFinishedKeepsQueuedTasks() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(callbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(80));
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/finished";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int completed = queue.Enqueue(request, L"Completed");
+    queue.WaitForIdle();
+
+    YtDlpDownloadRequest queuedRequest = request;
+    queuedRequest.url = L"https://example.invalid/still-queued";
+    const int queued = queue.Enqueue(queuedRequest, L"Still queued");
+
+    Require(queue.ClearFinished() == 1, "clear finished should remove only completed tasks");
+    Require(queue.GetTask(completed).id == 0, "completed task should be removed by clear finished");
+    Require(queue.GetTask(queued).id == queued, "queued task should not be removed by clear finished");
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_MonotonicBytes");
+    const fs::path output = root / L"video.mp4";
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + output.wstring());
+
+        {
+            std::ofstream out(output, std::ios::binary);
+            out << std::string(800, 'a');
+        }
+        YtDlpProgress first;
+        first.recognized = true;
+        first.stage = L"Скачивание видео:";
+        first.percent = 50.0;
+        first.downloadedBytes = 800;
+        first.totalBytes = 1600;
+        callbacks.onProgressDetails(first);
+
+        {
+            std::ofstream out(output, std::ios::binary | std::ios::trunc);
+            out << std::string(70, 'b');
+        }
+        YtDlpProgress second;
+        second.recognized = true;
+        second.stage = L"Скачивание аудио:";
+        second.percent = 10.0;
+        second.downloadedBytes = 70;
+        second.totalBytes = 700;
+        callbacks.onProgressDetails(second);
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/monotonic";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Monotonic");
+    queue.WaitForIdle();
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.downloadedBytes == 800, "displayed downloaded bytes should not move backward");
+    Require(task.totalBytes == 1600, "displayed total bytes should not move backward");
+}
+
+void TestDownloadQueueProgressPercentDoesNotMoveBackwardWithinTrack() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        YtDlpProgress first;
+        first.recognized = true;
+        first.stage = L"Скачивание видео:";
+        first.mediaKind = L"video";
+        first.percent = 50.0;
+        first.downloadedBytes = 500;
+        first.totalBytes = 1000;
+        callbacks.onProgressDetails(first);
+
+        YtDlpProgress second = first;
+        second.percent = 30.0;
+        second.downloadedBytes = 300;
+        callbacks.onProgressDetails(second);
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/percent-monotonic";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Percent Monotonic");
+    queue.WaitForIdle();
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.percent == 100.0, "completed task should end at 100 percent");
+    Require(task.downloadedBytes == 500, "downloaded bytes should stay monotonic within the same track");
+}
+
+void TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        YtDlpProgress video;
+        video.recognized = true;
+        video.stage = L"Скачивание видео:";
+        video.mediaKind = L"video";
+        video.percent = 100.0;
+        video.downloadedBytes = 1000;
+        video.totalBytes = 1000;
+        callbacks.onProgressDetails(video);
+
+        YtDlpProgress audio;
+        audio.recognized = true;
+        audio.stage = L"Скачивание аудио:";
+        audio.mediaKind = L"audio";
+        audio.percent = 25.0;
+        audio.downloadedBytes = 250;
+        audio.totalBytes = 1000;
+        callbacks.onProgressDetails(audio);
+
+        YtDlpProgress staleVideo = video;
+        staleVideo.percent = 90.0;
+        staleVideo.downloadedBytes = 900;
+        callbacks.onProgressDetails(staleVideo);
+        return DownloadTaskResult{false, L"planned stop", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/stale-video";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Stale Video");
+    queue.WaitForIdle();
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.state == DownloadTaskState::Failed, "fixture task should fail after progress assertions");
+    Require(task.mediaKind == L"audio", "stale video progress should not replace active audio track");
+    Require(task.statusText == L"Ошибка", "failed task should keep final failed status");
+}
+
+void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        YtDlpProgress video;
+        video.recognized = true;
+        video.stage = L"Загрузка завершена (часть)";
+        video.mediaKind = L"video";
+        video.percent = 100.0;
+        video.downloadedBytes = 1000;
+        video.totalBytes = 1000;
+        callbacks.onProgressDetails(video);
+
+        YtDlpProgress audio;
+        audio.recognized = true;
+        audio.stage = L"Скачивание аудио:";
+        audio.mediaKind = L"audio";
+        audio.percent = 25.0;
+        audio.downloadedBytes = 250;
+        audio.totalBytes = 1000;
+        callbacks.onProgressDetails(audio);
+
+        YtDlpProgress staleFinished;
+        staleFinished.recognized = true;
+        staleFinished.rawStatus = L"finished";
+        staleFinished.stage = L"Загрузка завершена (часть)";
+        staleFinished.percent = 100.0;
+        staleFinished.downloadedBytes = 1000;
+        staleFinished.totalBytes = 1000;
+        callbacks.onProgressDetails(staleFinished);
+        return DownloadTaskResult{false, L"planned stop", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/stale-finished";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Stale Finished");
+    queue.WaitForIdle();
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.state == DownloadTaskState::Failed, "fixture task should fail after stale finished progress");
+    Require(task.mediaKind == L"audio", "unclassified finished progress should not replace active audio track");
+    Require(task.percent == 25.0, "unclassified finished progress should not restore video percent during audio");
+}
+
+void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ClearFinishedInvalid");
+    const fs::path completedOutput = root / L"completed.mp4";
+    const fs::path canceledPart = root / L"Canceled Title [clearInvalid1].f137.mp4.part";
+    {
+        std::ofstream out(completedOutput);
+        out << "complete video";
+    }
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        if (task.request.url.find(L"clearInvalid1") != std::wstring::npos) {
+            {
+                std::ofstream out(canceledPart);
+                out << "partial video";
+            }
+            for (int i = 0; i < 50; ++i) {
+                if (callbacks.isCanceled && callbacks.isCanceled()) {
+                    return DownloadTaskResult{false, L"canceled", {}};
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return DownloadTaskResult{true, L"", {}};
+        }
+        callbacks.onOutputLine(L"[download] Destination: " + completedOutput.wstring());
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest completedRequest;
+    completedRequest.url = L"https://example.invalid/completed";
+    completedRequest.outputDirectory = root;
+    const int completed = queue.Enqueue(completedRequest, L"Completed");
+    queue.WaitForIdle();
+    Require(queue.GetTask(completed).state == DownloadTaskState::Completed, "completed fixture task should complete");
+
+    YtDlpDownloadRequest canceledRequest = completedRequest;
+    canceledRequest.url = L"https://www.youtube.com/watch?v=clearInvalid1";
+    const int canceled = queue.Enqueue(canceledRequest, L"Canceled Title");
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    Require(queue.Cancel(canceled), "clear-finished canceled task should accept cancel");
+    queue.WaitForIdle();
+    Require(fs::is_regular_file(completedOutput), "completed output should exist before clear finished");
+    Require(fs::is_regular_file(canceledPart), "canceled partial should exist before clear finished");
+
+    Require(queue.ClearFinished() == 2, "clear finished should remove completed and invalid tasks");
+    Require(fs::is_regular_file(completedOutput), "clear finished should keep completed output");
+    Require(!fs::exists(canceledPart), "clear finished should delete canceled partial output");
+    Require(queue.Snapshot().empty(), "clear finished should remove task rows");
+}
+
 } // namespace
 
 int main() {
@@ -441,5 +991,20 @@ int main() {
     TestProcessRunnerCapturesOutputAndExitCode();
     TestYtDlpMetadataParsing();
     TestDownloadQueueSchedulingAndRetry();
+    TestDownloadQueueRejectsDuplicateVisibleUrl();
+    TestDownloadQueueEnrichesDuplicateVisibleUrl();
+    TestDownloadQueueEnrichesExistingTaskAfterPreviewCompletes();
+    TestDownloadQueueCancelAndDeleteTask();
+    TestDownloadQueueCloseCompletedTaskKeepsOutputFile();
+    TestDownloadQueueDeleteCanceledTaskRemovesPartialFile();
+    TestDownloadQueueDeleteCanceledTaskHandlesIndentedDestinationAndFragments();
+    TestDownloadQueueDeleteCanceledTaskFindsPartFileByVideoIdWhenDestinationWasNotCaptured();
+    TestDownloadQueueClearQueuedOnlyRemovesWaitingTasks();
+    TestDownloadQueueClearFinishedKeepsQueuedTasks();
+    TestDownloadQueueDownloadedBytesDoNotMoveBackward();
+    TestDownloadQueueProgressPercentDoesNotMoveBackwardWithinTrack();
+    TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts();
+    TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts();
+    TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly();
     return 0;
 }
