@@ -19,6 +19,7 @@ set(CORE_SOURCES
     src/BackendText.cpp
     src/Config.cpp
     src/DownloadQueue.cpp
+    src/KeyboardShortcuts.cpp
     src/Logger.cpp
     src/ProcessRunner.cpp
     src/ToolManagers.cpp
@@ -32,6 +33,7 @@ set(CORE_HEADERS
     src/BackendText.h
     src/Config.h
     src/DownloadQueue.h
+    src/KeyboardShortcuts.h
     src/Logger.h
     src/ProcessRunner.h
     src/ToolManagers.h

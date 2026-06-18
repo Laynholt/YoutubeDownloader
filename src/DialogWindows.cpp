@@ -211,6 +211,10 @@ std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     return result;
 }
 
+UINT TooltipInfoSize();
+bool IsTooltipRelayMessage(UINT message);
+void RelayDialogTooltipMessage(const DialogState* state, const MSG& message);
+
 HWND CreateTooltip(HWND parent, HWND tool, const wchar_t* text) {
     HWND tooltip = CreateWindowExW(
         WS_EX_TOPMOST,
@@ -239,13 +243,57 @@ HWND CreateTooltip(HWND parent, HWND tool, const wchar_t* text) {
     SendMessageW(tooltip, TTM_ACTIVATE, TRUE, 0);
     SetWindowPos(tooltip, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     TOOLINFOW info = {};
-    info.cbSize = sizeof(info);
-    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS | TTF_TRANSPARENT;
+    info.cbSize = TooltipInfoSize();
+    info.uFlags = TTF_IDISHWND | TTF_TRANSPARENT;
     info.hwnd = parent;
     info.uId = reinterpret_cast<UINT_PTR>(tool);
     info.lpszText = const_cast<LPWSTR>(text);
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
     return tooltip;
+}
+
+UINT TooltipInfoSize() {
+#ifdef TTTOOLINFOW_V2_SIZE
+    return TTTOOLINFOW_V2_SIZE;
+#else
+    return sizeof(TOOLINFOW);
+#endif
+}
+
+bool IsTooltipRelayMessage(UINT message) {
+    switch (message) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void RelayDialogTooltipMessage(const DialogState* state, const MSG& message) {
+    if (!state || !IsTooltipRelayMessage(message.message)) {
+        return;
+    }
+
+    MSG relayMessage = message;
+    if (state->tooltip) {
+        SendMessageW(state->tooltip, TTM_RELAYEVENT, 0, reinterpret_cast<LPARAM>(&relayMessage));
+    }
+    for (HWND tooltip : state->tooltips) {
+        if (tooltip) {
+            relayMessage = message;
+            SendMessageW(tooltip, TTM_RELAYEVENT, 0, reinterpret_cast<LPARAM>(&relayMessage));
+        }
+    }
 }
 
 void AddDialogTooltip(DialogState* state, HWND tool, const wchar_t* text) {
@@ -421,6 +469,8 @@ void RunModal(HWND owner, HWND window) {
 
     MSG message = {};
     while (IsWindow(window) && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        DialogState* state = reinterpret_cast<DialogState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+        RelayDialogTooltipMessage(state, message);
         if (!IsDialogMessageW(window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);

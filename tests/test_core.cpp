@@ -2,6 +2,7 @@
 #include "BackendText.h"
 #include "Config.h"
 #include "DownloadQueue.h"
+#include "KeyboardShortcuts.h"
 #include "ProcessRunner.h"
 #include "ToolManagers.h"
 #include "Version.h"
@@ -94,6 +95,25 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
     Require(loaded.ffmpegPromptDismissed == true, "ffmpeg prompt round-trip mismatch");
+}
+
+void TestMainWindowShortcutResolution() {
+    Require(
+        ResolveMainWindowShortcut(true, 'V') == MainWindowShortcutAction::PasteUrl,
+        "Ctrl+V should paste into the URL field"
+    );
+    Require(
+        ResolveMainWindowShortcut(true, 'v') == MainWindowShortcutAction::PasteUrl,
+        "Ctrl+v should paste into the URL field"
+    );
+    Require(
+        ResolveMainWindowShortcut(false, '\r') == MainWindowShortcutAction::Download,
+        "Enter should start download"
+    );
+    Require(
+        ResolveMainWindowShortcut(false, 'V') == MainWindowShortcutAction::None,
+        "V without Ctrl should not trigger paste"
+    );
 }
 
 void TestConfigParallelDownloadBounds() {
@@ -980,6 +1000,7 @@ void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
 int main() {
     TestAppPaths();
     TestConfigDefaultsAndRoundTrip();
+    TestMainWindowShortcutResolution();
     TestConfigParallelDownloadBounds();
     TestConfigUtf8RoundTrip();
     TestVersionCompare();

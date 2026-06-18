@@ -33,6 +33,8 @@ private:
     static LRESULT CALLBACK ButtonWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
 
+    bool HandleMainWindowShortcut(const MSG& message);
+    void RelayTooltipMessage(const MSG& message);
     bool RegisterButtonClass();
     void CreateControls();
     HWND CreateButton(const wchar_t* text, int id, bool primary, bool onPanel);

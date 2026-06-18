@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "DialogWindows.h"
+#include "KeyboardShortcuts.h"
 #include "resource.h"
 #include "UiRenderer.h"
 
@@ -306,6 +307,33 @@ RECT QueueScrollbarThumbRect(const RECT& queueRect, size_t taskCount, int scroll
     return {track.left, thumbTop, track.right, thumbTop + thumbHeight};
 }
 
+UINT TooltipInfoSize() {
+#ifdef TTTOOLINFOW_V2_SIZE
+    return TTTOOLINFOW_V2_SIZE;
+#else
+    return sizeof(TOOLINFOW);
+#endif
+}
+
+bool IsTooltipRelayMessage(UINT message) {
+    switch (message) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 void DrawSmallActionButton(HDC dc, const RECT& rect, const std::wstring& text, bool primary, bool hot) {
     Gdiplus::Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
@@ -426,8 +454,8 @@ void AddTooltip(HWND tooltip, HWND parent, HWND tool, const wchar_t* text) {
         return;
     }
     TOOLINFOW info = {};
-    info.cbSize = sizeof(info);
-    info.uFlags = TTF_IDISHWND | TTF_SUBCLASS | TTF_TRANSPARENT;
+    info.cbSize = TooltipInfoSize();
+    info.uFlags = TTF_IDISHWND | TTF_TRANSPARENT;
     info.hwnd = parent;
     info.uId = reinterpret_cast<UINT_PTR>(tool);
     info.lpszText = const_cast<LPWSTR>(text);
@@ -515,10 +543,48 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
 int Application::Run() {
     MSG message = {};
     while (GetMessageW(&message, nullptr, 0, 0)) {
+        RelayTooltipMessage(message);
+        if (HandleMainWindowShortcut(message)) {
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
     return static_cast<int>(message.wParam);
+}
+
+bool Application::HandleMainWindowShortcut(const MSG& message) {
+    if (message.message != WM_KEYDOWN) {
+        return false;
+    }
+
+    const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const MainWindowShortcutAction action = ResolveMainWindowShortcut(controlDown, static_cast<unsigned int>(message.wParam));
+    switch (action) {
+    case MainWindowShortcutAction::PasteUrl:
+        if (m_urlEdit) {
+            SetFocus(m_urlEdit);
+            SendMessageW(m_urlEdit, WM_PASTE, 0, 0);
+            return true;
+        }
+        return false;
+    case MainWindowShortcutAction::Download:
+        if (m_downloadButton && IsWindowEnabled(m_downloadButton)) {
+            EnqueueCurrentUrl();
+            return true;
+        }
+        return false;
+    case MainWindowShortcutAction::None:
+        return false;
+    }
+    return false;
+}
+
+void Application::RelayTooltipMessage(const MSG& message) {
+    if (m_tooltip && IsTooltipRelayMessage(message.message)) {
+        MSG relayMessage = message;
+        SendMessageW(m_tooltip, TTM_RELAYEVENT, 0, reinterpret_cast<LPARAM>(&relayMessage));
+    }
 }
 
 void Application::Shutdown() {
