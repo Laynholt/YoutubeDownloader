@@ -2,6 +2,8 @@
 
 #include <gdiplus.h>
 
+#include <algorithm>
+
 using Gdiplus::Color;
 using Gdiplus::Font;
 using Gdiplus::FontFamily;
@@ -85,6 +87,29 @@ void UiRenderer::DrawInputFrame(HDC dc, const RECT& rect) {
     Pen border(kBorder, 1.0f);
     graphics.FillPath(&fill, &path);
     graphics.DrawPath(&border, &path);
+}
+
+void UiRenderer::DrawProgressBar(HDC dc, const RECT& rect, double percent) {
+    Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+
+    GraphicsPath trackPath;
+    AddRoundedRect(trackPath, rect, 4);
+    SolidBrush trackBrush(Color(255, 26, 26, 29));
+    graphics.FillPath(&trackBrush, &trackPath);
+
+    percent = std::clamp(percent, 0.0, 100.0);
+    if (percent <= 0.0) {
+        return;
+    }
+
+    RECT fillRect = rect;
+    const int width = std::max(1, static_cast<int>(rect.right - rect.left));
+    fillRect.right = fillRect.left + static_cast<LONG>((width * percent) / 100.0);
+    GraphicsPath fillPath;
+    AddRoundedRect(fillPath, fillRect, 4);
+    SolidBrush fillBrush(kAccent);
+    graphics.FillPath(&fillBrush, &fillPath);
 }
 
 void UiRenderer::DrawButton(HDC dc, const RECT& rect, const wchar_t* text, bool primary, bool pressed, bool hot, bool onPanel) {

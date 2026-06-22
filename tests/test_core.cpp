@@ -159,6 +159,23 @@ void TestConfigUtf8RoundTrip() {
     Require(loaded.lastYtDlpVersion == L"2026.06.17", "utf8 version round-trip mismatch");
 }
 
+void TestProgressPresentation() {
+    Require(FormatBytes(0).empty(), "zero bytes should format as empty text");
+    Require(FormatBytes(512) == L"512 B", "byte formatting mismatch");
+    Require(FormatBytes(1536) == L"1.5 KB", "kilobyte formatting mismatch");
+    Require(FormatBytes(10 * 1024) == L"10 KB", "whole kilobyte formatting mismatch");
+    Require(FormatBytes(1024 * 1024) == L"1.0 MB", "megabyte formatting mismatch");
+
+    Require(FormatProgressBytes(1024, 2048) == L"1.0 KB / 2.0 KB", "known-total progress text mismatch");
+    Require(FormatProgressBytes(0, 2048) == L"0 B / 2.0 KB", "zero-downloaded progress text mismatch");
+    Require(FormatProgressBytes(1024, 0) == L"1.0 KB", "downloaded-only progress text mismatch");
+    Require(FormatProgressBytes(0, 0).empty(), "unknown progress sizes should be hidden");
+
+    Require(CalculateProgressPercent(0, 0) == 0, "unknown-total percent should be zero");
+    Require(CalculateProgressPercent(50, 100) == 50, "half progress percent mismatch");
+    Require(CalculateProgressPercent(200, 100) == 100, "progress percent should clamp to 100");
+}
+
 void TestVersionCompare() {
     Require(CompareVersions(L"2026.06.09", L"2026.06.10") < 0, "date version compare mismatch");
     Require(CompareVersions(L"1.2.0", L"1.2") == 0, "missing patch compare mismatch");
@@ -1043,6 +1060,7 @@ int main() {
     TestMainWindowShortcutResolution();
     TestConfigParallelDownloadBounds();
     TestConfigUtf8RoundTrip();
+    TestProgressPresentation();
     TestVersionCompare();
     TestYtDlpDownloadArguments();
     TestYtDlpProgressParsing();

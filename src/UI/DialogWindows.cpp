@@ -1,6 +1,7 @@
 #include "DialogWindows.h"
 
 #include "AppVersion.h"
+#include "BackendText.h"
 #include "ToolManagers.h"
 #include "UiRenderer.h"
 
@@ -104,7 +105,8 @@ struct DialogState {
     AppConfig* config = nullptr;
     AppConfig workingConfig;
     bool* savedResult = nullptr;
-    HWND progressBar = nullptr;
+    std::uint64_t progressDownloaded = 0;
+    std::uint64_t progressTotal = 0;
     HWND tooltip = nullptr;
     std::vector<HWND> tooltips;
     HANDLE cancelEvent = nullptr;
@@ -572,9 +574,6 @@ void LayoutFfmpegDialog(DialogState* state, int width, int height) {
 void LayoutProgressDialog(DialogState* state, int width, int height) {
     const int panelRight = width - kDialogPanelInset;
     const int panelBottom = height - kDialogPanelInset;
-    if (state->progressBar) {
-        MoveWindow(state->progressBar, 24, 118, width - 48, 24, TRUE);
-    }
 
     HWND cancel = GetDlgItem(state->window, IdCancel);
     if (cancel) {
@@ -725,15 +724,46 @@ void DrawProgressDialog(DialogState* state, HDC dc, const RECT& client) {
 
     HFONT titleFont = CreateUiFont(-18, FW_SEMIBOLD);
     HFONT textFont = CreateUiFont(-15, FW_NORMAL);
+    HFONT smallFont = CreateUiFont(-13, FW_NORMAL);
 
     RECT titleRect = {24, 28, client.right - 24, 58};
     DrawTextBlock(dc, state->title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    RECT statusRect = {24, 76, client.right - 24, 108};
-    DrawTextBlock(dc, state->message, statusRect, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    RECT statusRect = {24, 72, client.right - 24, 102};
+    DrawTextBlock(
+        dc,
+        state->message,
+        statusRect,
+        kTextColor,
+        textFont,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+    );
+
+    const std::wstring sizes = FormatProgressBytes(state->progressDownloaded, state->progressTotal);
+    if (!sizes.empty()) {
+        RECT sizesRect = {24, 104, client.right - 24, 126};
+        DrawTextBlock(dc, sizes, sizesRect, kMutedTextColor, smallFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    const int percent = state->progressSuccess
+        ? 100
+        : CalculateProgressPercent(state->progressDownloaded, state->progressTotal);
+    RECT progressRect = {24, 136, client.right - 84, 144};
+    UiRenderer::DrawProgressBar(dc, progressRect, percent);
+
+    RECT percentRect = {client.right - 74, 130, client.right - 24, 150};
+    DrawTextBlock(
+        dc,
+        std::to_wstring(percent) + L"%",
+        percentRect,
+        kMutedTextColor,
+        smallFont,
+        DT_RIGHT | DT_VCENTER | DT_SINGLELINE
+    );
 
     DeleteObject(titleFont);
     DeleteObject(textFont);
+    DeleteObject(smallFont);
 }
 
 void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
@@ -888,24 +918,6 @@ void StartAppUpdateWorker(DialogState* state) {
 }
 
 void CreateProgressControls(DialogState* state) {
-    state->progressBar = CreateWindowExW(
-        0,
-        PROGRESS_CLASSW,
-        L"",
-        WS_CHILD | WS_VISIBLE,
-        0,
-        0,
-        10,
-        10,
-        state->window,
-        nullptr,
-        state->instance,
-        nullptr
-    );
-    if (state->progressBar) {
-        SendMessageW(state->progressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
-        SendMessageW(state->progressBar, PBM_SETPOS, 0, 0);
-    }
     HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
     AddDialogTooltip(state, cancelButton, L"Отменяет текущую операцию.");
     if (state->progressMode == ProgressMode::AppUpdate) {
@@ -1213,10 +1225,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (state && state->type == DialogType::Progress) {
             std::unique_ptr<ProgressUpdate> update(reinterpret_cast<ProgressUpdate*>(lParam));
             state->message = update->status;
-            if (state->progressBar && update->total > 0) {
-                const int percent = static_cast<int>((update->downloaded * 100) / update->total);
-                SendMessageW(state->progressBar, PBM_SETPOS, std::clamp(percent, 0, 100), 0);
-            }
+            state->progressDownloaded = update->downloaded;
+            state->progressTotal = update->total;
             InvalidateRect(window, nullptr, FALSE);
         }
         return 0;
@@ -1229,9 +1239,6 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 state->message = state->progressMode == ProgressMode::AppUpdate
                     ? L"Обновление скачано. Приложение будет закрыто и запущено заново."
                     : L"FFmpeg установлен.";
-                if (state->progressBar) {
-                    SendMessageW(state->progressBar, PBM_SETPOS, 100, 0);
-                }
                 if (state->savedResult) {
                     *state->savedResult = true;
                 }
@@ -1657,7 +1664,7 @@ bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& p
     state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     bool saved = false;
     state->savedResult = &saved;
-    ShowModal(state, 560, 230);
+    ShowModal(state, 560, 270);
     return saved;
 }
 
@@ -1674,7 +1681,7 @@ bool ShowAppUpdateProgress(HWND owner, HINSTANCE instance, const AppPaths& paths
     state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     bool updated = false;
     state->savedResult = &updated;
-    ShowModal(state, 560, 230);
+    ShowModal(state, 560, 270);
     return updated;
 }
 

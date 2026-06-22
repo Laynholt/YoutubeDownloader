@@ -1,5 +1,6 @@
 #include "Application.h"
 
+#include "BackendText.h"
 #include "DialogWindows.h"
 #include "KeyboardShortcuts.h"
 #include "resource.h"
@@ -16,7 +17,6 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
-#include <sstream>
 #include <system_error>
 #include <thread>
 #include <vector>
@@ -201,35 +201,6 @@ HFONT CreateUiFont(int height, int weight = FW_NORMAL) {
     font.lfWeight = weight;
     wcscpy_s(font.lfFaceName, L"Segoe UI");
     return CreateFontIndirectW(&font);
-}
-
-std::wstring FormatBytes(std::uint64_t bytes) {
-    if (bytes == 0) {
-        return L"";
-    }
-
-    constexpr double kKiB = 1024.0;
-    constexpr double kMiB = kKiB * 1024.0;
-    constexpr double kGiB = kMiB * 1024.0;
-
-    double value = static_cast<double>(bytes);
-    const wchar_t* unit = L"B";
-    if (value >= kGiB) {
-        value /= kGiB;
-        unit = L"GB";
-    } else if (value >= kMiB) {
-        value /= kMiB;
-        unit = L"MB";
-    } else if (value >= kKiB) {
-        value /= kKiB;
-        unit = L"KB";
-    }
-
-    std::wostringstream out;
-    out.setf(std::ios::fixed);
-    out.precision((value >= 10.0 || bytes < 1024) ? 0 : 1);
-    out << value << L" " << unit;
-    return out.str();
 }
 
 std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
@@ -1274,25 +1245,12 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         }
 
         RECT progressBack = {textLeft, row.bottom - 13, row.right - 84, row.bottom - 5};
-        const int progressWidth = std::max(1, static_cast<int>(progressBack.right - progressBack.left));
         double percent = task.percent;
         if (task.state == DownloadTaskState::Completed) {
             percent = 100.0;
         }
         percent = std::clamp(percent, 0.0, 100.0);
-
-        Gdiplus::GraphicsPath progressPath;
-        AddRoundedRect(progressPath, progressBack, 4);
-        Gdiplus::SolidBrush progressBg(Gdiplus::Color(255, 26, 26, 29));
-        graphics.FillPath(&progressBg, &progressPath);
-        if (percent > 0.0) {
-            RECT progressFill = progressBack;
-            progressFill.right = progressFill.left + static_cast<LONG>((progressWidth * percent) / 100.0);
-            Gdiplus::GraphicsPath fillPath;
-            AddRoundedRect(fillPath, progressFill, 4);
-            Gdiplus::SolidBrush progressFg(Gdiplus::Color(255, 232, 72, 85));
-            graphics.FillPath(&progressFg, &fillPath);
-        }
+        UiRenderer::DrawProgressBar(dc, progressBack, percent);
 
         RECT percentRect = {row.right - 74, row.bottom - 19, row.right - 14, row.bottom - 1};
         DrawTextBlock(

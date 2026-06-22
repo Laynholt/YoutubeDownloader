@@ -12,5 +12,6 @@ public:
     static void DrawPanel(HDC dc, const RECT& rect);
     static void DrawPreviewCard(HDC dc, const RECT& rect);
     static void DrawInputFrame(HDC dc, const RECT& rect);
+    static void DrawProgressBar(HDC dc, const RECT& rect, double percent);
     static void DrawButton(HDC dc, const RECT& rect, const wchar_t* text, bool primary, bool pressed, bool hot, bool onPanel);
 };

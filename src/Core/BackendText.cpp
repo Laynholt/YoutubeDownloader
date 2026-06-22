@@ -6,6 +6,8 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <sstream>
 #include <stdexcept>
 
 std::string WideToUtf8(const std::wstring& value) {
@@ -84,3 +86,46 @@ std::filesystem::path PathFromUtf8(const std::string& value) {
     return std::filesystem::path(Utf8ToWide(value));
 }
 
+std::wstring FormatBytes(std::uint64_t bytes) {
+    if (bytes == 0) {
+        return {};
+    }
+
+    constexpr double kKiB = 1024.0;
+    constexpr double kMiB = kKiB * 1024.0;
+    constexpr double kGiB = kMiB * 1024.0;
+    double value = static_cast<double>(bytes);
+    const wchar_t* unit = L"B";
+    if (value >= kGiB) {
+        value /= kGiB;
+        unit = L"GB";
+    } else if (value >= kMiB) {
+        value /= kMiB;
+        unit = L"MB";
+    } else if (value >= kKiB) {
+        value /= kKiB;
+        unit = L"KB";
+    }
+
+    std::wostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision((value >= 10.0 || bytes < 1024) ? 0 : 1);
+    out << value << L" " << unit;
+    return out.str();
+}
+
+std::wstring FormatProgressBytes(std::uint64_t downloaded, std::uint64_t total) {
+    if (total > 0) {
+        const std::wstring downloadedText = downloaded > 0 ? FormatBytes(downloaded) : L"0 B";
+        return downloadedText + L" / " + FormatBytes(total);
+    }
+    return FormatBytes(downloaded);
+}
+
+int CalculateProgressPercent(std::uint64_t downloaded, std::uint64_t total) {
+    if (total == 0) {
+        return 0;
+    }
+    const double percent = (static_cast<double>(downloaded) * 100.0) / static_cast<double>(total);
+    return std::clamp(static_cast<int>(percent), 0, 100);
+}
