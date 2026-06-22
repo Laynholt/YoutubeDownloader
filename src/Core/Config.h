@@ -15,7 +15,6 @@ struct AppConfig {
     bool autoUpdateApp = true;
     std::wstring lastYtDlpCheckAt;
     std::wstring lastYtDlpVersion;
-    bool ffmpegPromptDismissed = false;
 };
 
 class ConfigStore {

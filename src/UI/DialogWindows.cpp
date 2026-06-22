@@ -1172,12 +1172,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 }
                 return 0;
             case IdFfmpeg:
-                if (state->paths && state->config && ShowFfmpegDialog(window, state->instance, *state->paths, state->workingConfig)) {
-                    RefreshSettingsButtons(state);
-                    InvalidateRect(window, nullptr, FALSE);
-                    *state->config = state->workingConfig;
-                    if (state->savedResult) {
-                        *state->savedResult = true;
+                if (state->paths && state->config) {
+                    if (ShowFfmpegDialog(window, state->instance, *state->paths, state->workingConfig)) {
+                        RefreshSettingsButtons(state);
+                        InvalidateRect(window, nullptr, FALSE);
+                        *state->config = state->workingConfig;
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
                     }
                 } else {
                     ShowFfmpegDialog(window, state->instance);
@@ -1209,12 +1211,6 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 DestroyWindow(window);
                 return 0;
             case IdSkip:
-                if (state->type == DialogType::Ffmpeg && state->config) {
-                    state->config->ffmpegPromptDismissed = true;
-                    if (state->savedResult) {
-                        *state->savedResult = true;
-                    }
-                }
                 DestroyWindow(window);
                 return 0;
             case IdCancel:

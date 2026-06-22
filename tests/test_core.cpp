@@ -68,7 +68,6 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.container == L"auto", "default container mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
-    Require(defaults.ffmpegPromptDismissed == false, "default ffmpeg prompt mismatch");
     Require(!defaults.downloadDir.empty(), "default download dir is empty");
 
     AppConfig saved = defaults;
@@ -81,7 +80,6 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.autoUpdateApp = true;
     saved.lastYtDlpCheckAt = L"2026-06-17T20:00:00Z";
     saved.lastYtDlpVersion = L"2026.06.09";
-    saved.ffmpegPromptDismissed = true;
 
     ConfigStore::Save(paths, saved);
     Require(fs::is_regular_file(paths.configPath()), "config file was not written");
@@ -96,7 +94,31 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
-    Require(loaded.ffmpegPromptDismissed == true, "ffmpeg prompt round-trip mismatch");
+}
+
+void TestConfigDropsLegacyFfmpegPromptFlag() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_LegacyFfmpegPromptFlag");
+    const AppPaths paths(root);
+
+    fs::create_directories(paths.configPath().parent_path());
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"ffmpeg_prompt_dismissed":true,"quality":"720p"})json";
+    }
+
+    const AppConfig loaded = ConfigStore::Load(paths);
+    Require(loaded.quality == L"720p", "quality should load alongside the legacy ffmpeg prompt flag");
+
+    ConfigStore::Save(paths, loaded);
+    std::ifstream savedConfig(paths.configPath(), std::ios::binary);
+    const std::string savedText{
+        std::istreambuf_iterator<char>(savedConfig),
+        std::istreambuf_iterator<char>()
+    };
+    Require(
+        savedText.find("ffmpeg_prompt_dismissed") == std::string::npos,
+        "saved config should drop the legacy ffmpeg prompt flag"
+    );
 }
 
 void TestMainWindowShortcutResolution() {
@@ -1067,6 +1089,7 @@ void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
 int main() {
     TestAppPaths();
     TestConfigDefaultsAndRoundTrip();
+    TestConfigDropsLegacyFfmpegPromptFlag();
     TestMainWindowShortcutResolution();
     TestConfigParallelDownloadBounds();
     TestConfigUtf8RoundTrip();

@@ -92,7 +92,6 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.autoUpdateApp = BoolFromJson(json, "auto_update_app", config.autoUpdateApp);
         config.lastYtDlpCheckAt = WStringFromJson(json, "last_ytdlp_check_at", config.lastYtDlpCheckAt);
         config.lastYtDlpVersion = WStringFromJson(json, "last_ytdlp_version", config.lastYtDlpVersion);
-        config.ffmpegPromptDismissed = BoolFromJson(json, "ffmpeg_prompt_dismissed", config.ffmpegPromptDismissed);
     } catch (...) {
         return Defaults();
     }
@@ -117,7 +116,6 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["auto_update_app"] = config.autoUpdateApp;
     json["last_ytdlp_check_at"] = WideToUtf8(config.lastYtDlpCheckAt);
     json["last_ytdlp_version"] = WideToUtf8(config.lastYtDlpVersion);
-    json["ffmpeg_prompt_dismissed"] = config.ffmpegPromptDismissed;
 
     const std::filesystem::path tmpPath = paths.configPath().wstring() + L".tmp";
     {
