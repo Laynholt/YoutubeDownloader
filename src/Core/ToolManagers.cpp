@@ -470,6 +470,14 @@ bool ShouldInstallAppUpdate(const ReleaseAssetInfo& latest) {
            CompareVersions(YTD_APP_VERSION_WIDE, latest.version) < 0;
 }
 
+std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release) {
+    return
+        L"Доступна новая версия: " + release.version +
+        L"\nТекущая версия: " YTD_APP_VERSION_WIDE
+        L"\n\nСкачать и установить обновление сейчас?\n"
+        L"Приложение будет закрыто и запущено заново.";
+}
+
 ToolInstallStatus YtDlpManager::Status() const {
     ToolInstallStatus status;
     status.executable = m_paths.ytDlpExePath();

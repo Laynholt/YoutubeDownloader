@@ -59,6 +59,7 @@ struct ToolInstallStatus {
 
 bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
 bool ShouldInstallAppUpdate(const ReleaseAssetInfo& latest);
+std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release);
 
 class YtDlpManager {
 public:

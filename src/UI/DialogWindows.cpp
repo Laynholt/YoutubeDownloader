@@ -50,6 +50,7 @@ constexpr UINT kProgressDoneMessage = WM_APP + 41;
 enum class DialogType {
     Info,
     Error,
+    Confirmation,
     Settings,
     About,
     Ffmpeg,
@@ -532,6 +533,7 @@ void LayoutMessageDialog(DialogState* state, int width, int height) {
     const int panelBottom = height - kDialogPanelInset;
     const int buttonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
     HWND copyButton = GetDlgItem(state->window, IdCopy);
+    HWND cancelButton = GetDlgItem(state->window, IdCancel);
     HWND okButton = GetDlgItem(state->window, IdOk);
     HWND updateButton = GetDlgItem(state->window, IdCheckUpdates);
     if (updateButton) {
@@ -543,6 +545,16 @@ void LayoutMessageDialog(DialogState* state, int width, int height) {
             panelRight - kDialogButtonInset - 112 - kDialogButtonGap - 140,
             buttonY,
             140,
+            kDialogButtonHeight,
+            TRUE
+        );
+    }
+    if (cancelButton) {
+        MoveWindow(
+            cancelButton,
+            panelRight - kDialogButtonInset - 112 - kDialogButtonGap - 112,
+            buttonY,
+            112,
             kDialogButtonHeight,
             TRUE
         );
@@ -655,6 +667,7 @@ void LayoutDialog(DialogState* state, int width, int height) {
     switch (state->type) {
     case DialogType::Info:
     case DialogType::Error:
+    case DialogType::Confirmation:
     case DialogType::About:
         LayoutMessageDialog(state, width, height);
         break;
@@ -688,7 +701,9 @@ void DrawMessageDialog(DialogState* state, HDC dc, const RECT& client) {
 
     const std::wstring subtitle = state->type == DialogType::Error
         ? L"Ошибка. Текст можно скопировать для диагностики."
-        : L"Информация приложения.";
+        : (state->type == DialogType::Confirmation
+            ? L"Доступно обновление приложения."
+            : L"Информация приложения.");
     RECT subtitleRect = {24, 56, client.right - 24, 82};
     DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
@@ -818,6 +833,13 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
 
 void CreateMessageControls(DialogState* state) {
     state->scrollText = CreateScrollText(state->window, state->instance, state->message);
+    if (state->type == DialogType::Confirmation) {
+        HWND laterButton = CreateDarkButton(state->window, state->instance, L"Позже", IdCancel, false);
+        HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdOk, true);
+        AddDialogTooltip(state, laterButton, L"Закрывает предложение без установки обновления.");
+        AddDialogTooltip(state, installButton, L"Скачивает и устанавливает найденное обновление.");
+        return;
+    }
     if (state->type == DialogType::About) {
         HWND updateButton = CreateDarkButton(state->window, state->instance, L"Проверить обновление", IdCheckUpdates, false);
         AddDialogTooltip(state, updateButton, L"Проверяет наличие новой версии приложения.");
@@ -1212,6 +1234,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     if (state->savedResult) {
                         *state->savedResult = true;
                     }
+                } else if (state->type == DialogType::Confirmation && state->savedResult) {
+                    *state->savedResult = true;
                 }
                 DestroyWindow(window);
                 return 0;
@@ -1564,6 +1588,24 @@ LRESULT CALLBACK ScrollTextProc(HWND window, UINT message, WPARAM wParam, LPARAM
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+bool ShowConfirmationDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const std::wstring& title,
+    const std::wstring& message
+) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Confirmation;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = title;
+    state->message = message;
+    bool confirmed = false;
+    state->savedResult = &confirmed;
+    ShowModal(state, 560, 360);
+    return confirmed;
+}
+
 } // namespace
 
 void ShowInfoDialog(HWND owner, HINSTANCE instance, const std::wstring& title, const std::wstring& message) {
@@ -1705,12 +1747,12 @@ bool OfferAppUpdate(HWND owner, HINSTANCE instance, const AppPaths& paths, const
         return false;
     }
 
-    const std::wstring message =
-        L"Доступна новая версия: " + release.version +
-        L"\nТекущая версия: " YTD_APP_VERSION_WIDE
-        L"\n\nСкачать и установить обновление сейчас?\nПриложение будет закрыто и запущено заново.";
-    const int choice = MessageBoxW(owner, message.c_str(), L"Обновление доступно", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1);
-    if (choice != IDYES) {
+    if (!ShowConfirmationDialog(
+            owner,
+            instance,
+            L"Обновление доступно",
+            BuildAppUpdatePromptMessage(release)
+        )) {
         return false;
     }
 

@@ -346,6 +346,16 @@ void TestAppUpdateDecision() {
     Require(!ShouldInstallAppUpdate(latest), "missing app asset should not trigger update");
 }
 
+void TestAppUpdatePromptMessage() {
+    ReleaseAssetInfo release;
+    release.version = L"9.8.7";
+
+    const std::wstring message = BuildAppUpdatePromptMessage(release);
+    Require(message.find(L"Доступна новая версия: 9.8.7") != std::wstring::npos, "new version missing from update prompt");
+    Require(message.find(L"Текущая версия: " YTD_APP_VERSION_WIDE) != std::wstring::npos, "current version missing from update prompt");
+    Require(message.find(L"закрыто и запущено заново") != std::wstring::npos, "restart warning missing from update prompt");
+}
+
 void TestFfmpegResolutionPrecedence() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_Ffmpeg");
     const AppPaths paths(root);
@@ -1067,6 +1077,7 @@ int main() {
     TestGitHubReleaseParsing();
     TestYtDlpUpdateDecision();
     TestAppUpdateDecision();
+    TestAppUpdatePromptMessage();
     TestFfmpegResolutionPrecedence();
     TestFfmpegUserPathAndExtractedTreeResolution();
     TestProcessRunnerCapturesOutputAndExitCode();
