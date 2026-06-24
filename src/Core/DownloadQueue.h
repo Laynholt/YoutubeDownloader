@@ -77,6 +77,7 @@ public:
     bool EnrichMetadata(const std::wstring& url, std::wstring title, std::filesystem::path thumbnailPath = {});
     bool Cancel(int id);
     bool Retry(int id);
+    bool StartPostProcessing(int id, DownloadTaskExecutor executor, std::wstring statusText);
     bool DeleteFiles(int id);
     size_t ClearQueued();
     size_t ClearFinished();
@@ -92,10 +93,12 @@ private:
         DownloadTaskSnapshot snapshot;
         bool cancelRequested = false;
         bool active = false;
+        bool postProcessingOnly = false;
     };
 
     void SchedulerLoop();
     void StartTask(int id);
+    void RunTask(int id, DownloadTaskExecutor executor);
     DownloadTaskResult DefaultExecutor(const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks);
 
     int m_maxParallelDownloads = 1;

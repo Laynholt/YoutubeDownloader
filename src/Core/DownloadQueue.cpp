@@ -237,6 +237,7 @@ bool DownloadQueue::Retry(int id) {
         return false;
     }
     task.cancelRequested = false;
+    task.postProcessingOnly = false;
     task.snapshot.state = DownloadTaskState::Queued;
     task.snapshot.percent = 0.0;
     task.snapshot.errorText.clear();
@@ -251,6 +252,40 @@ bool DownloadQueue::Retry(int id) {
     task.snapshot.extension.clear();
     task.snapshot.resolution.clear();
     ++m_revision;
+    m_cv.notify_all();
+    return true;
+}
+
+bool DownloadQueue::StartPostProcessing(int id, DownloadTaskExecutor executor, std::wstring statusText) {
+    if (!executor) {
+        return false;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_tasks.find(id);
+        if (it == m_tasks.end()) {
+            return false;
+        }
+        TaskRecord& task = it->second;
+        if (task.active || task.snapshot.state != DownloadTaskState::Completed) {
+            return false;
+        }
+
+        task.active = true;
+        task.cancelRequested = false;
+        task.postProcessingOnly = true;
+        task.snapshot.state = DownloadTaskState::PostProcessing;
+        task.snapshot.percent = 0.0;
+        task.snapshot.errorText.clear();
+        task.snapshot.statusText = statusText.empty() ? L"Обработка" : std::move(statusText);
+        task.snapshot.speedBytesPerSecond = 0;
+        task.snapshot.etaSeconds = 0;
+        ++m_activeCount;
+        ++m_revision;
+    }
+
+    std::thread(&DownloadQueue::RunTask, this, id, std::move(executor)).detach();
     m_cv.notify_all();
     return true;
 }
@@ -396,6 +431,7 @@ void DownloadQueue::SchedulerLoop() {
             }
             const int id = it->first;
             it->second.active = true;
+            it->second.postProcessingOnly = false;
             it->second.snapshot.state = DownloadTaskState::Preparing;
             it->second.snapshot.statusText = L"Подготовка";
             ++m_revision;
@@ -406,8 +442,16 @@ void DownloadQueue::SchedulerLoop() {
 }
 
 void DownloadQueue::StartTask(int id) {
-    DownloadTaskSnapshot task;
     DownloadTaskExecutor executor;
+    {
+        std::lock_guard lock(m_mutex);
+        executor = m_executor;
+    }
+    RunTask(id, std::move(executor));
+}
+
+void DownloadQueue::RunTask(int id, DownloadTaskExecutor executor) {
+    DownloadTaskSnapshot task;
     {
         std::lock_guard lock(m_mutex);
         auto it = m_tasks.find(id);
@@ -415,7 +459,6 @@ void DownloadQueue::StartTask(int id) {
             return;
         }
         task = it->second.snapshot;
-        executor = m_executor;
     }
 
     DownloadTaskCallbacks callbacks;
@@ -447,7 +490,8 @@ void DownloadQueue::StartTask(int id) {
 
         it->second.snapshot.state = DownloadTaskState::Downloading;
         it->second.snapshot.statusText = progress.stage;
-        const std::uint64_t diskBytes = DiskBytesForPaths(snapshot.outputFiles);
+        const bool progressHasTrack = !progress.mediaKind.empty();
+        const std::uint64_t diskBytes = progressHasTrack ? 0 : DiskBytesForPaths(snapshot.outputFiles);
         const std::uint64_t reportedBytes = diskBytes > 0 ? diskBytes : progress.downloadedBytes;
         if (switchedTrack) {
             snapshot.percent = std::clamp(progress.percent, 0.0, 100.0);
@@ -520,14 +564,40 @@ void DownloadQueue::StartTask(int id) {
         if (it != m_tasks.end()) {
             it->second.active = false;
             --m_activeCount;
+            const bool postProcessingOnly = it->second.postProcessingOnly;
+            it->second.postProcessingOnly = false;
             if (it->second.cancelRequested) {
-                it->second.snapshot.state = DownloadTaskState::Canceled;
-                it->second.snapshot.statusText = L"Отменено";
+                it->second.cancelRequested = false;
+                if (postProcessingOnly) {
+                    it->second.snapshot.state = DownloadTaskState::Completed;
+                    it->second.snapshot.percent = 100.0;
+                    it->second.snapshot.errorText.clear();
+                    it->second.snapshot.statusText = result.statusText.empty()
+                        ? L"Готово · расшифровка отменена"
+                        : result.statusText;
+                    for (const std::filesystem::path& path : result.outputFiles) {
+                        AddUniquePath(it->second.snapshot.outputFiles, path);
+                    }
+                } else {
+                    it->second.snapshot.state = DownloadTaskState::Canceled;
+                    it->second.snapshot.statusText = L"Отменено";
+                }
                 ++m_revision;
             } else if (result.success) {
                 it->second.snapshot.state = DownloadTaskState::Completed;
                 it->second.snapshot.percent = 100.0;
                 it->second.snapshot.statusText = result.statusText.empty() ? L"Готово" : result.statusText;
+                for (const std::filesystem::path& path : result.outputFiles) {
+                    AddUniquePath(it->second.snapshot.outputFiles, path);
+                }
+                ++m_revision;
+            } else if (postProcessingOnly) {
+                it->second.snapshot.state = DownloadTaskState::Completed;
+                it->second.snapshot.percent = 100.0;
+                it->second.snapshot.errorText.clear();
+                it->second.snapshot.statusText = result.statusText.empty()
+                    ? L"Готово · расшифровка не выполнена: " + result.errorText
+                    : result.statusText;
                 for (const std::filesystem::path& path : result.outputFiles) {
                     AddUniquePath(it->second.snapshot.outputFiles, path);
                 }

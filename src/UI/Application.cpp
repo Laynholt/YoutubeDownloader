@@ -289,6 +289,56 @@ void AddUniqueOutputPath(std::vector<std::filesystem::path>& paths, const std::f
     }
 }
 
+DownloadTaskResult TranscribeDownloadedMedia(
+    const DownloadTaskSnapshot& task,
+    const DownloadTaskCallbacks& callbacks,
+    const std::filesystem::path& mediaPath,
+    std::vector<std::filesystem::path> outputFiles,
+    HANDLE cancelEvent
+) {
+    AddUniqueOutputPath(outputFiles, mediaPath);
+
+    if (callbacks.onPostProcessing) {
+        callbacks.onPostProcessing(0.0, L"Подготовка расшифровки");
+    }
+
+    TranscriptionRequest transcription;
+    transcription.mediaPath = mediaPath;
+    transcription.tempDirectory = task.request.transcriptionTempDir;
+    transcription.ffmpegExePath = task.request.ffmpegExePath;
+    transcription.whisperExePath = task.request.whisperExePath;
+    transcription.whisperModelPath = task.request.whisperModelPath;
+    transcription.language = task.request.whisperLanguage;
+
+    const TranscriptionResult transcriptionResult = TranscriptionClient::Transcribe(
+        transcription,
+        TranscriptionCallbacks{
+            {},
+            [callbacks](double percent, const std::wstring& status) {
+                if (callbacks.onPostProcessing) {
+                    callbacks.onPostProcessing(percent, status);
+                }
+            }
+        },
+        cancelEvent
+    );
+    if (transcriptionResult.canceled) {
+        return DownloadTaskResult{false, L"Отменено", outputFiles};
+    }
+    if (!transcriptionResult.success) {
+        return DownloadTaskResult{
+            true,
+            L"",
+            outputFiles,
+            L"Готово · расшифровка не выполнена: " + transcriptionResult.errorText
+        };
+    }
+
+    AddUniqueOutputPath(outputFiles, transcriptionResult.textPath);
+    AddUniqueOutputPath(outputFiles, transcriptionResult.srtPath);
+    return DownloadTaskResult{true, L"", outputFiles, L"Готово · расшифровка сохранена"};
+}
+
 std::filesystem::path ResolveWhisperExePath(const AppPaths& paths, const AppConfig& config) {
     return config.whisperPath.empty() ? paths.localWhisperExePath() : config.whisperPath;
 }
@@ -335,6 +385,16 @@ bool TaskHasTranscriptTextPath(const DownloadTaskSnapshot& task) {
     return !FindTranscriptTextPath(task.outputFiles).empty();
 }
 
+bool TaskHasDownloadedMediaPath(const DownloadTaskSnapshot& task) {
+    return !FindDownloadedMediaFile(task.outputFiles, task.request.outputDirectory, {}).empty();
+}
+
+bool TaskCanStartTranscription(const DownloadTaskSnapshot& task) {
+    return task.state == DownloadTaskState::Completed &&
+           !TaskHasTranscriptTextPath(task) &&
+           TaskHasDownloadedMediaPath(task);
+}
+
 int QueueTextRight(const RECT& row, const DownloadTaskSnapshot& task) {
     if (IsRunningTaskState(task.state)) {
         return QueueRightButtonRect(row).left - 12;
@@ -342,7 +402,8 @@ int QueueTextRight(const RECT& row, const DownloadTaskSnapshot& task) {
     if (task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) {
         return QueueRetryButtonRect(row).left - 12;
     }
-    if (task.state == DownloadTaskState::Completed && TaskHasTranscriptTextPath(task)) {
+    if (task.state == DownloadTaskState::Completed &&
+        (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task))) {
         return QueueTranscriptButtonRect(row).left - 12;
     }
     return QueueRightButtonRect(row).left - 12;
@@ -1279,6 +1340,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         const RECT transcriptButton = QueueTranscriptButtonRect(row);
         const int textRight = QueueTextRight(row, task);
         const bool hasTranscript = TaskHasTranscriptTextPath(task);
+        const bool canStartTranscription = TaskCanStartTranscription(task);
 
         RECT titleRect = {textLeft, row.top + 9, textRight, row.top + 31};
         const std::wstring title = task.title.empty() ? task.request.url : task.title;
@@ -1347,6 +1409,14 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
                     dc,
                     transcriptButton,
                     L"Расшифровка",
+                    true,
+                    m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionTranscript
+                );
+            } else if (canStartTranscription) {
+                DrawSmallActionButton(
+                    dc,
+                    transcriptButton,
+                    L"Расшифровать",
                     true,
                     m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionTranscript
                 );
@@ -1437,6 +1507,74 @@ bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const 
     return true;
 }
 
+bool Application::StartTaskTranscription(const DownloadTaskSnapshot& task) {
+    if (!m_downloadQueue) {
+        return false;
+    }
+
+    const std::filesystem::path mediaPath =
+        FindDownloadedMediaFile(task.outputFiles, task.request.outputDirectory, {});
+    if (mediaPath.empty()) {
+        SetTransientStatus(L"Файл для расшифровки не найден");
+        return true;
+    }
+
+    const bool started = m_downloadQueue->StartPostProcessing(
+        task.id,
+        [mediaPath](const DownloadTaskSnapshot& currentTask, const DownloadTaskCallbacks& callbacks) {
+            HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!cancelEvent) {
+                return DownloadTaskResult{true, L"", currentTask.outputFiles, L"Готово · расшифровка не выполнена: не удалось создать событие отмены"};
+            }
+
+            std::atomic<bool> monitorDone = false;
+            std::thread cancelMonitor([&]() {
+                while (!monitorDone.load()) {
+                    if (callbacks.isCanceled && callbacks.isCanceled()) {
+                        SetEvent(cancelEvent);
+                        break;
+                    }
+                    Sleep(50);
+                }
+            });
+
+            auto finish = [&](DownloadTaskResult result) {
+                monitorDone = true;
+                SetEvent(cancelEvent);
+                if (cancelMonitor.joinable()) {
+                    cancelMonitor.join();
+                }
+                CloseHandle(cancelEvent);
+                return result;
+            };
+
+            try {
+                return finish(TranscribeDownloadedMedia(
+                    currentTask,
+                    callbacks,
+                    mediaPath,
+                    currentTask.outputFiles,
+                    cancelEvent
+                ));
+            } catch (const std::exception& ex) {
+                return finish(DownloadTaskResult{
+                    false,
+                    std::wstring(ex.what(), ex.what() + std::strlen(ex.what())),
+                    currentTask.outputFiles
+                });
+            } catch (...) {
+                return finish(DownloadTaskResult{false, L"Неизвестная ошибка", currentTask.outputFiles});
+            }
+        },
+        L"Подготовка расшифровки"
+    );
+
+    if (!started) {
+        SetTransientStatus(L"Не удалось запустить расшифровку");
+    }
+    return true;
+}
+
 bool Application::HandleQueueClick(POINT point) {
     if (!m_downloadQueue) {
         return false;
@@ -1490,9 +1628,12 @@ bool Application::HandleQueueClick(POINT point) {
                    PtInRect(&retryButton, point)) {
             handled = m_downloadQueue->Retry(task.id);
         } else if (task.state == DownloadTaskState::Completed &&
-                   TaskHasTranscriptTextPath(task) &&
                    PtInRect(&transcriptButton, point)) {
-            handled = ShowTranscriptActions(task, transcriptButton);
+            if (TaskHasTranscriptTextPath(task)) {
+                handled = ShowTranscriptActions(task, transcriptButton);
+            } else if (TaskCanStartTranscription(task)) {
+                handled = StartTaskTranscription(task);
+            }
         } else if ((task.state == DownloadTaskState::Canceled ||
                     task.state == DownloadTaskState::Failed ||
                     task.state == DownloadTaskState::Completed) &&
@@ -1561,7 +1702,7 @@ bool Application::UpdateQueueHover(POINT point) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionRetry;
             } else if (task.state == DownloadTaskState::Completed &&
-                       TaskHasTranscriptTextPath(task) &&
+                       (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task)) &&
                        PtInRect(&transcriptButton, point)) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionTranscript;
@@ -1809,43 +1950,7 @@ void Application::InitializeBackend() {
             return finish(DownloadTaskResult{true, L"", outputFiles, L"Готово · файл для расшифровки не найден"});
         }
 
-        AddUniqueOutputPath(outputFiles, mediaPath);
-
-        TranscriptionRequest transcription;
-        transcription.mediaPath = mediaPath;
-        transcription.tempDirectory = task.request.transcriptionTempDir;
-        transcription.ffmpegExePath = task.request.ffmpegExePath;
-        transcription.whisperExePath = task.request.whisperExePath;
-        transcription.whisperModelPath = task.request.whisperModelPath;
-        transcription.language = task.request.whisperLanguage;
-
-        const TranscriptionResult transcriptionResult = TranscriptionClient::Transcribe(
-            transcription,
-            TranscriptionCallbacks{
-                {},
-                [callbacks](double percent, const std::wstring& status) {
-                    if (callbacks.onPostProcessing) {
-                        callbacks.onPostProcessing(percent, status);
-                    }
-                }
-            },
-            cancelEvent
-        );
-        if (transcriptionResult.canceled) {
-            return finish(DownloadTaskResult{false, L"Отменено", outputFiles});
-        }
-        if (!transcriptionResult.success) {
-            return finish(DownloadTaskResult{
-                true,
-                L"",
-                outputFiles,
-                L"Готово · расшифровка не выполнена: " + transcriptionResult.errorText
-            });
-        }
-
-        AddUniqueOutputPath(outputFiles, transcriptionResult.textPath);
-        AddUniqueOutputPath(outputFiles, transcriptionResult.srtPath);
-        return finish(DownloadTaskResult{true, L"", outputFiles, L"Готово · расшифровка сохранена"});
+        return finish(TranscribeDownloadedMedia(task, callbacks, mediaPath, outputFiles, cancelEvent));
     });
 
     SetTimer(m_window, kQueueRefreshTimer, 500, nullptr);

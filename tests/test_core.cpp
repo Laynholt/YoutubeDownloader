@@ -408,12 +408,8 @@ void TestYtDlpDownloadArguments() {
     Require(args.at(ArgIndex(args, L"--ffmpeg-location") + 1) == request.ffmpegExePath.parent_path().wstring(), "ffmpeg location mismatch");
     Require(ContainsArg(args, L"--merge-output-format"), "merge output format missing");
     Require(args.at(ArgIndex(args, L"--merge-output-format") + 1) == L"mp4", "merge output format value mismatch");
-    Require(ContainsArg(args, L"--no-simulate"), "download should not become simulated when output path is printed");
-    Require(ContainsArg(args, L"--print"), "final output print marker missing");
-    Require(
-        args.at(ArgIndex(args, L"--print") + 1) == L"after_move:__YTDLP_OUTPUT__:%(filepath)s",
-        "final output print template mismatch"
-    );
+    Require(!ContainsArg(args, L"--no-simulate"), "download arguments should keep the pre-whisper progress behavior");
+    Require(!ContainsArg(args, L"--print"), "download arguments should not add print output during downloads");
     Require(ContainsArg(args, L"--progress-template"), "progress template missing");
     Require(ContainsArg(args, L"--output"), "output template missing");
     Require(args.at(ArgIndex(args, L"--output") + 1).find(L"%(title).200s [%(id)s].%(ext)s") != std::wstring::npos, "output template mismatch");
@@ -1058,6 +1054,147 @@ void TestDownloadQueuePostProcessingStatus() {
     Require(completed.statusText == L"Ready with transcript", "completed task should keep executor status");
 }
 
+void TestDownloadQueueProgressResetsForNextDownloadTrack() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TrackProgressReset");
+    const fs::path output = root / L"video.mp4";
+    std::atomic<bool> release = false;
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + output.wstring());
+
+        {
+            std::ofstream out(output, std::ios::binary);
+            out << std::string(1000, 'v');
+        }
+
+        YtDlpProgress video;
+        video.recognized = true;
+        video.stage = L"Скачивание видео:";
+        video.mediaKind = L"video";
+        video.percent = 100.0;
+        video.downloadedBytes = 1000;
+        video.totalBytes = 1000;
+        callbacks.onProgressDetails(video);
+
+        YtDlpProgress audio;
+        audio.recognized = true;
+        audio.stage = L"Скачивание аудио:";
+        audio.mediaKind = L"audio";
+        audio.percent = 25.0;
+        audio.downloadedBytes = 250;
+        audio.totalBytes = 1000;
+        callbacks.onProgressDetails(audio);
+
+        YtDlpProgress audioNext = audio;
+        audioNext.percent = 40.0;
+        audioNext.downloadedBytes = 400;
+        callbacks.onProgressDetails(audioNext);
+
+        while (!release.load()) {
+            if (callbacks.isCanceled && callbacks.isCanceled()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{false, L"planned stop", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/track-progress-reset";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Track Progress Reset");
+    for (int i = 0; i < 100; ++i) {
+        const DownloadTaskSnapshot task = queue.GetTask(id);
+        if (task.state == DownloadTaskState::Downloading && task.mediaKind == L"audio" && task.percent >= 40.0) {
+            Require(task.percent == 40.0, "audio track progress should not include completed video bytes");
+            Require(task.downloadedBytes == 400, "audio downloaded bytes should reset to the current track");
+            Require(task.totalBytes == 1000, "audio total bytes should come from the current track");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    const DownloadTaskSnapshot audioTask = queue.GetTask(id);
+    Require(audioTask.mediaKind == L"audio", "task should expose audio as the active track");
+    Require(audioTask.percent == 40.0, "audio progress should remain at the current track percent");
+
+    release = true;
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueStartsPostProcessingForCompletedTask() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ManualPostProcessing");
+    const fs::path media = root / L"video.mp4";
+    const fs::path transcript = root / L"video.txt";
+    std::atomic<bool> release = false;
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + media.wstring());
+        {
+            std::ofstream out(media, std::ios::binary);
+            out << "downloaded media";
+        }
+        return DownloadTaskResult{true, L"", {media}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/manual-transcription";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Manual Transcription");
+    queue.WaitForIdle();
+    Require(queue.GetTask(id).state == DownloadTaskState::Completed, "fixture task should complete before manual post-processing");
+
+    const bool started = queue.StartPostProcessing(
+        id,
+        [&](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
+            Require(task.state == DownloadTaskState::PostProcessing, "manual post-processing snapshot state mismatch");
+            Require(
+                std::ranges::find(task.outputFiles, media) != task.outputFiles.end(),
+                "manual post-processing should receive completed media output"
+            );
+            callbacks.onPostProcessing(42.0, L"Recognizing speech");
+            while (!release.load()) {
+                if (callbacks.isCanceled && callbacks.isCanceled()) {
+                    return DownloadTaskResult{true, L"", task.outputFiles, L"Ready without transcript"};
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            {
+                std::ofstream out(transcript);
+                out << "transcript";
+            }
+            return DownloadTaskResult{true, L"", {transcript}, L"Ready with transcript"};
+        },
+        L"Recognizing speech"
+    );
+    Require(started, "manual post-processing should start for a completed task");
+
+    for (int i = 0; i < 100; ++i) {
+        const DownloadTaskSnapshot task = queue.GetTask(id);
+        if (task.state == DownloadTaskState::PostProcessing && task.percent == 42.0) {
+            Require(task.statusText == L"Recognizing speech", "manual post-processing status mismatch");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    Require(queue.GetTask(id).state == DownloadTaskState::PostProcessing, "task should enter manual post-processing state");
+
+    release = true;
+    queue.WaitForIdle();
+
+    const DownloadTaskSnapshot completed = queue.GetTask(id);
+    Require(completed.state == DownloadTaskState::Completed, "manual post-processing task should return to completed");
+    Require(completed.statusText == L"Ready with transcript", "manual post-processing should keep completion status");
+    Require(std::ranges::find(completed.outputFiles, media) != completed.outputFiles.end(), "manual post-processing should keep media output");
+    Require(std::ranges::find(completed.outputFiles, transcript) != completed.outputFiles.end(), "manual post-processing should add transcript output");
+}
+
 void TestDownloadQueueRejectsDuplicateVisibleUrl() {
     DownloadQueue queue(1);
     queue.SetExecutor([](const DownloadTaskSnapshot& task, const DownloadTaskCallbacks& callbacks) {
@@ -1605,6 +1742,8 @@ int main() {
     TestYtDlpMetadataParsing();
     TestDownloadQueueSchedulingAndRetry();
     TestDownloadQueuePostProcessingStatus();
+    TestDownloadQueueProgressResetsForNextDownloadTrack();
+    TestDownloadQueueStartsPostProcessingForCompletedTask();
     TestDownloadQueueRejectsDuplicateVisibleUrl();
     TestDownloadQueueEnrichesDuplicateVisibleUrl();
     TestDownloadQueueEnrichesExistingTaskAfterPreviewCompletes();

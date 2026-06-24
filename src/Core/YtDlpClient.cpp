@@ -327,7 +327,6 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     args.push_back(L"10");
     args.push_back(L"--fragment-retries");
     args.push_back(L"10");
-    args.push_back(L"--no-simulate");
 
     args.push_back(L"--format");
     args.push_back(BuildFormatString(request.quality, request.ffmpegAvailable));
@@ -337,8 +336,6 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
 
     args.push_back(L"--progress-template");
     args.push_back(L"__YTDLP_PROGRESS__ status=%(progress.status)s downloaded=%(progress.downloaded_bytes)s total=%(progress.total_bytes)s total_estimate=%(progress.total_bytes_estimate)s speed=%(progress.speed)s eta=%(progress.eta)s part=%(info.format_note)s vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s format=%(info.format_id)s height=%(info.height)s");
-    args.push_back(L"--print");
-    args.push_back(std::wstring(L"after_move:") + kOutputPathPrefix + L"%(filepath)s");
 
     if (!request.cookiesPath.empty() && std::filesystem::is_regular_file(request.cookiesPath)) {
         args.push_back(L"--cookies");
