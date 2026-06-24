@@ -29,6 +29,7 @@ set(CORE_SOURCES
     src/Core/BackendText.cpp
     src/Core/Config.cpp
     src/Core/DownloadQueue.cpp
+    src/Core/DownloadQueueStore.cpp
     src/Core/FileOperations.cpp
     src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
@@ -46,6 +47,7 @@ set(CORE_HEADERS
     src/Core/BackendText.h
     src/Core/Config.h
     src/Core/DownloadQueue.h
+    src/Core/DownloadQueueStore.h
     src/Core/FileOperations.h
     src/Core/KeyboardShortcuts.h
     src/Core/Logger.h

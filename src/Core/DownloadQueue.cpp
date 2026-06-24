@@ -188,6 +188,54 @@ bool EnrichTaskMetadata(DownloadTaskSnapshot& task, std::wstring title, std::fil
     return changed;
 }
 
+bool IsPersistedRunningState(DownloadTaskState state) {
+    return state == DownloadTaskState::Queued ||
+           state == DownloadTaskState::Preparing ||
+           state == DownloadTaskState::Downloading;
+}
+
+DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
+    if (IsPersistedRunningState(snapshot.state)) {
+        snapshot.state = DownloadTaskState::Canceled;
+        snapshot.statusText = L"Остановлено";
+        snapshot.speedBytesPerSecond = 0;
+        snapshot.etaSeconds = 0;
+    }
+    if (snapshot.statusText.empty()) {
+        switch (snapshot.state) {
+        case DownloadTaskState::Completed:
+            snapshot.statusText = L"Готово";
+            break;
+        case DownloadTaskState::Failed:
+            snapshot.statusText = L"Ошибка";
+            break;
+        case DownloadTaskState::Canceled:
+            snapshot.statusText = L"Остановлено";
+            break;
+        case DownloadTaskState::Queued:
+            snapshot.statusText = L"В очереди";
+            break;
+        case DownloadTaskState::Preparing:
+            snapshot.statusText = L"Подготовка";
+            break;
+        case DownloadTaskState::Downloading:
+            snapshot.statusText = L"Загрузка";
+            break;
+        }
+    }
+    return snapshot;
+}
+
+DownloadTaskSnapshot SnapshotForShutdown(DownloadTaskSnapshot snapshot) {
+    if (IsPersistedRunningState(snapshot.state)) {
+        snapshot.state = DownloadTaskState::Canceled;
+        snapshot.statusText = L"Остановлено";
+        snapshot.speedBytesPerSecond = 0;
+        snapshot.etaSeconds = 0;
+    }
+    return snapshot;
+}
+
 } // namespace
 
 DownloadQueue::DownloadQueue(int maxParallelDownloads, Logger* logger)
@@ -403,6 +451,45 @@ std::vector<DownloadTaskSnapshot> DownloadQueue::Snapshot() const {
     for (const auto& [id, task] : m_tasks) {
         UNREFERENCED_PARAMETER(id);
         result.push_back(task.snapshot);
+    }
+    return result;
+}
+
+void DownloadQueue::ImportSnapshots(const std::vector<DownloadTaskSnapshot>& tasks) {
+    std::lock_guard lock(m_mutex);
+    if (m_activeCount > 0) {
+        return;
+    }
+
+    m_tasks.clear();
+    m_workers.clear();
+    m_finishedWorkerIds.clear();
+    m_nextId = 1;
+    for (const DownloadTaskSnapshot& task : tasks) {
+        if (task.id <= 0 || task.request.url.empty()) {
+            continue;
+        }
+        TaskRecord record;
+        record.snapshot = NormalizeRestoredSnapshot(task);
+        record.active = false;
+        record.cancelRequested = false;
+        m_tasks[record.snapshot.id] = std::move(record);
+        m_nextId = std::max(m_nextId, task.id + 1);
+    }
+    ++m_revision;
+}
+
+std::vector<DownloadTaskSnapshot> DownloadQueue::ExportSnapshots() const {
+    return Snapshot();
+}
+
+std::vector<DownloadTaskSnapshot> DownloadQueue::ExportSnapshotsForShutdown() const {
+    std::lock_guard lock(m_mutex);
+    std::vector<DownloadTaskSnapshot> result;
+    result.reserve(m_tasks.size());
+    for (const auto& [id, task] : m_tasks) {
+        UNREFERENCED_PARAMETER(id);
+        result.push_back(SnapshotForShutdown(task.snapshot));
     }
     return result;
 }

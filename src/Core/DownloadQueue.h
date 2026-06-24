@@ -82,6 +82,9 @@ public:
 
     DownloadTaskSnapshot GetTask(int id) const;
     std::vector<DownloadTaskSnapshot> Snapshot() const;
+    void ImportSnapshots(const std::vector<DownloadTaskSnapshot>& tasks);
+    std::vector<DownloadTaskSnapshot> ExportSnapshots() const;
+    std::vector<DownloadTaskSnapshot> ExportSnapshotsForShutdown() const;
     std::uint64_t Revision() const;
     void WaitForIdle();
     void Shutdown();

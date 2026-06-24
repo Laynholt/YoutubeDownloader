@@ -20,6 +20,10 @@ std::filesystem::path AppPaths::logPath() const {
     return stuffDir() / L"ytdl.log";
 }
 
+std::filesystem::path AppPaths::downloadQueuePath() const {
+    return stuffDir() / L"download_queue.json";
+}
+
 std::filesystem::path AppPaths::thumbCacheDir() const {
     return stuffDir() / L"thumb_cache";
 }

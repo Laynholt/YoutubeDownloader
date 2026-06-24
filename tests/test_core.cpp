@@ -4,6 +4,7 @@
 #include "BackendText.h"
 #include "Config.h"
 #include "DownloadQueue.h"
+#include "DownloadQueueStore.h"
 #include "FileOperations.h"
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
@@ -54,6 +55,7 @@ void TestAppPaths() {
     Require(paths.stuffDir() == root / L"stuff", "stuff path mismatch");
     Require(paths.configPath() == root / L"stuff" / L"config.ini", "config path mismatch");
     Require(paths.logPath() == root / L"stuff" / L"ytdl.log", "log path mismatch");
+    Require(paths.downloadQueuePath() == root / L"stuff" / L"download_queue.json", "download queue path mismatch");
     Require(paths.thumbCacheDir() == root / L"stuff" / L"thumb_cache", "thumb cache path mismatch");
     Require(paths.toolsDir() == root / L"tools", "tools path mismatch");
     Require(paths.ytDlpDir() == root / L"tools" / L"yt-dlp", "yt-dlp dir path mismatch");
@@ -714,6 +716,200 @@ void TestProcessRunnerEmitsEachOutputLineOnce() {
     Require(lines.size() == 1000, "stdout callback should emit each line once");
     Require(std::ranges::count(lines, L"line-1") == 1, "first line was duplicated");
     Require(std::ranges::count(lines, L"line-1000") == 1, "last line was duplicated");
+}
+
+void TestDownloadQueueStoreRoundTripSnapshots() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStore");
+    const AppPaths paths(root);
+
+    DownloadTaskSnapshot task;
+    task.id = 42;
+    task.request.ytDlpExePath = root / L"tools" / L"yt-dlp.exe";
+    task.request.url = L"https://www.youtube.com/watch?v=roundtrip";
+    task.request.outputDirectory = root / L"Downloads";
+    task.request.cookiesPath = root / L"cookies.txt";
+    task.request.ffmpegExePath = root / L"tools" / L"ffmpeg.exe";
+    task.request.quality = L"1080p";
+    task.request.container = L"mp4";
+    task.request.ffmpegAvailable = true;
+    task.title = L"Round Trip";
+    task.thumbnailPath = root / L"stuff" / L"thumb_cache" / L"thumb.jpg";
+    task.state = DownloadTaskState::Canceled;
+    task.percent = 37.5;
+    task.statusText = L"Остановлено";
+    task.errorText = L"Manual stop";
+    task.downloadedBytes = 1234;
+    task.totalBytes = 9999;
+    task.speedBytesPerSecond = 456;
+    task.etaSeconds = 78;
+    task.mediaKind = L"video";
+    task.formatId = L"137";
+    task.extension = L"mp4";
+    task.resolution = L"1080p";
+    task.outputFiles = {root / L"Downloads" / L"Round Trip.mp4"};
+
+    DownloadQueueStore::Save(paths, {task});
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+
+    Require(loaded.size() == 1, "queue store should load one task");
+    const DownloadTaskSnapshot& restored = loaded.front();
+    Require(restored.id == 42, "restored task id mismatch");
+    Require(restored.request.ytDlpExePath == task.request.ytDlpExePath, "restored yt-dlp path mismatch");
+    Require(restored.request.url == task.request.url, "restored url mismatch");
+    Require(restored.request.outputDirectory == task.request.outputDirectory, "restored output directory mismatch");
+    Require(restored.request.cookiesPath == task.request.cookiesPath, "restored cookies path mismatch");
+    Require(restored.request.ffmpegExePath == task.request.ffmpegExePath, "restored ffmpeg path mismatch");
+    Require(restored.request.quality == L"1080p", "restored quality mismatch");
+    Require(restored.request.container == L"mp4", "restored container mismatch");
+    Require(restored.request.ffmpegAvailable, "restored ffmpeg flag mismatch");
+    Require(restored.title == L"Round Trip", "restored title mismatch");
+    Require(restored.thumbnailPath == task.thumbnailPath, "restored thumbnail path mismatch");
+    Require(restored.state == DownloadTaskState::Canceled, "restored state mismatch");
+    Require(restored.percent == 37.5, "restored percent mismatch");
+    Require(restored.statusText == L"Остановлено", "restored status mismatch");
+    Require(restored.errorText == L"Manual stop", "restored error mismatch");
+    Require(restored.downloadedBytes == 1234, "restored downloaded bytes mismatch");
+    Require(restored.totalBytes == 9999, "restored total bytes mismatch");
+    Require(restored.speedBytesPerSecond == 456, "restored speed mismatch");
+    Require(restored.etaSeconds == 78, "restored eta mismatch");
+    Require(restored.mediaKind == L"video", "restored media kind mismatch");
+    Require(restored.formatId == L"137", "restored format id mismatch");
+    Require(restored.extension == L"mp4", "restored extension mismatch");
+    Require(restored.resolution == L"1080p", "restored resolution mismatch");
+    Require(restored.outputFiles == task.outputFiles, "restored output files mismatch");
+}
+
+void TestDownloadQueueStoreSkipsInvalidEntries() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStoreInvalid");
+    const AppPaths paths(root);
+    fs::create_directories(paths.stuffDir());
+    {
+        std::ofstream out(paths.downloadQueuePath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"version":1,"tasks":[{"id":1},{"id":2,"url":"https://example.invalid/ok","state":"Canceled","title":"OK"}]})json";
+    }
+
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+
+    Require(loaded.size() == 1, "queue store should skip invalid entries only");
+    Require(loaded.front().id == 2, "valid queue entry id mismatch");
+    Require(loaded.front().request.url == L"https://example.invalid/ok", "valid queue entry url mismatch");
+}
+
+bool WaitForProcessExit(DWORD processId, std::chrono::milliseconds timeout) {
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) {
+        return true;
+    }
+    const DWORD wait = WaitForSingleObject(process, static_cast<DWORD>(timeout.count()));
+    CloseHandle(process);
+    return wait == WAIT_OBJECT_0;
+}
+
+void TerminateProcessIfStillRunning(DWORD processId) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, processId);
+    if (!process) {
+        return;
+    }
+    if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+        TerminateProcess(process, 1);
+        WaitForSingleObject(process, 5000);
+    }
+    CloseHandle(process);
+}
+
+std::filesystem::path CurrentTestExecutablePath() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    while (length == buffer.size()) {
+        buffer.resize(buffer.size() * 2, L'\0');
+        length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    }
+    Require(length > 0, "failed to resolve current test executable path");
+    buffer.resize(length);
+    return buffer;
+}
+
+std::wstring QuoteCommandArgument(const std::wstring& arg) {
+    std::wstring quoted = L"\"";
+    for (wchar_t ch : arg) {
+        if (ch == L'"') {
+            quoted += L"\\\"";
+        } else {
+            quoted.push_back(ch);
+        }
+    }
+    quoted.push_back(L'"');
+    return quoted;
+}
+
+int RunProcessTreeParentFixture() {
+    STARTUPINFOW startup = {};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION process = {};
+    std::wstring commandLine =
+        QuoteCommandArgument(CurrentTestExecutablePath().wstring()) + L" --process-tree-child-fixture";
+    if (!CreateProcessW(
+            nullptr,
+            commandLine.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            nullptr,
+            &startup,
+            &process
+        )) {
+        return 2;
+    }
+
+    std::cout << process.dwProcessId << "\n";
+    std::cout.flush();
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    Sleep(60000);
+    return 0;
+}
+
+int RunProcessTreeChildFixture() {
+    Sleep(60000);
+    return 0;
+}
+
+void TestProcessRunnerCancelKillsChildProcessTree() {
+    HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    Require(cancelEvent != nullptr, "failed to create process cancel event");
+
+    DWORD childPid = 0;
+    ProcessRunOptions options;
+    options.executable = CurrentTestExecutablePath();
+    options.arguments = {L"--process-tree-parent-fixture"};
+    options.timeoutMs = 10000;
+    options.cancelEvent = cancelEvent;
+    options.onStdoutLine = [&](const std::wstring& line) {
+        if (childPid != 0 || line.empty()) {
+            return;
+        }
+        try {
+            childPid = static_cast<DWORD>(std::stoul(line));
+            SetEvent(cancelEvent);
+        } catch (...) {
+        }
+    };
+
+    const ProcessRunResult result = ProcessRunner::Run(options);
+    CloseHandle(cancelEvent);
+
+    Require(result.canceled, "parent process should be canceled");
+    Require(childPid != 0, "child process id was not captured");
+    const bool childExited = WaitForProcessExit(childPid, std::chrono::milliseconds(5000));
+    if (!childExited) {
+        TerminateProcessIfStillRunning(childPid);
+    }
+    Require(childExited, "canceling a process run should kill child processes");
 }
 
 void TestYtDlpMetadataParsing() {
@@ -1519,10 +1715,99 @@ void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
     Require(queue.Snapshot().empty(), "clear finished should remove task rows");
 }
 
+void TestDownloadQueueImportsRestoredTasksWithoutStartingThem() {
+    std::atomic<bool> executorRan = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot&,
+        std::stop_token,
+        const DownloadTaskCallbacks&
+    ) {
+        executorRan = true;
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    DownloadTaskSnapshot restored;
+    restored.id = 10;
+    restored.request.url = L"https://example.invalid/restored";
+    restored.title = L"Restored";
+    restored.state = DownloadTaskState::Queued;
+    restored.statusText = L"В очереди";
+
+    queue.ImportSnapshots({restored});
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    const std::vector<DownloadTaskSnapshot> tasks = queue.Snapshot();
+    Require(tasks.size() == 1, "import should restore one task");
+    Require(tasks.front().id == 10, "restored task id mismatch");
+    Require(tasks.front().state == DownloadTaskState::Canceled, "restored queued task should be stopped");
+    Require(tasks.front().statusText == L"Остановлено", "restored queued task status mismatch");
+    Require(!executorRan.load(), "restored tasks should not start automatically");
+}
+
+void TestDownloadQueueExportForShutdownStopsActiveTasks() {
+    std::atomic<bool> started = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot&,
+        std::stop_token stopToken,
+        const DownloadTaskCallbacks&
+    ) {
+        started = true;
+        while (!stopToken.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{false, L"stopped", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/active";
+    const int id = queue.Enqueue(request, L"Active");
+    while (!started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const std::vector<DownloadTaskSnapshot> shutdown = queue.ExportSnapshotsForShutdown();
+
+    Require(shutdown.size() == 1, "shutdown export should include active task");
+    Require(shutdown.front().id == id, "shutdown export id mismatch");
+    Require(shutdown.front().state == DownloadTaskState::Canceled, "active task should persist as canceled on shutdown");
+    Require(shutdown.front().statusText == L"Остановлено", "active task shutdown status mismatch");
+}
+
+void TestDownloadQueueDeletedTaskIsNotExported() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](
+        const DownloadTaskSnapshot&,
+        std::stop_token,
+        const DownloadTaskCallbacks&
+    ) {
+        return DownloadTaskResult{false, L"not started", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/delete-export";
+    const int id = queue.Enqueue(request, L"Delete Export");
+    Require(queue.Cancel(id), "queued task should cancel before delete");
+    Require(queue.DeleteFiles(id), "canceled task should delete");
+
+    Require(queue.ExportSnapshots().empty(), "deleted task should not be exported");
+    Require(queue.ExportSnapshotsForShutdown().empty(), "deleted task should not be exported for shutdown");
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "--process-tree-parent-fixture") {
+        return RunProcessTreeParentFixture();
+    }
+    if (argc >= 2 && std::string(argv[1]) == "--process-tree-child-fixture") {
+        return RunProcessTreeChildFixture();
+    }
+
     TestAppPaths();
+    TestDownloadQueueStoreRoundTripSnapshots();
+    TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigDropsLegacyFfmpegPromptFlag();
     TestMainWindowShortcutResolution();
@@ -1548,6 +1833,7 @@ int main() {
     TestFfmpegUserPathAndExtractedTreeResolution();
     TestProcessRunnerCapturesOutputAndExitCode();
     TestProcessRunnerEmitsEachOutputLineOnce();
+    TestProcessRunnerCancelKillsChildProcessTree();
     TestYtDlpMetadataParsing();
     TestDownloadQueueSchedulingAndRetry();
     TestDownloadQueueLogsTaskLifecycle();
@@ -1568,5 +1854,8 @@ int main() {
     TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts();
     TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts();
     TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly();
+    TestDownloadQueueImportsRestoredTasksWithoutStartingThem();
+    TestDownloadQueueExportForShutdownStopsActiveTasks();
+    TestDownloadQueueDeletedTaskIsNotExported();
     return 0;
 }
