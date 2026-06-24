@@ -33,6 +33,7 @@ namespace {
 constexpr const wchar_t* kWindowClassName = L"YoutubeDownloaderWin32Class";
 constexpr const wchar_t* kButtonClassName = L"YoutubeDownloaderButtonClass";
 constexpr const wchar_t* kQueueErrorMenuClassName = L"YoutubeDownloaderQueueErrorMenu";
+constexpr const wchar_t* kEditContextMenuClassName = L"YoutubeDownloaderEditContextMenu";
 constexpr int kInitialWindowWidth = 1000;
 constexpr int kInitialWindowHeight = 640;
 constexpr COLORREF kBackgroundColor = RGB(20, 20, 22);
@@ -71,6 +72,7 @@ struct ButtonState {
     bool onPanel = false;
     bool hot = false;
     bool pressed = false;
+    bool enabled = true;
     std::wstring text;
 };
 
@@ -78,6 +80,18 @@ struct QueueErrorMenuState {
     HWND owner = nullptr;
     std::wstring errorText;
     bool hot = false;
+};
+
+struct EditContextMenuState {
+    HWND owner = nullptr;
+    HWND edit = nullptr;
+    std::vector<EditContextMenuItem> items;
+    UINT hotItemId = 0;
+};
+
+struct EditSubclassState {
+    HWND owner = nullptr;
+    HINSTANCE instance = nullptr;
 };
 
 class UniqueHandle {
@@ -470,6 +484,25 @@ void AddTooltip(HWND tooltip, HWND parent, HWND tool, const wchar_t* text) {
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
 }
 
+void CachePreviewThumbnailTree(YtDlpClient& client, VideoPreview& preview, HANDLE cancelEvent) {
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        return;
+    }
+    if (!preview.thumbnailUrl.empty()) {
+        try {
+            preview.cachedThumbnailPath = client.CacheThumbnail(preview, cancelEvent);
+        } catch (...) {
+            preview.cachedThumbnailPath.clear();
+        }
+    }
+    for (VideoPreview& entry : preview.entries) {
+        if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+            return;
+        }
+        CachePreviewThumbnailTree(client, entry, cancelEvent);
+    }
+}
+
 LRESULT CALLBACK QueueErrorMenuProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     QueueErrorMenuState* state = reinterpret_cast<QueueErrorMenuState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -545,7 +578,223 @@ LRESULT CALLBACK QueueErrorMenuProc(HWND window, UINT message, WPARAM wParam, LP
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-void RegisterQueueErrorMenuClass(HINSTANCE instance) {
+void ExecuteEditContextCommand(HWND edit, UINT commandId) {
+    if (!IsWindow(edit)) {
+        return;
+    }
+
+    switch (commandId) {
+    case IdEditMenuUndo:
+        SendMessageW(edit, EM_UNDO, 0, 0);
+        break;
+    case IdEditMenuCut:
+        SendMessageW(edit, WM_CUT, 0, 0);
+        break;
+    case IdEditMenuCopy:
+        SendMessageW(edit, WM_COPY, 0, 0);
+        break;
+    case IdEditMenuPaste:
+        SendMessageW(edit, WM_PASTE, 0, 0);
+        break;
+    case IdEditMenuDelete:
+        SendMessageW(edit, WM_CLEAR, 0, 0);
+        break;
+    case IdEditMenuSelectAll:
+        SendMessageW(edit, EM_SETSEL, 0, -1);
+        break;
+    default:
+        break;
+    }
+}
+
+void ShowEditContextMenu(HWND owner, HINSTANCE instance, HWND edit, POINT screenPoint) {
+    if (!IsWindow(edit)) {
+        return;
+    }
+
+    DWORD selection = static_cast<DWORD>(SendMessageW(edit, EM_GETSEL, 0, 0));
+    const bool hasSelection = LOWORD(selection) != HIWORD(selection);
+    const bool hasText = GetWindowTextLengthW(edit) > 0;
+    const bool canUndo = SendMessageW(edit, EM_CANUNDO, 0, 0) != 0;
+    const bool canPaste = IsClipboardFormatAvailable(CF_UNICODETEXT) != 0;
+
+    auto* state = new EditContextMenuState{};
+    state->owner = owner;
+    state->edit = edit;
+    state->items = BuildEditContextMenuItems(canUndo, hasSelection, canPaste, hasText);
+
+    constexpr int menuWidth = 180;
+    const int menuHeight = EditContextMenuHeight(state->items);
+    RECT workArea = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    const int x = std::max(
+        static_cast<int>(workArea.left),
+        std::min(static_cast<int>(screenPoint.x), static_cast<int>(workArea.right) - menuWidth)
+    );
+    const int y = std::max(
+        static_cast<int>(workArea.top),
+        std::min(static_cast<int>(screenPoint.y), static_cast<int>(workArea.bottom) - menuHeight)
+    );
+
+    HWND menu = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        kEditContextMenuClassName,
+        L"",
+        WS_POPUP,
+        x,
+        y,
+        menuWidth,
+        menuHeight,
+        owner,
+        nullptr,
+        instance,
+        state
+    );
+    if (!menu) {
+        delete state;
+        return;
+    }
+    ShowWindow(menu, SW_SHOW);
+    SetFocus(menu);
+}
+
+LRESULT CALLBACK EditContextMenuProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    EditContextMenuState* state = reinterpret_cast<EditContextMenuState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const CREATESTRUCTW* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = static_cast<EditContextMenuState*>(create->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        return TRUE;
+    }
+
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_MOUSEMOVE:
+        if (state) {
+            const UINT hot = HitTestEditContextMenuItem(state->items, GET_Y_LPARAM(lParam));
+            if (hot != state->hotItemId) {
+                state->hotItemId = hot;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            TRACKMOUSEEVENT track = {};
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = window;
+            TrackMouseEvent(&track);
+        }
+        return 0;
+
+    case WM_MOUSELEAVE:
+        if (state && state->hotItemId != 0) {
+            state->hotItemId = 0;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        return 0;
+
+    case WM_PAINT:
+        PaintBuffered(window, [state](HDC dc, const RECT& client) {
+            std::vector<UiRenderer::PopupMenuItem> items;
+            if (state) {
+                items.reserve(state->items.size());
+                for (const EditContextMenuItem& item : state->items) {
+                    items.push_back({item.id, item.text, item.separator, item.enabled});
+                }
+            }
+            UiRenderer::DrawPopupMenu(dc, client, items, state ? state->hotItemId : 0);
+        });
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (state) {
+            const UINT commandId = HitTestEditContextMenuItem(state->items, GET_Y_LPARAM(lParam));
+            if (IsWindow(state->edit)) {
+                SetFocus(state->edit);
+            }
+            if (commandId != 0) {
+                ExecuteEditContextCommand(state->edit, commandId);
+            }
+        }
+        DestroyWindow(window);
+        return 0;
+
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            DestroyWindow(window);
+            return 0;
+        }
+        if (wParam == VK_RETURN || wParam == VK_SPACE) {
+            if (state && state->hotItemId != 0) {
+                if (IsWindow(state->edit)) {
+                    SetFocus(state->edit);
+                }
+                ExecuteEditContextCommand(state->edit, state->hotItemId);
+            }
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
+
+    case WM_KILLFOCUS:
+        DestroyWindow(window);
+        return 0;
+
+    case WM_NCDESTROY:
+        delete state;
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return 0;
+    }
+
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+LRESULT CALLBACK EditControlSubclassProc(
+    HWND window,
+    UINT message,
+    WPARAM wParam,
+    LPARAM lParam,
+    UINT_PTR subclassId,
+    DWORD_PTR refData
+) {
+    UNREFERENCED_PARAMETER(subclassId);
+    auto* state = reinterpret_cast<EditSubclassState*>(refData);
+
+    if (message == WM_CONTEXTMENU && state) {
+        SetFocus(window);
+        POINT screenPoint = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (screenPoint.x == -1 && screenPoint.y == -1) {
+            RECT rect = {};
+            GetWindowRect(window, &rect);
+            screenPoint = {rect.left + 16, rect.top + ((rect.bottom - rect.top) / 2)};
+        }
+        ShowEditContextMenu(state->owner, state->instance, window, screenPoint);
+        return 0;
+    }
+
+    if (message == WM_NCDESTROY) {
+        const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
+        RemoveWindowSubclass(window, EditControlSubclassProc, 1);
+        delete state;
+        return result;
+    }
+
+    return DefSubclassProc(window, message, wParam, lParam);
+}
+
+void InstallCustomEditContextMenu(HWND edit, HWND owner, HINSTANCE instance) {
+    if (!IsWindow(edit)) {
+        return;
+    }
+    auto* state = new EditSubclassState{};
+    state->owner = owner;
+    state->instance = instance;
+    if (!SetWindowSubclass(edit, EditControlSubclassProc, 1, reinterpret_cast<DWORD_PTR>(state))) {
+        delete state;
+    }
+}
+
+void RegisterPopupMenuClasses(HINSTANCE instance) {
     WNDCLASSEXW menuClass = {};
     menuClass.cbSize = sizeof(menuClass);
     menuClass.lpfnWndProc = QueueErrorMenuProc;
@@ -554,6 +803,15 @@ void RegisterQueueErrorMenuClass(HINSTANCE instance) {
     menuClass.hbrBackground = nullptr;
     menuClass.lpszClassName = kQueueErrorMenuClassName;
     RegisterClassExW(&menuClass);
+
+    WNDCLASSEXW editMenuClass = {};
+    editMenuClass.cbSize = sizeof(editMenuClass);
+    editMenuClass.lpfnWndProc = EditContextMenuProc;
+    editMenuClass.hInstance = instance;
+    editMenuClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    editMenuClass.hbrBackground = nullptr;
+    editMenuClass.lpszClassName = kEditContextMenuClassName;
+    RegisterClassExW(&editMenuClass);
 }
 
 } // namespace
@@ -585,7 +843,7 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
         MessageBoxW(nullptr, L"Не удалось зарегистрировать класс кнопок.", L"YouTube Downloader", MB_OK | MB_ICONERROR);
         return false;
     }
-    RegisterQueueErrorMenuClass(m_instance);
+    RegisterPopupMenuClasses(m_instance);
 
     WNDCLASSEXW windowClass = {};
     windowClass.cbSize = sizeof(windowClass);
@@ -663,11 +921,8 @@ bool Application::HandleMainWindowShortcut(const MSG& message) {
         PasteReplacingEditText(m_urlEdit);
         return true;
     case MainWindowShortcutAction::Download:
-        if (m_downloadButton && IsWindowEnabled(m_downloadButton)) {
-            EnqueueCurrentUrl();
-            return true;
-        }
-        return false;
+        EnqueueCurrentUrl();
+        return true;
     case MainWindowShortcutAction::None:
         return false;
     }
@@ -763,8 +1018,20 @@ LRESULT CALLBACK Application::ButtonWindowProc(HWND window, UINT message, WPARAM
     case WM_ERASEBKGND:
         return 1;
 
+    case WM_ENABLE:
+        if (state) {
+            state->enabled = wParam != FALSE;
+            state->hot = false;
+            state->pressed = false;
+            if (GetCapture() == window) {
+                ReleaseCapture();
+            }
+            InvalidateRect(window, nullptr, TRUE);
+        }
+        return 0;
+
     case WM_MOUSEMOVE:
-        if (state && !state->hot) {
+        if (state && state->enabled && !state->hot) {
             state->hot = true;
             TRACKMOUSEEVENT track = {};
             track.cbSize = sizeof(track);
@@ -784,7 +1051,7 @@ LRESULT CALLBACK Application::ButtonWindowProc(HWND window, UINT message, WPARAM
         return 0;
 
     case WM_LBUTTONDOWN:
-        if (state) {
+        if (state && state->enabled) {
             state->pressed = true;
             SetCapture(window);
             SetFocus(window);
@@ -793,7 +1060,7 @@ LRESULT CALLBACK Application::ButtonWindowProc(HWND window, UINT message, WPARAM
         return 0;
 
     case WM_LBUTTONUP:
-        if (state) {
+        if (state && state->enabled) {
             if (GetCapture() == window) {
                 ReleaseCapture();
             }
@@ -812,7 +1079,7 @@ LRESULT CALLBACK Application::ButtonWindowProc(HWND window, UINT message, WPARAM
         return 0;
 
     case WM_KEYDOWN:
-        if (state && (wParam == VK_SPACE || wParam == VK_RETURN)) {
+        if (state && state->enabled && (wParam == VK_SPACE || wParam == VK_RETURN)) {
             HWND parent = GetParent(window);
             SendMessageW(parent, WM_COMMAND, MAKEWPARAM(state->commandId, BN_CLICKED), reinterpret_cast<LPARAM>(window));
             return 0;
@@ -826,7 +1093,16 @@ LRESULT CALLBACK Application::ButtonWindowProc(HWND window, UINT message, WPARAM
             RECT client = {};
             GetClientRect(window, &client);
             if (state) {
-                UiRenderer::DrawButton(dc, client, state->text.c_str(), state->primary, state->pressed, state->hot, state->onPanel);
+                UiRenderer::DrawButton(
+                    dc,
+                    client,
+                    state->text.c_str(),
+                    state->primary,
+                    state->pressed,
+                    state->hot,
+                    state->onPanel,
+                    state->enabled
+                );
             }
             EndPaint(window, &paint);
         }
@@ -1229,6 +1505,7 @@ void Application::CreateControls() {
     m_boldFont = CreateFontIndirectW(&font);
 
     m_urlEdit = CreateChild(m_window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 0, IdUrlEdit);
+    InstallCustomEditContextMenu(m_urlEdit, m_window, m_instance);
     SendMessageW(m_urlEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Ссылка на видео или плейлист"));
     SendMessageW(m_urlEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     m_pasteButton = CreateButton(L"Вставить", IdPasteButton, false, false);
@@ -1242,6 +1519,7 @@ void Application::CreateControls() {
         0
     );
     m_folderEdit = CreateChild(m_window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 0, 0);
+    InstallCustomEditContextMenu(m_folderEdit, m_window, m_instance);
     SendMessageW(m_folderEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     SetWindowTextW(m_folderEdit, L"Downloads");
     m_chooseFolderButton = CreateButton(L"Выбрать...", IdChooseFolderButton, false, true);
@@ -1842,6 +2120,9 @@ void Application::RestoreStatusText() {
 void Application::StartPreviewLoadingText() {
     m_previewLoading = true;
     m_previewLoadingDots = 3;
+    if (m_downloadButton) {
+        EnableWindow(m_downloadButton, FALSE);
+    }
     {
         std::lock_guard lock(m_previewMutex);
         m_preview = {};
@@ -1858,6 +2139,9 @@ void Application::StopPreviewLoadingText() {
         KillTimer(m_window, kPreviewLoadingTimer);
     }
     m_previewLoading = false;
+    if (m_downloadButton) {
+        EnableWindow(m_downloadButton, TRUE);
+    }
 }
 
 void Application::UpdatePreviewLoadingText() {
@@ -2099,9 +2383,7 @@ void Application::StartPreviewFetch() {
             });
             YtDlpClient client(options);
             result.preview = client.FetchPreview(url, cancelEvent.get());
-            if (!result.preview.thumbnailUrl.empty()) {
-                result.preview.cachedThumbnailPath = client.CacheThumbnail(result.preview, cancelEvent.get());
-            }
+            CachePreviewThumbnailTree(client, result.preview, cancelEvent.get());
             result.ok = true;
         } catch (const std::exception& ex) {
             result.ok = false;
@@ -2122,13 +2404,22 @@ void Application::StartPreviewFetch() {
 }
 
 void Application::EnqueueCurrentUrl() {
-    const DownloadAttemptAction action = ResolveDownloadAttempt(m_ytDlpReady);
+    const DownloadAttemptAction action = ResolveDownloadAttempt(m_ytDlpReady, m_previewLoading);
     if (action == DownloadAttemptAction::ShowYtDlpNotReady || !m_downloadQueue) {
         ShowErrorDialog(
             m_window,
             m_instance,
             L"yt-dlp ещё не готов",
             L"Дождитесь завершения проверки, установки или обновления yt-dlp."
+        );
+        return;
+    }
+    if (action == DownloadAttemptAction::ShowPreviewLoading) {
+        ShowInfoDialog(
+            m_window,
+            m_instance,
+            L"Информация ещё загружается",
+            L"Дождитесь, пока приложение получит название, состав плейлиста и превью."
         );
         return;
     }

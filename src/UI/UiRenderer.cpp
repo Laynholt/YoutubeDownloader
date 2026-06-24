@@ -115,7 +115,16 @@ void UiRenderer::DrawProgressBar(HDC dc, const RECT& rect, double percent) {
     graphics.FillPath(&fillBrush, &fillPath);
 }
 
-void UiRenderer::DrawButton(HDC dc, const RECT& rect, const wchar_t* text, bool primary, bool pressed, bool hot, bool onPanel) {
+void UiRenderer::DrawButton(
+    HDC dc,
+    const RECT& rect,
+    const wchar_t* text,
+    bool primary,
+    bool pressed,
+    bool hot,
+    bool onPanel,
+    bool enabled
+) {
     Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
@@ -133,17 +142,19 @@ void UiRenderer::DrawButton(HDC dc, const RECT& rect, const wchar_t* text, bool 
     RECT inset = {rect.left + 1, rect.top + 1, rect.right - 1, rect.bottom - 1};
     AddRoundedRect(path, inset, 7);
 
-    const Color fillColor = primary
+    const Color fillColor = !enabled
+        ? Color(255, 36, 36, 39)
+        : primary
         ? (pressed ? kAccentPressed : (hot ? Color(255, 242, 88, 101) : kAccent))
         : (pressed ? Color(255, 30, 30, 33) : (hot ? Color(255, 42, 42, 46) : kPanel2));
     SolidBrush fill(fillColor);
-    Pen border(primary ? fillColor : kBorder, 1.0f);
+    Pen border((enabled && primary) ? fillColor : kBorder, 1.0f);
     graphics.FillPath(&fill, &path);
     graphics.DrawPath(&border, &path);
 
     FontFamily family(L"Segoe UI");
     Font font(&family, 10.0f, Gdiplus::FontStyleRegular, UnitPoint);
-    SolidBrush textBrush(kText);
+    SolidBrush textBrush(enabled ? kText : Color(255, 136, 136, 142));
     RectF textRect(
         static_cast<Gdiplus::REAL>(rect.left),
         static_cast<Gdiplus::REAL>(rect.top),
@@ -223,7 +234,7 @@ void UiRenderer::DrawPopupMenu(HDC dc, const RECT& rect, const std::vector<Popup
             continue;
         }
 
-        if (item.id == hoveredItemId) {
+        if (item.enabled && item.id == hoveredItemId) {
             HBRUSH selectedBrush = CreateSolidBrush(RGB(66, 66, 66));
             FillRect(dc, &itemRect, selectedBrush);
             DeleteObject(selectedBrush);
@@ -232,6 +243,7 @@ void UiRenderer::DrawPopupMenu(HDC dc, const RECT& rect, const std::vector<Popup
         RECT textRect = itemRect;
         textRect.left += kPopupTextPaddingLeft;
         textRect.right -= 10;
+        SetTextColor(dc, item.enabled ? RGB(235, 235, 235) : RGB(128, 128, 132));
         DrawTextW(dc, item.text.c_str(), -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 

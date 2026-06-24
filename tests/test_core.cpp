@@ -150,13 +150,37 @@ void TestMainWindowShortcutResolution() {
 
 void TestDownloadAttemptResolution() {
     Require(
-        ResolveDownloadAttempt(false) == DownloadAttemptAction::ShowYtDlpNotReady,
+        ResolveDownloadAttempt(false, false) == DownloadAttemptAction::ShowYtDlpNotReady,
         "download should show a readiness message when yt-dlp is unavailable"
     );
     Require(
-        ResolveDownloadAttempt(true) == DownloadAttemptAction::Enqueue,
+        ResolveDownloadAttempt(true, true) == DownloadAttemptAction::ShowPreviewLoading,
+        "download should wait while preview metadata is loading"
+    );
+    Require(
+        ResolveDownloadAttempt(true, false) == DownloadAttemptAction::Enqueue,
         "download should enqueue when yt-dlp is ready"
     );
+}
+
+void TestEditContextMenuModel() {
+    const std::vector<EditContextMenuItem> emptyItems = BuildEditContextMenuItems(false, false, false, false);
+    Require(emptyItems.size() == 8, "edit menu should keep a stable command layout");
+    Require(emptyItems[0].id == IdEditMenuUndo && !emptyItems[0].enabled, "undo should be disabled without undo state");
+    Require(emptyItems[2].id == IdEditMenuCut && !emptyItems[2].enabled, "cut should be disabled without selection");
+    Require(emptyItems[4].id == IdEditMenuPaste && !emptyItems[4].enabled, "paste should be disabled without clipboard text");
+    Require(emptyItems[7].id == IdEditMenuSelectAll && !emptyItems[7].enabled, "select all should be disabled without text");
+    Require(EditContextMenuHeight(emptyItems) == 228, "edit menu height mismatch");
+    Require(HitTestEditContextMenuItem(emptyItems, 2 + 34 + 10 + 1) == 0, "disabled cut command should not hit");
+
+    const std::vector<EditContextMenuItem> activeItems = BuildEditContextMenuItems(true, true, true, true);
+    Require(activeItems[0].enabled, "undo should be enabled when edit can undo");
+    Require(activeItems[2].enabled, "cut should be enabled when text is selected");
+    Require(activeItems[3].enabled, "copy should be enabled when text is selected");
+    Require(activeItems[4].enabled, "paste should be enabled when clipboard has text");
+    Require(activeItems[7].enabled, "select all should be enabled when edit has text");
+    Require(HitTestEditContextMenuItem(activeItems, 2 + 34 + 10 + 1) == IdEditMenuCut, "active cut command hit mismatch");
+    Require(HitTestEditContextMenuItem(activeItems, EditContextMenuHeight(activeItems) + 5) == 0, "outside menu should not hit");
 }
 
 struct PasteEditSubclassState {
@@ -990,8 +1014,8 @@ void TestYtDlpMetadataParsing() {
   "_type": "playlist",
   "webpage_url": "https://www.youtube.com/playlist?list=playlist1",
   "entries": [
-    {"id": "v1", "title": "Video One", "url": "https://www.youtube.com/watch?v=v1", "duration": 10},
-    {"id": "v2", "title": "Video Two", "webpage_url": "https://www.youtube.com/watch?v=v2", "duration": 20}
+    {"id": "v1", "title": "Video One", "url": "https://www.youtube.com/watch?v=v1", "duration": 10, "thumbnail": "https://example.invalid/v1.jpg"},
+    {"id": "v2", "title": "Video Two", "webpage_url": "https://www.youtube.com/watch?v=v2", "duration": 20, "thumbnail": "https://example.invalid/v2.jpg"}
   ]
 }
 )json";
@@ -1001,7 +1025,9 @@ void TestYtDlpMetadataParsing() {
     Require(playlist.entries.size() == 2, "playlist entry count mismatch");
     Require(playlist.entries[0].id == L"v1", "playlist first entry id mismatch");
     Require(playlist.entries[0].webpageUrl == L"https://www.youtube.com/watch?v=v1", "playlist first entry url mismatch");
+    Require(playlist.entries[0].thumbnailUrl == L"https://example.invalid/v1.jpg", "playlist first entry thumbnail mismatch");
     Require(playlist.entries[1].title == L"Video Two", "playlist second entry title mismatch");
+    Require(playlist.entries[1].thumbnailUrl == L"https://example.invalid/v2.jpg", "playlist second entry thumbnail mismatch");
 }
 
 void TestDownloadQueueSchedulingAndRetry() {
@@ -1921,6 +1947,7 @@ int main(int argc, char** argv) {
     TestConfigDropsLegacyFfmpegPromptFlag();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
+    TestEditContextMenuModel();
     TestPasteReplacesExistingEditText();
     TestPasteReplacingEditTextIgnoresInvalidHandles();
     TestModalOwnerRestorationPreservesEnabledState();
