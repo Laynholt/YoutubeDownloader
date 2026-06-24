@@ -66,7 +66,7 @@ public:
     explicit YtDlpManager(AppPaths paths);
 
     ToolInstallStatus Status() const;
-    ReleaseAssetInfo CheckLatestRelease() const;
+    ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr) const;
     ToolInstallStatus InstallOrUpdate(HANDLE cancelEvent = nullptr) const;
 
 private:
@@ -75,7 +75,7 @@ private:
 
 class AppUpdateService {
 public:
-    static ReleaseAssetInfo CheckLatestRelease();
+    static ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
     static std::filesystem::path DownloadUpdateExe(
         const AppPaths& paths,
         const ReleaseAssetInfo& release,

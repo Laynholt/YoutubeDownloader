@@ -480,13 +480,16 @@ ToolInstallStatus YtDlpManager::Status() const {
     return status;
 }
 
-ReleaseAssetInfo YtDlpManager::CheckLatestRelease() const {
-    const std::string json = WinHttpClient::GetString(L"https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest");
+ReleaseAssetInfo YtDlpManager::CheckLatestRelease(HANDLE cancelEvent) const {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest",
+        cancelEvent
+    );
     return ParseGitHubReleaseAsset(json, "yt-dlp.exe");
 }
 
 ToolInstallStatus YtDlpManager::InstallOrUpdate(HANDLE cancelEvent) const {
-    const ReleaseAssetInfo release = CheckLatestRelease();
+    const ReleaseAssetInfo release = CheckLatestRelease(cancelEvent);
     if (!release.found) {
         throw std::runtime_error("yt-dlp release asset was not found");
     }
@@ -506,8 +509,11 @@ ToolInstallStatus YtDlpManager::InstallOrUpdate(HANDLE cancelEvent) const {
     return Status();
 }
 
-ReleaseAssetInfo AppUpdateService::CheckLatestRelease() {
-    const std::string json = WinHttpClient::GetString(L"https://api.github.com/repos/Laynholt/YoutubeDownloader/releases/latest");
+ReleaseAssetInfo AppUpdateService::CheckLatestRelease(HANDLE cancelEvent) {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/Laynholt/YoutubeDownloader/releases/latest",
+        cancelEvent
+    );
     return ParseGitHubReleaseAsset(json, "YoutubeDownloader.exe");
 }
 

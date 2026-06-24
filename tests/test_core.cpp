@@ -1,5 +1,6 @@
 #include "AppPaths.h"
 #include "AppVersion.h"
+#include "AsyncWait.h"
 #include "BackendText.h"
 #include "Config.h"
 #include "DownloadQueue.h"
@@ -395,6 +396,29 @@ void TestCommitDownloadedFilePreservesTargetUntilValidated() {
     CommitDownloadedFile(staged, target, 11, 11);
     Require(readText(target) == "replacement", "validated download should replace the target");
     Require(!fs::exists(staged), "committed staged file should be consumed");
+}
+
+void TestWaitForDelayCompletesOrStopsPromptly() {
+    std::stop_source running;
+    const auto startedAt = std::chrono::steady_clock::now();
+    Require(
+        WaitForDelay(running.get_token(), std::chrono::milliseconds(20)),
+        "delay should complete when no stop is requested"
+    );
+    const auto elapsed = std::chrono::steady_clock::now() - startedAt;
+    Require(elapsed >= std::chrono::milliseconds(15), "delay returned before its timeout");
+
+    std::stop_source stopped;
+    stopped.request_stop();
+    const auto canceledAt = std::chrono::steady_clock::now();
+    Require(
+        !WaitForDelay(stopped.get_token(), std::chrono::seconds(2)),
+        "delay should report a stop request"
+    );
+    Require(
+        std::chrono::steady_clock::now() - canceledAt < std::chrono::milliseconds(100),
+        "stopped delay should return promptly"
+    );
 }
 
 void TestProgressPresentation() {
@@ -1409,6 +1433,7 @@ int main() {
     TestConfigUtf8RoundTrip();
     TestLoggerTruncatesAtStartupAndAppendsWithinRun();
     TestCommitDownloadedFilePreservesTargetUntilValidated();
+    TestWaitForDelayCompletesOrStopsPromptly();
     TestProgressPresentation();
     TestVersionCompare();
     TestYtDlpDownloadArguments();
