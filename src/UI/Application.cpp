@@ -926,32 +926,32 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case kMsgToolCheckComplete:
         {
-            std::optional<ToolCheckResult> result;
+            ToolCheckResult result;
             {
                 std::lock_guard lock(m_asyncResultMutex);
                 if (!m_toolCheckResult) {
                     return 0;
                 }
-                result = std::move(m_toolCheckResult);
+                result = std::move(*m_toolCheckResult);
                 m_toolCheckResult.reset();
             }
-            m_ytDlpReady = result->ready;
-            m_ytDlpStatus = result->status;
-            if (m_paths && result->latestRelease.found && !result->latestCheckAt.empty()) {
-                m_config.lastYtDlpCheckAt = result->latestCheckAt;
-                m_config.lastYtDlpVersion = result->latestRelease.version;
+            m_ytDlpReady = result.ready;
+            m_ytDlpStatus = result.status;
+            if (m_paths && result.latestRelease.found && !result.latestCheckAt.empty()) {
+                m_config.lastYtDlpCheckAt = result.latestCheckAt;
+                m_config.lastYtDlpVersion = result.latestRelease.version;
                 try {
                     ConfigStore::Save(*m_paths, m_config);
                 } catch (...) {
                     // The tool check result should still be usable even if config persistence fails.
                 }
             }
-            SetStatus(result->ready ? BuildToolReadyStatus(result->status, m_ffmpeg) : result->message);
+            SetStatus(result.ready ? BuildToolReadyStatus(result.status, m_ffmpeg) : result.message);
             if (m_logger) {
-                if (result->ready) {
-                    m_logger->Info(L"yt-dlp tool check completed: version=" + result->status.version);
+                if (result.ready) {
+                    m_logger->Info(L"yt-dlp tool check completed: version=" + result.status.version);
                 } else {
-                    m_logger->Error(L"yt-dlp tool check failed: " + result->message);
+                    m_logger->Error(L"yt-dlp tool check failed: " + result.message);
                 }
             }
         }
@@ -959,25 +959,25 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case kMsgAppUpdateCheckComplete:
         {
-            std::optional<AppUpdateCheckResult> result;
+            AppUpdateCheckResult result;
             {
                 std::lock_guard lock(m_asyncResultMutex);
                 if (!m_appUpdateCheckResult) {
                     return 0;
                 }
-                result = std::move(m_appUpdateCheckResult);
+                result = std::move(*m_appUpdateCheckResult);
                 m_appUpdateCheckResult.reset();
             }
-            if (m_paths && result->ok && ShouldInstallAppUpdate(result->release)) {
-                if (OfferAppUpdate(m_window, m_instance, *m_paths, result->release, false)) {
+            if (m_paths && result.ok && ShouldInstallAppUpdate(result.release)) {
+                if (OfferAppUpdate(m_window, m_instance, *m_paths, result.release, false)) {
                     PostMessageW(m_window, WM_CLOSE, 0, 0);
                 }
             }
             if (m_logger) {
-                if (result->ok) {
-                    m_logger->Info(L"Application update check completed: version=" + result->release.version);
+                if (result.ok) {
+                    m_logger->Info(L"Application update check completed: version=" + result.release.version);
                 } else {
-                    m_logger->Error(L"Application update check failed: " + result->error);
+                    m_logger->Error(L"Application update check failed: " + result.error);
                 }
             }
         }
@@ -985,40 +985,40 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
 
     case kMsgPreviewComplete:
         {
-            std::optional<PreviewFetchResult> result;
+            PreviewFetchResult result;
             {
                 std::lock_guard lock(m_asyncResultMutex);
                 if (!m_previewFetchResult) {
                     return 0;
                 }
-                result = std::move(m_previewFetchResult);
+                result = std::move(*m_previewFetchResult);
                 m_previewFetchResult.reset();
             }
-            if (result->requestId != m_previewRequestId.load()) {
+            if (result.requestId != m_previewRequestId.load()) {
                 return 0;
             }
             StopPreviewLoadingText();
-            if (result->ok) {
+            if (result.ok) {
                 {
                     std::lock_guard lock(m_previewMutex);
-                    m_preview = result->preview;
+                    m_preview = result.preview;
                 }
-                std::wstring title = result->preview.title.empty() ? L"Видео найдено" : result->preview.title;
-                if (result->preview.isPlaylist) {
-                    title += L" — плейлист: " + std::to_wstring(result->preview.entries.size()) + L" видео";
+                std::wstring title = result.preview.title.empty() ? L"Видео найдено" : result.preview.title;
+                if (result.preview.isPlaylist) {
+                    title += L" — плейлист: " + std::to_wstring(result.preview.entries.size()) + L" видео";
                 }
                 SetWindowTextW(m_previewTitle, title.c_str());
                 if (m_downloadQueue) {
                     bool enriched = m_downloadQueue->EnrichMetadata(
-                        result->url,
-                        result->preview.title,
-                        result->preview.cachedThumbnailPath
+                        result.url,
+                        result.preview.title,
+                        result.preview.cachedThumbnailPath
                     );
-                    if (!result->preview.webpageUrl.empty() && result->preview.webpageUrl != result->url) {
+                    if (!result.preview.webpageUrl.empty() && result.preview.webpageUrl != result.url) {
                         enriched = m_downloadQueue->EnrichMetadata(
-                            result->preview.webpageUrl,
-                            result->preview.title,
-                            result->preview.cachedThumbnailPath
+                            result.preview.webpageUrl,
+                            result.preview.title,
+                            result.preview.cachedThumbnailPath
                         ) || enriched;
                     }
                     if (enriched) {
@@ -1026,16 +1026,16 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     }
                 }
                 if (m_logger) {
-                    m_logger->Info(L"Preview loaded: url=" + result->url);
+                    m_logger->Info(L"Preview loaded: url=" + result.url);
                 }
             } else {
                 {
                     std::lock_guard lock(m_previewMutex);
                     m_preview = {};
                 }
-                SetWindowTextW(m_previewTitle, result->error.empty() ? L"Не удалось получить preview" : result->error.c_str());
+                SetWindowTextW(m_previewTitle, result.error.empty() ? L"Не удалось получить preview" : result.error.c_str());
                 if (m_logger) {
-                    m_logger->Error(L"Preview failed: url=" + result->url + L" error=" + result->error);
+                    m_logger->Error(L"Preview failed: url=" + result.url + L" error=" + result.error);
                 }
             }
             InvalidateRect(m_window, nullptr, FALSE);

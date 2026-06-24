@@ -95,7 +95,9 @@ private:
 
     void SchedulerLoop();
     void StartTask(int id, std::stop_token stopToken);
-    void ReapFinishedWorkers(std::unique_lock<std::mutex>& lock);
+    void UpdateTaskProgress(int id, const YtDlpProgress& progress);
+    void RecordTaskOutput(int id, const std::wstring& line);
+    void FinishTask(int id, std::stop_token stopToken, const DownloadTaskResult& result);
     DownloadTaskResult DefaultExecutor(
         const DownloadTaskSnapshot& task,
         std::stop_token stopToken,
