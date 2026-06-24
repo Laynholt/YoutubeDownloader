@@ -1660,6 +1660,86 @@ void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
     Require(queue.Snapshot().empty(), "clear finished should remove task rows");
 }
 
+void TestDownloadQueueImportsRestoredTasksWithoutStartingThem() {
+    std::atomic<bool> executorRan = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot&,
+        std::stop_token,
+        const DownloadTaskCallbacks&
+    ) {
+        executorRan = true;
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    DownloadTaskSnapshot restored;
+    restored.id = 10;
+    restored.request.url = L"https://example.invalid/restored";
+    restored.title = L"Restored";
+    restored.state = DownloadTaskState::Queued;
+    restored.statusText = L"В очереди";
+
+    queue.ImportSnapshots({restored});
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    const std::vector<DownloadTaskSnapshot> tasks = queue.Snapshot();
+    Require(tasks.size() == 1, "import should restore one task");
+    Require(tasks.front().id == 10, "restored task id mismatch");
+    Require(tasks.front().state == DownloadTaskState::Canceled, "restored queued task should be stopped");
+    Require(tasks.front().statusText == L"Остановлено", "restored queued task status mismatch");
+    Require(!executorRan.load(), "restored tasks should not start automatically");
+}
+
+void TestDownloadQueueExportForShutdownStopsActiveTasks() {
+    std::atomic<bool> started = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot&,
+        std::stop_token stopToken,
+        const DownloadTaskCallbacks&
+    ) {
+        started = true;
+        while (!stopToken.stop_requested()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{false, L"stopped", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/active";
+    const int id = queue.Enqueue(request, L"Active");
+    while (!started.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const std::vector<DownloadTaskSnapshot> shutdown = queue.ExportSnapshotsForShutdown();
+
+    Require(shutdown.size() == 1, "shutdown export should include active task");
+    Require(shutdown.front().id == id, "shutdown export id mismatch");
+    Require(shutdown.front().state == DownloadTaskState::Canceled, "active task should persist as canceled on shutdown");
+    Require(shutdown.front().statusText == L"Остановлено", "active task shutdown status mismatch");
+}
+
+void TestDownloadQueueDeletedTaskIsNotExported() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](
+        const DownloadTaskSnapshot&,
+        std::stop_token,
+        const DownloadTaskCallbacks&
+    ) {
+        return DownloadTaskResult{false, L"not started", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/delete-export";
+    const int id = queue.Enqueue(request, L"Delete Export");
+    Require(queue.Cancel(id), "queued task should cancel before delete");
+    Require(queue.DeleteFiles(id), "canceled task should delete");
+
+    Require(queue.ExportSnapshots().empty(), "deleted task should not be exported");
+    Require(queue.ExportSnapshotsForShutdown().empty(), "deleted task should not be exported for shutdown");
+}
+
 } // namespace
 
 int main() {
@@ -1712,5 +1792,8 @@ int main() {
     TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts();
     TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts();
     TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly();
+    TestDownloadQueueImportsRestoredTasksWithoutStartingThem();
+    TestDownloadQueueExportForShutdownStopsActiveTasks();
+    TestDownloadQueueDeletedTaskIsNotExported();
     return 0;
 }
