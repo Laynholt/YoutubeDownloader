@@ -2,6 +2,7 @@
 
 #include "AppVersion.h"
 #include "BackendText.h"
+#include "FileOperations.h"
 #include "ProcessRunner.h"
 #include "Version.h"
 #include "WinHttpClient.h"
@@ -365,13 +366,11 @@ FfmpegStatus FfmpegManager::InstallEssentials(
     const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
     HANDLE cancelEvent
 ) {
-    const std::filesystem::path archiveTmp = paths.stuffDir() / L"ffmpeg-release-essentials.zip.tmp";
     const std::filesystem::path archive = paths.stuffDir() / L"ffmpeg-release-essentials.zip";
     const std::filesystem::path extractDir = paths.stuffDir() / L"ffmpeg_extract";
 
     std::error_code ec;
     std::filesystem::create_directories(paths.stuffDir(), ec);
-    std::filesystem::remove(archiveTmp, ec);
     std::filesystem::remove(archive, ec);
     std::filesystem::remove_all(extractDir, ec);
 
@@ -381,7 +380,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
 
     WinHttpClient::DownloadFile(
         EssentialsDownloadUrl(),
-        archiveTmp,
+        archive,
         [onProgress](std::uint64_t downloaded, std::uint64_t total) {
             if (onProgress) {
                 onProgress(downloaded, total, L"Скачивание FFmpeg...");
@@ -392,11 +391,6 @@ FfmpegStatus FfmpegManager::InstallEssentials(
 
     if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
         throw std::runtime_error("operation canceled");
-    }
-
-    std::filesystem::rename(archiveTmp, archive, ec);
-    if (ec) {
-        throw std::runtime_error("failed to finalize FFmpeg archive");
     }
 
     std::filesystem::create_directories(extractDir, ec);
@@ -497,18 +491,17 @@ ToolInstallStatus YtDlpManager::InstallOrUpdate(HANDLE cancelEvent) const {
         throw std::runtime_error("yt-dlp release asset was not found");
     }
 
-    const std::filesystem::path tmpPath = m_paths.ytDlpExePath().wstring() + L".tmp";
+    const std::filesystem::path tmpPath = m_paths.ytDlpExePath().wstring() + L".new";
     std::error_code ec;
     std::filesystem::remove(tmpPath, ec);
 
     WinHttpClient::DownloadFile(release.downloadUrl, tmpPath, {}, cancelEvent);
 
-    std::filesystem::remove(m_paths.ytDlpExePath(), ec);
-    ec.clear();
-    std::filesystem::rename(tmpPath, m_paths.ytDlpExePath(), ec);
+    const std::uint64_t downloadedSize = static_cast<std::uint64_t>(std::filesystem::file_size(tmpPath, ec));
     if (ec) {
-        throw std::runtime_error("failed to replace yt-dlp executable");
+        throw std::runtime_error("failed to inspect downloaded yt-dlp executable");
     }
+    CommitDownloadedFile(tmpPath, m_paths.ytDlpExePath(), downloadedSize, downloadedSize);
     WriteTextFile(m_paths.ytDlpVersionPath(), release.version);
     return Status();
 }

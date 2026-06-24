@@ -3,6 +3,7 @@
 #include "BackendText.h"
 #include "Config.h"
 #include "DownloadQueue.h"
+#include "FileOperations.h"
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
 #include "ProcessRunner.h"
@@ -362,6 +363,38 @@ void TestLoggerTruncatesAtStartupAndAppendsWithinRun() {
     Require(text.find("old-run") == std::string::npos, "old log content should be removed");
     Require(text.find("startup") != std::string::npos, "startup log entry missing");
     Require(text.find("failure") != std::string::npos, "error log entry missing");
+}
+
+void TestCommitDownloadedFilePreservesTargetUntilValidated() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_FileCommit");
+    const fs::path target = root / L"tool.exe";
+    const fs::path staged = root / L"tool.exe.new";
+
+    auto writeText = [](const fs::path& path, const std::string& text) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+    };
+    auto readText = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    writeText(target, "working");
+    writeText(staged, "bad");
+    bool rejectedShortFile = false;
+    try {
+        CommitDownloadedFile(staged, target, 3, 4);
+    } catch (const std::exception&) {
+        rejectedShortFile = true;
+    }
+    Require(rejectedShortFile, "short download should be rejected");
+    Require(readText(target) == "working", "short download should preserve the working target");
+    Require(!fs::exists(staged), "rejected staged file should be removed");
+
+    writeText(staged, "replacement");
+    CommitDownloadedFile(staged, target, 11, 11);
+    Require(readText(target) == "replacement", "validated download should replace the target");
+    Require(!fs::exists(staged), "committed staged file should be consumed");
 }
 
 void TestProgressPresentation() {
@@ -1375,6 +1408,7 @@ int main() {
     TestConfigParallelDownloadBounds();
     TestConfigUtf8RoundTrip();
     TestLoggerTruncatesAtStartupAndAppendsWithinRun();
+    TestCommitDownloadedFilePreservesTargetUntilValidated();
     TestProgressPresentation();
     TestVersionCompare();
     TestYtDlpDownloadArguments();
