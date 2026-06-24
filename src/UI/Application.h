@@ -75,6 +75,8 @@ private:
     void SetTransientStatus(const std::wstring& text);
     void RestoreStatusText();
     void InitializeBackend();
+    void LoadDownloadQueue();
+    void SaveDownloadQueue(bool forShutdown = false);
     void StartToolCheck();
     void StartAppUpdateCheck();
     void StartPreviewFetch();
@@ -127,6 +129,7 @@ private:
     VideoPreview m_preview;
     std::atomic<unsigned long> m_previewRequestId = 0;
     std::uint64_t m_lastRenderedQueueRevision = static_cast<std::uint64_t>(-1);
+    std::uint64_t m_lastSavedQueueRevision = static_cast<std::uint64_t>(-1);
     bool m_queuePlaceholderVisible = true;
     bool m_ytDlpReady = false;
     bool m_transientStatusActive = false;

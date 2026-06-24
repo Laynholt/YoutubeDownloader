@@ -3,6 +3,7 @@
 #include "AsyncWait.h"
 #include "BackendText.h"
 #include "DialogWindows.h"
+#include "DownloadQueueStore.h"
 #include "KeyboardShortcuts.h"
 #include "resource.h"
 #include "UiActions.h"
@@ -599,6 +600,7 @@ void Application::Shutdown() {
     StopAndJoin(m_toolCheckWorker);
     StopAndJoin(m_appUpdateWorker);
     if (m_downloadQueue) {
+        SaveDownloadQueue(true);
         m_downloadQueue->Shutdown();
     }
     if (m_logger) {
@@ -1688,10 +1690,68 @@ void Application::InitializeBackend() {
 
     m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
     m_downloadQueue = std::make_unique<DownloadQueue>(m_config.maxParallelDownloads, m_logger.get());
+    LoadDownloadQueue();
 
     SetTimer(m_window, kQueueRefreshTimer, 500, nullptr);
     SetStatus(L"Проверка yt-dlp...");
     StartToolCheck();
+}
+
+void Application::LoadDownloadQueue() {
+    if (!m_paths || !m_downloadQueue) {
+        return;
+    }
+
+    try {
+        const std::vector<DownloadTaskSnapshot> tasks = DownloadQueueStore::Load(*m_paths);
+        if (tasks.empty()) {
+            return;
+        }
+        m_downloadQueue->ImportSnapshots(tasks);
+        m_lastSavedQueueRevision = m_downloadQueue->Revision();
+        if (m_logger) {
+            m_logger->Info(L"Download queue restored: count=" + std::to_wstring(tasks.size()));
+        }
+    } catch (const std::exception& ex) {
+        if (m_logger) {
+            m_logger->Error(
+                L"Download queue restore failed: " +
+                std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+            );
+        }
+    } catch (...) {
+        if (m_logger) {
+            m_logger->Error(L"Download queue restore failed: unknown error");
+        }
+    }
+}
+
+void Application::SaveDownloadQueue(bool forShutdown) {
+    if (!m_paths || !m_downloadQueue) {
+        return;
+    }
+
+    try {
+        const std::vector<DownloadTaskSnapshot> tasks = forShutdown
+            ? m_downloadQueue->ExportSnapshotsForShutdown()
+            : m_downloadQueue->ExportSnapshots();
+        DownloadQueueStore::Save(*m_paths, tasks);
+        m_lastSavedQueueRevision = m_downloadQueue->Revision();
+        if (forShutdown && m_logger) {
+            m_logger->Info(L"Download queue saved for shutdown: count=" + std::to_wstring(tasks.size()));
+        }
+    } catch (const std::exception& ex) {
+        if (m_logger) {
+            m_logger->Error(
+                L"Download queue save failed: " +
+                std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+            );
+        }
+    } catch (...) {
+        if (m_logger) {
+            m_logger->Error(L"Download queue save failed: unknown error");
+        }
+    }
 }
 
 void Application::StartToolCheck() {
@@ -1929,6 +1989,9 @@ void Application::RefreshQueueText() {
     const std::uint64_t revision = m_downloadQueue->Revision();
     if (revision == m_lastRenderedQueueRevision) {
         return;
+    }
+    if (revision != m_lastSavedQueueRevision) {
+        SaveDownloadQueue(false);
     }
     m_lastRenderedQueueRevision = revision;
     RECT client = {};
