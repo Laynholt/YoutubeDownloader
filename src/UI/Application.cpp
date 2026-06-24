@@ -226,7 +226,7 @@ std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
         parts.push_back(FormatBytes(task.speedBytesPerSecond) + L"/s");
     }
     if (task.etaSeconds > 0) {
-        parts.push_back(L"ETA " + std::to_wstring(task.etaSeconds) + L"с");
+        parts.push_back(L"ETA " + FormatDuration(task.etaSeconds));
     }
 
     std::wstring details;

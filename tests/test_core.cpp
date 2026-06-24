@@ -434,6 +434,13 @@ void TestProgressPresentation() {
     Require(FormatProgressBytes(1024, 0) == L"1.0 KB", "downloaded-only progress text mismatch");
     Require(FormatProgressBytes(0, 0).empty(), "unknown progress sizes should be hidden");
 
+    Require(FormatDuration(0).empty(), "zero duration should be hidden");
+    Require(FormatDuration(7) == L"7 с", "seconds duration mismatch");
+    Require(FormatDuration(75) == L"1 мин 15 с", "minute duration mismatch");
+    Require(FormatDuration(3600) == L"1 ч", "hour duration mismatch");
+    Require(FormatDuration(9000) == L"2 ч 30 мин", "large second count should become hours and minutes");
+    Require(FormatDuration(172861) == L"2 д 1 мин", "multi-day duration mismatch");
+
     Require(CalculateProgressPercent(0, 0) == 0, "unknown-total percent should be zero");
     Require(CalculateProgressPercent(50, 100) == 50, "half progress percent mismatch");
     Require(CalculateProgressPercent(200, 100) == 100, "progress percent should clamp to 100");
