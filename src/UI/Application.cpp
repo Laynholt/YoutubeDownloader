@@ -340,6 +340,10 @@ DownloadTaskResult TranscribeDownloadedMedia(
 }
 
 std::filesystem::path ResolveWhisperExePath(const AppPaths& paths, const AppConfig& config) {
+    const ToolInstallStatus status = WhisperManager::Resolve(paths, config);
+    if (status.installed) {
+        return status.executable;
+    }
     return config.whisperPath.empty() ? paths.localWhisperExePath() : config.whisperPath;
 }
 

@@ -64,6 +64,10 @@ void TestAppPaths() {
     Require(paths.localFfprobeExePath() == root / L"tools" / L"ffmpeg" / L"bin" / L"ffprobe.exe", "ffprobe path mismatch");
     Require(paths.localWhisperDir() == root / L"tools" / L"whisper", "whisper dir path mismatch");
     Require(paths.localWhisperExePath() == root / L"tools" / L"whisper" / L"whisper-cli.exe", "whisper exe path mismatch");
+    Require(paths.localWhisperCpuDir() == root / L"tools" / L"whisper" / L"cpu", "whisper CPU dir path mismatch");
+    Require(paths.localWhisperCudaDir() == root / L"tools" / L"whisper" / L"cuda", "whisper CUDA dir path mismatch");
+    Require(paths.localWhisperCpuExePath() == root / L"tools" / L"whisper" / L"cpu" / L"whisper-cli.exe", "whisper CPU exe path mismatch");
+    Require(paths.localWhisperCudaExePath() == root / L"tools" / L"whisper" / L"cuda" / L"whisper-cli.exe", "whisper CUDA exe path mismatch");
     Require(paths.localWhisperModelsDir() == root / L"tools" / L"whisper" / L"models", "whisper models path mismatch");
     Require(paths.localWhisperModelPath() == root / L"tools" / L"whisper" / L"models" / L"ggml-large-v3-turbo.bin", "whisper model path mismatch");
     Require(paths.transcriptionTempDir() == root / L"stuff" / L"transcription_tmp", "transcription temp path mismatch");
@@ -80,6 +84,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
     Require(defaults.transcribeAfterDownload == false, "default transcription flag mismatch");
+    Require(defaults.whisperBackend == WhisperBackend::Auto, "default whisper backend mismatch");
     Require(defaults.whisperLanguage == L"auto", "default whisper language mismatch");
     Require(!defaults.downloadDir.empty(), "default download dir is empty");
 
@@ -90,6 +95,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.transcribeAfterDownload = true;
     saved.whisperPath = root / L"whisper" / L"whisper-cli.exe";
     saved.whisperModelPath = root / L"models" / L"ggml-small.bin";
+    saved.whisperBackend = WhisperBackend::Cuda;
     saved.whisperLanguage = L"ru";
     saved.quality = L"720p";
     saved.container = L"mp4";
@@ -108,6 +114,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.transcribeAfterDownload == true, "transcribe flag round-trip mismatch");
     Require(loaded.whisperPath == saved.whisperPath, "whisper path round-trip mismatch");
     Require(loaded.whisperModelPath == saved.whisperModelPath, "whisper model path round-trip mismatch");
+    Require(loaded.whisperBackend == WhisperBackend::Cuda, "whisper backend round-trip mismatch");
     Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
     Require(loaded.container == L"mp4", "container round-trip mismatch");
@@ -678,6 +685,10 @@ void TestWhisperReleaseParsing() {
     {
       "name": "whisper-bin-x64.zip",
       "browser_download_url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip"
+    },
+    {
+      "name": "whisper-cublas-12.4.0-bin-x64.zip",
+      "browser_download_url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip"
     }
   ]
 }
@@ -690,6 +701,103 @@ void TestWhisperReleaseParsing() {
         whisper.downloadUrl == L"https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
         "whisper release download URL mismatch"
     );
+
+    const ReleaseAssetInfo cuda = ParseGitHubReleaseAsset(release, WhisperManager::WindowsCudaAssetName());
+    Require(cuda.found, "whisper CUDA release asset should be found");
+    Require(cuda.version == L"1.9.1", "whisper CUDA release version mismatch");
+    Require(
+        cuda.downloadUrl == L"https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip",
+        "whisper CUDA release download URL mismatch"
+    );
+
+    Require(
+        std::string(WhisperManager::BackendAssetName(WhisperBackend::Cpu)) == "whisper-bin-x64.zip",
+        "CPU backend asset mismatch"
+    );
+    Require(
+        std::string(WhisperManager::BackendAssetName(WhisperBackend::Cuda)) == "whisper-cublas-12.4.0-bin-x64.zip",
+        "CUDA backend asset mismatch"
+    );
+}
+
+void TestWhisperBackendResolution() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperBackendResolution");
+    const AppPaths paths(root);
+    AppConfig config;
+
+    ToolInstallStatus missing = WhisperManager::Resolve(paths, config);
+    Require(!missing.installed, "missing whisper backend should not resolve");
+
+    fs::create_directories(paths.localWhisperCudaExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCudaExePath());
+        out << "cuda";
+    }
+
+    ToolInstallStatus cudaOnly = WhisperManager::Resolve(paths, config);
+    Require(cudaOnly.installed, "single CUDA backend should resolve");
+    Require(cudaOnly.executable == paths.localWhisperCudaExePath(), "single CUDA backend path mismatch");
+    Require(cudaOnly.whisperBackend == WhisperBackend::Cuda, "single CUDA backend type mismatch");
+
+    fs::create_directories(paths.localWhisperCpuExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCpuExePath());
+        out << "cpu";
+    }
+
+    config.whisperBackend = WhisperBackend::Cpu;
+    ToolInstallStatus selectedCpu = WhisperManager::Resolve(paths, config);
+    Require(selectedCpu.installed, "selected CPU backend should resolve");
+    Require(selectedCpu.executable == paths.localWhisperCpuExePath(), "selected CPU backend path mismatch");
+    Require(selectedCpu.whisperBackend == WhisperBackend::Cpu, "selected CPU backend type mismatch");
+
+    config.whisperBackend = WhisperBackend::Cuda;
+    ToolInstallStatus selectedCuda = WhisperManager::Resolve(paths, config);
+    Require(selectedCuda.installed, "selected CUDA backend should resolve");
+    Require(selectedCuda.executable == paths.localWhisperCudaExePath(), "selected CUDA backend path mismatch");
+    Require(selectedCuda.whisperBackend == WhisperBackend::Cuda, "selected CUDA backend type mismatch");
+
+    std::error_code ec;
+    fs::remove(paths.localWhisperCudaExePath(), ec);
+    ToolInstallStatus fallbackCpu = WhisperManager::Resolve(paths, config);
+    Require(fallbackCpu.installed, "missing selected backend should fall back to the installed backend");
+    Require(fallbackCpu.executable == paths.localWhisperCpuExePath(), "fallback CPU backend path mismatch");
+    Require(fallbackCpu.whisperBackend == WhisperBackend::Cpu, "fallback CPU backend type mismatch");
+
+    config.whisperPath = root / L"custom" / L"whisper-cli.exe";
+    fs::create_directories(config.whisperPath.parent_path());
+    {
+        std::ofstream out(config.whisperPath);
+        out << "custom";
+    }
+
+    ToolInstallStatus custom = WhisperManager::Resolve(paths, config);
+    Require(custom.installed, "custom whisper path should resolve");
+    Require(custom.executable == config.whisperPath, "custom whisper path mismatch");
+    Require(custom.whisperBackend == WhisperBackend::Custom, "custom whisper backend type mismatch");
+}
+
+void TestWhisperResolutionHonorsLegacyCpuSelectionAlongsideCuda() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperLegacyCpuSelection");
+    const AppPaths paths(root);
+
+    fs::create_directories(paths.localWhisperExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperExePath());
+        out << "legacy cpu";
+    }
+    fs::create_directories(paths.localWhisperCudaExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCudaExePath());
+        out << "cuda";
+    }
+
+    AppConfig config;
+    config.whisperBackend = WhisperBackend::Cpu;
+    const ToolInstallStatus selectedCpu = WhisperManager::Resolve(paths, config);
+    Require(selectedCpu.installed, "legacy CPU should resolve when CPU is selected");
+    Require(selectedCpu.executable == paths.localWhisperExePath(), "legacy CPU selected path mismatch");
+    Require(selectedCpu.whisperBackend == WhisperBackend::Cpu, "legacy CPU selected backend mismatch");
 }
 
 void TestWhisperModelCatalog() {
@@ -1730,6 +1838,8 @@ int main() {
     TestYtDlpProcessLineParsing();
     TestGitHubReleaseParsing();
     TestWhisperReleaseParsing();
+    TestWhisperBackendResolution();
+    TestWhisperResolutionHonorsLegacyCpuSelectionAlongsideCuda();
     TestWhisperModelCatalog();
     TestWhisperExecutableDiscovery();
     TestTranscriptTextPathResolution();

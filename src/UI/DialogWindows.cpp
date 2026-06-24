@@ -25,7 +25,7 @@
 #include <vector>
 
 bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
-bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config, WhisperBackend backend);
 bool ShowWhisperModelDownloadProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config, const WhisperModelInfo& model);
 bool ShowWhisperDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowWhisperModelsDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
@@ -93,6 +93,8 @@ enum DialogCommand {
     IdTranscribeAfterDownload = 123,
     IdWhisper = 124,
     IdWhisperModels = 125,
+    IdInstallWhisperCpu = 126,
+    IdInstallWhisperCuda = 127,
     IdSettingsTab = 128,
     IdUtilitiesTab = 129,
     IdWhisperModelBase = 2000
@@ -141,6 +143,7 @@ struct DialogState {
     ProgressMode progressMode = ProgressMode::FfmpegInstall;
     ReleaseAssetInfo release;
     WhisperModelInfo whisperModel;
+    WhisperBackend whisperBackend = WhisperBackend::Cpu;
 };
 
 struct ProgressUpdate {
@@ -384,6 +387,78 @@ ToolInstallStatus ResolveDialogWhisperStatus(const DialogState* state) {
     return WhisperManager::Resolve(*state->paths, *state->config);
 }
 
+void RefreshWhisperDialogText(DialogState* state);
+
+ToolInstallStatus ResolveDialogWhisperBackendStatus(const DialogState* state, WhisperBackend backend) {
+    if (!state || !state->paths) {
+        return {};
+    }
+
+    ToolInstallStatus status = WhisperManager::ResolveBackend(*state->paths, backend);
+    if (!status.installed && backend == WhisperBackend::Cpu) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(state->paths->localWhisperExePath(), ec)) {
+            status.installed = true;
+            status.executable = state->paths->localWhisperExePath();
+            status.whisperBackend = WhisperBackend::Cpu;
+        }
+    }
+    return status;
+}
+
+bool IsWhisperBackendSelected(const DialogState* state, WhisperBackend backend) {
+    const ToolInstallStatus active = ResolveDialogWhisperStatus(state);
+    const ToolInstallStatus backendStatus = ResolveDialogWhisperBackendStatus(state, backend);
+    return active.installed &&
+        backendStatus.installed &&
+        active.whisperBackend == backend &&
+        active.executable == backendStatus.executable;
+}
+
+std::wstring WhisperBackendButtonText(const DialogState* state, WhisperBackend backend) {
+    const std::wstring name = WhisperManager::BackendDisplayName(backend);
+    if (IsWhisperBackendSelected(state, backend)) {
+        return name + L" выбран";
+    }
+
+    const ToolInstallStatus status = ResolveDialogWhisperBackendStatus(state, backend);
+    return status.installed ? L"Выбрать " + name : L"Скачать " + name;
+}
+
+void RefreshWhisperBackendButtons(DialogState* state) {
+    if (!state || !state->window) {
+        return;
+    }
+
+    SetDarkButtonState(
+        state->window,
+        IdInstallWhisperCpu,
+        IsWhisperBackendSelected(state, WhisperBackend::Cpu),
+        WhisperBackendButtonText(state, WhisperBackend::Cpu)
+    );
+    SetDarkButtonState(
+        state->window,
+        IdInstallWhisperCuda,
+        IsWhisperBackendSelected(state, WhisperBackend::Cuda),
+        WhisperBackendButtonText(state, WhisperBackend::Cuda)
+    );
+}
+
+void SelectWhisperBackend(DialogState* state, WhisperBackend backend) {
+    if (!state || !state->config) {
+        return;
+    }
+
+    state->config->whisperPath.clear();
+    state->config->whisperBackend = backend;
+    state->workingConfig = *state->config;
+    if (state->savedResult) {
+        *state->savedResult = true;
+    }
+    RefreshWhisperDialogText(state);
+    RefreshWhisperBackendButtons(state);
+}
+
 std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state) {
     if (!state || !state->config) {
         return {};
@@ -445,7 +520,9 @@ std::wstring WhisperDialogTitle(const ToolInstallStatus& status) {
 
 std::wstring WhisperDialogMessage(const ToolInstallStatus& status) {
     if (status.installed) {
-        return L"whisper.cpp найден и будет использоваться для расшифровки аудиодорожек после скачивания.\n\nПуть:\n" +
+        return L"whisper.cpp найден и будет использоваться для расшифровки аудиодорожек после скачивания.\n\nBackend: " +
+            WhisperManager::BackendDisplayName(status.whisperBackend) +
+            L"\n\nПуть:\n" +
             status.executable.wstring();
     }
     return L"whisper.cpp не найден. Установите локальную сборку, чтобы приложение могло распознавать аудиодорожку и сохранять TXT/SRT расшифровку.";
@@ -713,8 +790,8 @@ void LayoutWhisperDialog(DialogState* state, int width, int height) {
     const int buttonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
     const int buttonLeft = panelLeft + kDialogButtonInset;
     const int availableWidth = panelRight - panelLeft - (kDialogButtonInset * 2);
-    const int buttonWidth = (availableWidth - (kDialogButtonGap * 2)) / 3;
-    const std::array<int, 3> ids = {IdInstall, IdWhisperModels, IdSkip};
+    const int buttonWidth = (availableWidth - (kDialogButtonGap * 3)) / 4;
+    const std::array<int, 4> ids = {IdInstallWhisperCpu, IdInstallWhisperCuda, IdWhisperModels, IdSkip};
     int x = buttonLeft;
     for (int id : ids) {
         HWND button = GetDlgItem(state->window, id);
@@ -1097,7 +1174,8 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             whisperModelPath
         );
         if (whisperStatus.installed) {
-            DrawUtilityStatusPath(dc, L"Найден:", whisperStatus.executable, 24, 264, client.right - 24, textFont);
+            const std::wstring whisperLabelText = L"Найден (" + WhisperManager::BackendDisplayName(whisperStatus.whisperBackend) + L"):";
+            DrawUtilityStatusPath(dc, whisperLabelText, whisperStatus.executable, 24, 264, client.right - 24, textFont);
         } else {
             RECT whisperExeRect = {24, 264, client.right - 24, 288};
             DrawTextBlock(dc, whisperText.executableText, whisperExeRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1214,12 +1292,27 @@ void CreateFfmpegControls(DialogState* state) {
 }
 
 void CreateWhisperControls(DialogState* state) {
-    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true);
+    HWND cpuButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        WhisperBackendButtonText(state, WhisperBackend::Cpu).c_str(),
+        IdInstallWhisperCpu,
+        IsWhisperBackendSelected(state, WhisperBackend::Cpu)
+    );
+    HWND cudaButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        WhisperBackendButtonText(state, WhisperBackend::Cuda).c_str(),
+        IdInstallWhisperCuda,
+        IsWhisperBackendSelected(state, WhisperBackend::Cuda)
+    );
     HWND modelsButton = CreateDarkButton(state->window, state->instance, L"Модели", IdWhisperModels, false);
     HWND skipButton = CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false);
-    AddDialogTooltip(state, installButton, L"Скачивает Windows x64 сборку whisper.cpp из GitHub Releases.");
+    AddDialogTooltip(state, cpuButton, L"Скачивает или выбирает обычную CPU-сборку whisper.cpp.");
+    AddDialogTooltip(state, cudaButton, L"Скачивает или выбирает CUDA-сборку whisper.cpp для NVIDIA GPU.");
     AddDialogTooltip(state, modelsButton, L"Открывает менеджер моделей Whisper с подсказками по скорости и качеству.");
     AddDialogTooltip(state, skipButton, L"Закрывает окно Whisper без изменений.");
+    RefreshWhisperBackendButtons(state);
 }
 
 void StartFfmpegInstallWorker(DialogState* state) {
@@ -1266,11 +1359,13 @@ void StartWhisperInstallWorker(DialogState* state) {
     const AppPaths paths = *state->paths;
     AppConfig* config = state->config;
     HANDLE cancelEvent = state->cancelEvent;
+    const WhisperBackend backend = state->whisperBackend;
 
-    std::thread([window, paths, config, cancelEvent]() {
+    std::thread([window, paths, config, cancelEvent, backend]() {
         try {
             const ToolInstallStatus status = WhisperManager::Install(
                 paths,
+                backend,
                 [window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
                     auto* update = new ProgressUpdate{};
                     update->downloaded = downloaded;
@@ -1280,7 +1375,8 @@ void StartWhisperInstallWorker(DialogState* state) {
                 },
                 cancelEvent
             );
-            config->whisperPath = status.executable;
+            config->whisperPath.clear();
+            config->whisperBackend = status.whisperBackend;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
             auto* error = new std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
@@ -1687,6 +1783,24 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     return 0;
                 }
                 return 0;
+            case IdInstallWhisperCpu:
+            case IdInstallWhisperCuda:
+                if (state->type == DialogType::Whisper && state->paths && state->config) {
+                    const WhisperBackend backend = command == IdInstallWhisperCuda ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+                    if (ResolveDialogWhisperBackendStatus(state, backend).installed) {
+                        SelectWhisperBackend(state, backend);
+                    } else if (ShowWhisperInstallProgress(window, state->instance, *state->paths, *state->config, backend)) {
+                        state->workingConfig = *state->config;
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        RefreshWhisperDialogText(state);
+                        RefreshWhisperBackendButtons(state);
+                    }
+                    InvalidateRect(window, nullptr, FALSE);
+                    return 0;
+                }
+                return 0;
             case IdParallelMinus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 3, 10);
                 RefreshSettingsButtons(state);
@@ -1745,7 +1859,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     return 0;
                 }
                 if (state->type == DialogType::Whisper && state->paths && state->config) {
-                    if (ShowWhisperInstallProgress(window, state->instance, *state->paths, *state->config)) {
+                    if (ShowWhisperInstallProgress(window, state->instance, *state->paths, *state->config, WhisperBackend::Cpu)) {
                         if (state->savedResult) {
                             *state->savedResult = true;
                         }
@@ -1820,7 +1934,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (state->progressMode == ProgressMode::AppUpdate) {
                     state->message = L"Обновление скачано. Приложение будет закрыто и запущено заново.";
                 } else if (state->progressMode == ProgressMode::WhisperInstall) {
-                    state->message = L"whisper.cpp установлен.";
+                    state->message = L"whisper.cpp " + WhisperManager::BackendDisplayName(state->whisperBackend) + L" установлен.";
                 } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
                     state->message = L"Модель Whisper скачана и выбрана.";
                 } else {
@@ -2294,13 +2408,14 @@ bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& p
     return saved;
 }
 
-bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config, WhisperBackend backend) {
     auto* state = new DialogState{};
     state->type = DialogType::Progress;
     state->progressMode = ProgressMode::WhisperInstall;
+    state->whisperBackend = backend;
     state->instance = instance;
     state->owner = owner;
-    state->title = L"Установка whisper.cpp";
+    state->title = L"Установка whisper.cpp " + WhisperManager::BackendDisplayName(backend);
     state->message = L"Подготовка...";
     state->paths = &paths;
     state->config = &config;

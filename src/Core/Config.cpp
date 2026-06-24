@@ -47,6 +47,14 @@ bool BoolFromJson(const nlohmann::json& json, const char* key, bool fallback) {
     return it->get<bool>();
 }
 
+WhisperBackend WhisperBackendFromJson(const nlohmann::json& json, const char* key, WhisperBackend fallback) {
+    const auto it = json.find(key);
+    if (it == json.end() || !it->is_string()) {
+        return fallback;
+    }
+    return WhisperBackendFromConfigValue(Utf8ToWide(it->get<std::string>()));
+}
+
 std::filesystem::path DefaultDownloadDir() {
     wchar_t* profile = nullptr;
     size_t profileLength = 0;
@@ -60,6 +68,33 @@ std::filesystem::path DefaultDownloadDir() {
 }
 
 } // namespace
+
+std::wstring WhisperBackendToConfigValue(WhisperBackend backend) {
+    switch (backend) {
+    case WhisperBackend::Cpu:
+        return L"cpu";
+    case WhisperBackend::Cuda:
+        return L"cuda";
+    case WhisperBackend::Custom:
+        return L"custom";
+    case WhisperBackend::Auto:
+    default:
+        return L"auto";
+    }
+}
+
+WhisperBackend WhisperBackendFromConfigValue(const std::wstring& value) {
+    if (value == L"cpu") {
+        return WhisperBackend::Cpu;
+    }
+    if (value == L"cuda") {
+        return WhisperBackend::Cuda;
+    }
+    if (value == L"custom") {
+        return WhisperBackend::Custom;
+    }
+    return WhisperBackend::Auto;
+}
 
 AppConfig ConfigStore::Defaults() {
     AppConfig config;
@@ -87,6 +122,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
         config.whisperPath = PathFromJsonString(json, "whisper_path", config.whisperPath);
         config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
+        config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
         config.whisperLanguage = WStringFromJson(json, "whisper_language", config.whisperLanguage);
@@ -116,6 +152,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["ffmpeg_path"] = PathToJsonString(config.ffmpegPath);
     json["whisper_path"] = PathToJsonString(config.whisperPath);
     json["whisper_model_path"] = PathToJsonString(config.whisperModelPath);
+    json["whisper_backend"] = WideToUtf8(WhisperBackendToConfigValue(config.whisperBackend));
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
     json["whisper_language"] = WideToUtf8(config.whisperLanguage);

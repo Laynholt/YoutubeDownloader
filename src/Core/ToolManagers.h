@@ -57,6 +57,7 @@ struct ToolInstallStatus {
     bool installed = false;
     std::filesystem::path executable;
     std::wstring version;
+    WhisperBackend whisperBackend = WhisperBackend::Auto;
 };
 
 struct WhisperModelInfo {
@@ -78,11 +79,23 @@ std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release);
 class WhisperManager {
 public:
     static const char* WindowsCpuAssetName();
+    static const char* WindowsCudaAssetName();
+    static const char* BackendAssetName(WhisperBackend backend);
+    static std::wstring BackendDisplayName(WhisperBackend backend);
     static std::vector<WhisperModelInfo> ModelCatalog();
     static std::filesystem::path ModelPath(const AppPaths& paths, const WhisperModelInfo& model);
+    static std::filesystem::path BackendInstallDir(const AppPaths& paths, WhisperBackend backend);
+    static std::filesystem::path BackendExecutablePath(const AppPaths& paths, WhisperBackend backend);
     static std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
+    static ToolInstallStatus ResolveBackend(const AppPaths& paths, WhisperBackend backend);
     static ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
-    static ReleaseAssetInfo CheckLatestRelease();
+    static ReleaseAssetInfo CheckLatestRelease(WhisperBackend backend = WhisperBackend::Cpu);
+    static ToolInstallStatus Install(
+        const AppPaths& paths,
+        WhisperBackend backend,
+        const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
+        HANDLE cancelEvent = nullptr
+    );
     static ToolInstallStatus Install(
         const AppPaths& paths,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},

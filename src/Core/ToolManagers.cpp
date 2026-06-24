@@ -480,6 +480,28 @@ const char* WhisperManager::WindowsCpuAssetName() {
     return "whisper-bin-x64.zip";
 }
 
+const char* WhisperManager::WindowsCudaAssetName() {
+    return "whisper-cublas-12.4.0-bin-x64.zip";
+}
+
+const char* WhisperManager::BackendAssetName(WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? WindowsCudaAssetName() : WindowsCpuAssetName();
+}
+
+std::wstring WhisperManager::BackendDisplayName(WhisperBackend backend) {
+    switch (backend) {
+    case WhisperBackend::Cpu:
+        return L"CPU";
+    case WhisperBackend::Cuda:
+        return L"CUDA";
+    case WhisperBackend::Custom:
+        return L"свой путь";
+    case WhisperBackend::Auto:
+    default:
+        return L"авто";
+    }
+}
+
 std::vector<WhisperModelInfo> WhisperManager::ModelCatalog() {
     constexpr std::uint64_t mib = 1024ull * 1024ull;
     constexpr const wchar_t* baseUrl = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
@@ -526,6 +548,14 @@ std::filesystem::path WhisperManager::ModelPath(const AppPaths& paths, const Whi
     return paths.localWhisperModelsDir() / model.fileName;
 }
 
+std::filesystem::path WhisperManager::BackendInstallDir(const AppPaths& paths, WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? paths.localWhisperCudaDir() : paths.localWhisperCpuDir();
+}
+
+std::filesystem::path WhisperManager::BackendExecutablePath(const AppPaths& paths, WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? paths.localWhisperCudaExePath() : paths.localWhisperCpuExePath();
+}
+
 std::filesystem::path WhisperManager::FindExecutableDir(const std::filesystem::path& extractedRoot) {
     std::error_code ec;
     if (!std::filesystem::is_directory(extractedRoot, ec)) {
@@ -551,38 +581,88 @@ std::filesystem::path WhisperManager::FindExecutableDir(const std::filesystem::p
     return mainExeDir;
 }
 
+ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperBackend backend) {
+    ToolInstallStatus status;
+    if (backend != WhisperBackend::Cpu && backend != WhisperBackend::Cuda) {
+        return status;
+    }
+
+    const std::filesystem::path executable = BackendExecutablePath(paths, backend);
+    if (IsExecutableFile(executable)) {
+        status.installed = true;
+        status.executable = executable;
+        status.whisperBackend = backend;
+    }
+    return status;
+}
+
 ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig& config) {
     ToolInstallStatus status;
     if (IsExecutableFile(config.whisperPath)) {
         status.installed = true;
         status.executable = config.whisperPath;
+        status.whisperBackend = WhisperBackend::Custom;
         return status;
     }
-    if (IsExecutableFile(paths.localWhisperExePath())) {
-        status.installed = true;
-        status.executable = paths.localWhisperExePath();
+
+    const auto resolveLegacyCpu = [&paths]() {
+        ToolInstallStatus legacy;
+        if (IsExecutableFile(paths.localWhisperExePath())) {
+            legacy.installed = true;
+            legacy.executable = paths.localWhisperExePath();
+            legacy.whisperBackend = WhisperBackend::Cpu;
+        }
+        return legacy;
+    };
+
+    if (config.whisperBackend == WhisperBackend::Cpu || config.whisperBackend == WhisperBackend::Cuda) {
+        status = ResolveBackend(paths, config.whisperBackend);
+        if (status.installed) {
+            return status;
+        }
+        if (config.whisperBackend == WhisperBackend::Cpu) {
+            status = resolveLegacyCpu();
+            if (status.installed) {
+                return status;
+            }
+        }
     }
-    return status;
+
+    status = ResolveBackend(paths, WhisperBackend::Cuda);
+    if (status.installed) {
+        return status;
+    }
+
+    status = ResolveBackend(paths, WhisperBackend::Cpu);
+    if (status.installed) {
+        return status;
+    }
+
+    return resolveLegacyCpu();
 }
 
-ReleaseAssetInfo WhisperManager::CheckLatestRelease() {
+ReleaseAssetInfo WhisperManager::CheckLatestRelease(WhisperBackend backend) {
     const std::string json = WinHttpClient::GetString(L"https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest");
-    return ParseGitHubReleaseAsset(json, WindowsCpuAssetName());
+    return ParseGitHubReleaseAsset(json, BackendAssetName(backend));
 }
 
 ToolInstallStatus WhisperManager::Install(
     const AppPaths& paths,
+    WhisperBackend backend,
     const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
     HANDLE cancelEvent
 ) {
-    const ReleaseAssetInfo release = CheckLatestRelease();
+    const WhisperBackend installBackend = backend == WhisperBackend::Cuda ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+    const ReleaseAssetInfo release = CheckLatestRelease(installBackend);
     if (!release.found || release.downloadUrl.empty()) {
         throw std::runtime_error("whisper.cpp release asset was not found");
     }
 
-    const std::filesystem::path archiveTmp = paths.stuffDir() / L"whisper-bin-x64.zip.tmp";
-    const std::filesystem::path archive = paths.stuffDir() / L"whisper-bin-x64.zip";
-    const std::filesystem::path extractDir = paths.stuffDir() / L"whisper_extract";
+    const std::wstring archiveName = AsciiToWide(BackendAssetName(installBackend));
+    const std::wstring backendSuffix = installBackend == WhisperBackend::Cuda ? L"cuda" : L"cpu";
+    const std::filesystem::path archiveTmp = paths.stuffDir() / (archiveName + L".tmp");
+    const std::filesystem::path archive = paths.stuffDir() / archiveName;
+    const std::filesystem::path extractDir = paths.stuffDir() / (L"whisper_" + backendSuffix + L"_extract");
 
     std::error_code ec;
     std::filesystem::create_directories(paths.stuffDir(), ec);
@@ -651,14 +731,23 @@ ToolInstallStatus WhisperManager::Install(
         onProgress(0, 0, L"Установка whisper.cpp...");
     }
 
-    std::filesystem::create_directories(paths.localWhisperDir(), ec);
-    CopyRegularFilesFromDir(executableDir, paths.localWhisperDir());
+    const std::filesystem::path installDir = BackendInstallDir(paths, installBackend);
+    std::filesystem::create_directories(installDir, ec);
+    CopyRegularFilesFromDir(executableDir, installDir);
 
-    ToolInstallStatus status = Resolve(paths, AppConfig{});
+    ToolInstallStatus status = ResolveBackend(paths, installBackend);
     if (!status.installed) {
         throw std::runtime_error("installed whisper.cpp could not be resolved");
     }
     return status;
+}
+
+ToolInstallStatus WhisperManager::Install(
+    const AppPaths& paths,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    return Install(paths, WhisperBackend::Cpu, onProgress, cancelEvent);
 }
 
 std::filesystem::path WhisperManager::DownloadModel(

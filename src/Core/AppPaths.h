@@ -22,6 +22,10 @@ public:
     std::filesystem::path localFfplayExePath() const;
     std::filesystem::path localWhisperDir() const;
     std::filesystem::path localWhisperExePath() const;
+    std::filesystem::path localWhisperCpuDir() const;
+    std::filesystem::path localWhisperCudaDir() const;
+    std::filesystem::path localWhisperCpuExePath() const;
+    std::filesystem::path localWhisperCudaExePath() const;
     std::filesystem::path localWhisperModelsDir() const;
     std::filesystem::path localWhisperModelPath() const;
     std::filesystem::path transcriptionTempDir() const;

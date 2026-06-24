@@ -68,6 +68,22 @@ std::filesystem::path AppPaths::localWhisperExePath() const {
     return localWhisperDir() / L"whisper-cli.exe";
 }
 
+std::filesystem::path AppPaths::localWhisperCpuDir() const {
+    return localWhisperDir() / L"cpu";
+}
+
+std::filesystem::path AppPaths::localWhisperCudaDir() const {
+    return localWhisperDir() / L"cuda";
+}
+
+std::filesystem::path AppPaths::localWhisperCpuExePath() const {
+    return localWhisperCpuDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperCudaExePath() const {
+    return localWhisperCudaDir() / L"whisper-cli.exe";
+}
+
 std::filesystem::path AppPaths::localWhisperModelsDir() const {
     return localWhisperDir() / L"models";
 }
