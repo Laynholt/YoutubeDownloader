@@ -4,6 +4,7 @@
 #include "BackendText.h"
 #include "Config.h"
 #include "DownloadQueue.h"
+#include "DownloadQueueStore.h"
 #include "FileOperations.h"
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
@@ -55,6 +56,7 @@ void TestAppPaths() {
     Require(paths.stuffDir() == root / L"stuff", "stuff path mismatch");
     Require(paths.configPath() == root / L"stuff" / L"config.ini", "config path mismatch");
     Require(paths.logPath() == root / L"stuff" / L"ytdl.log", "log path mismatch");
+    Require(paths.downloadQueuePath() == root / L"stuff" / L"download_queue.json", "download queue path mismatch");
     Require(paths.thumbCacheDir() == root / L"stuff" / L"thumb_cache", "thumb cache path mismatch");
     Require(paths.toolsDir() == root / L"tools", "tools path mismatch");
     Require(paths.ytDlpDir() == root / L"tools" / L"yt-dlp", "yt-dlp dir path mismatch");
@@ -715,6 +717,83 @@ void TestProcessRunnerEmitsEachOutputLineOnce() {
     Require(lines.size() == 1000, "stdout callback should emit each line once");
     Require(std::ranges::count(lines, L"line-1") == 1, "first line was duplicated");
     Require(std::ranges::count(lines, L"line-1000") == 1, "last line was duplicated");
+}
+
+void TestDownloadQueueStoreRoundTripSnapshots() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStore");
+    const AppPaths paths(root);
+
+    DownloadTaskSnapshot task;
+    task.id = 42;
+    task.request.ytDlpExePath = root / L"tools" / L"yt-dlp.exe";
+    task.request.url = L"https://www.youtube.com/watch?v=roundtrip";
+    task.request.outputDirectory = root / L"Downloads";
+    task.request.cookiesPath = root / L"cookies.txt";
+    task.request.ffmpegExePath = root / L"tools" / L"ffmpeg.exe";
+    task.request.quality = L"1080p";
+    task.request.container = L"mp4";
+    task.request.ffmpegAvailable = true;
+    task.title = L"Round Trip";
+    task.thumbnailPath = root / L"stuff" / L"thumb_cache" / L"thumb.jpg";
+    task.state = DownloadTaskState::Canceled;
+    task.percent = 37.5;
+    task.statusText = L"Остановлено";
+    task.errorText = L"Manual stop";
+    task.downloadedBytes = 1234;
+    task.totalBytes = 9999;
+    task.speedBytesPerSecond = 456;
+    task.etaSeconds = 78;
+    task.mediaKind = L"video";
+    task.formatId = L"137";
+    task.extension = L"mp4";
+    task.resolution = L"1080p";
+    task.outputFiles = {root / L"Downloads" / L"Round Trip.mp4"};
+
+    DownloadQueueStore::Save(paths, {task});
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+
+    Require(loaded.size() == 1, "queue store should load one task");
+    const DownloadTaskSnapshot& restored = loaded.front();
+    Require(restored.id == 42, "restored task id mismatch");
+    Require(restored.request.ytDlpExePath == task.request.ytDlpExePath, "restored yt-dlp path mismatch");
+    Require(restored.request.url == task.request.url, "restored url mismatch");
+    Require(restored.request.outputDirectory == task.request.outputDirectory, "restored output directory mismatch");
+    Require(restored.request.cookiesPath == task.request.cookiesPath, "restored cookies path mismatch");
+    Require(restored.request.ffmpegExePath == task.request.ffmpegExePath, "restored ffmpeg path mismatch");
+    Require(restored.request.quality == L"1080p", "restored quality mismatch");
+    Require(restored.request.container == L"mp4", "restored container mismatch");
+    Require(restored.request.ffmpegAvailable, "restored ffmpeg flag mismatch");
+    Require(restored.title == L"Round Trip", "restored title mismatch");
+    Require(restored.thumbnailPath == task.thumbnailPath, "restored thumbnail path mismatch");
+    Require(restored.state == DownloadTaskState::Canceled, "restored state mismatch");
+    Require(restored.percent == 37.5, "restored percent mismatch");
+    Require(restored.statusText == L"Остановлено", "restored status mismatch");
+    Require(restored.errorText == L"Manual stop", "restored error mismatch");
+    Require(restored.downloadedBytes == 1234, "restored downloaded bytes mismatch");
+    Require(restored.totalBytes == 9999, "restored total bytes mismatch");
+    Require(restored.speedBytesPerSecond == 456, "restored speed mismatch");
+    Require(restored.etaSeconds == 78, "restored eta mismatch");
+    Require(restored.mediaKind == L"video", "restored media kind mismatch");
+    Require(restored.formatId == L"137", "restored format id mismatch");
+    Require(restored.extension == L"mp4", "restored extension mismatch");
+    Require(restored.resolution == L"1080p", "restored resolution mismatch");
+    Require(restored.outputFiles == task.outputFiles, "restored output files mismatch");
+}
+
+void TestDownloadQueueStoreSkipsInvalidEntries() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStoreInvalid");
+    const AppPaths paths(root);
+    fs::create_directories(paths.stuffDir());
+    {
+        std::ofstream out(paths.downloadQueuePath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"version":1,"tasks":[{"id":1},{"id":2,"url":"https://example.invalid/ok","state":"Canceled","title":"OK"}]})json";
+    }
+
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+
+    Require(loaded.size() == 1, "queue store should skip invalid entries only");
+    Require(loaded.front().id == 2, "valid queue entry id mismatch");
+    Require(loaded.front().request.url == L"https://example.invalid/ok", "valid queue entry url mismatch");
 }
 
 bool WaitForProcessExit(DWORD processId, std::chrono::milliseconds timeout) {
@@ -1585,6 +1664,8 @@ void TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly() {
 
 int main() {
     TestAppPaths();
+    TestDownloadQueueStoreRoundTripSnapshots();
+    TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigDropsLegacyFfmpegPromptFlag();
     TestMainWindowShortcutResolution();
