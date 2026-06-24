@@ -159,6 +159,26 @@ bool CreatePipePair(UniqueHandle& readPipe, UniqueHandle& writePipe) {
     return true;
 }
 
+UniqueHandle CreateKillOnCloseJob() {
+    UniqueHandle job(CreateJobObjectW(nullptr, nullptr));
+    if (!job.get()) {
+        throw std::runtime_error("failed to create process job object");
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(
+            job.get(),
+            JobObjectExtendedLimitInformation,
+            &limits,
+            static_cast<DWORD>(sizeof(limits))
+        )) {
+        throw std::runtime_error("failed to configure process job object");
+    }
+
+    return job;
+}
+
 } // namespace
 
 ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
@@ -185,6 +205,7 @@ ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
     PROCESS_INFORMATION process = {};
     std::wstring commandLine = BuildCommandLine(options);
     std::wstring workingDirectory = options.workingDirectory.empty() ? L"" : options.workingDirectory.wstring();
+    UniqueHandle job = CreateKillOnCloseJob();
 
     const BOOL created = CreateProcessW(
         nullptr,
@@ -192,7 +213,7 @@ ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
         nullptr,
         nullptr,
         TRUE,
-        CREATE_NO_WINDOW,
+        CREATE_NO_WINDOW | CREATE_SUSPENDED,
         nullptr,
         workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
         &startup,
@@ -208,6 +229,16 @@ ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
 
     UniqueHandle processHandle(process.hProcess);
     UniqueHandle threadHandle(process.hThread);
+    if (!AssignProcessToJobObject(job.get(), processHandle.get())) {
+        TerminateProcess(processHandle.get(), 1);
+        WaitForSingleObject(processHandle.get(), INFINITE);
+        throw std::runtime_error("failed to assign process to job object");
+    }
+    if (ResumeThread(threadHandle.get()) == static_cast<DWORD>(-1)) {
+        TerminateJobObject(job.get(), 1);
+        WaitForSingleObject(processHandle.get(), INFINITE);
+        throw std::runtime_error("failed to resume process thread");
+    }
 
     ProcessRunResult result;
     std::thread stdoutThread = StartReader(stdoutRead.get(), result.stdoutText, options.onStdoutLine);
@@ -222,7 +253,7 @@ ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
 
         if (options.cancelEvent && WaitForSingleObject(options.cancelEvent, 0) == WAIT_OBJECT_0) {
             result.canceled = true;
-            TerminateProcess(processHandle.get(), 1);
+            TerminateJobObject(job.get(), 1);
             break;
         }
 
@@ -232,7 +263,7 @@ ProcessRunResult ProcessRunner::Run(const ProcessRunOptions& options) {
             ).count();
             if (elapsed >= options.timeoutMs) {
                 result.timedOut = true;
-                TerminateProcess(processHandle.get(), 1);
+                TerminateJobObject(job.get(), 1);
                 break;
             }
         }

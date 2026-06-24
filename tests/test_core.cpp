@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <system_error>
@@ -714,6 +715,67 @@ void TestProcessRunnerEmitsEachOutputLineOnce() {
     Require(lines.size() == 1000, "stdout callback should emit each line once");
     Require(std::ranges::count(lines, L"line-1") == 1, "first line was duplicated");
     Require(std::ranges::count(lines, L"line-1000") == 1, "last line was duplicated");
+}
+
+bool WaitForProcessExit(DWORD processId, std::chrono::milliseconds timeout) {
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!process) {
+        return true;
+    }
+    const DWORD wait = WaitForSingleObject(process, static_cast<DWORD>(timeout.count()));
+    CloseHandle(process);
+    return wait == WAIT_OBJECT_0;
+}
+
+void TerminateProcessIfStillRunning(DWORD processId) {
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, processId);
+    if (!process) {
+        return;
+    }
+    if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
+        TerminateProcess(process, 1);
+        WaitForSingleObject(process, 5000);
+    }
+    CloseHandle(process);
+}
+
+void TestProcessRunnerCancelKillsChildProcessTree() {
+    HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    Require(cancelEvent != nullptr, "failed to create process cancel event");
+
+    std::optional<DWORD> childPid;
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    options.arguments = {
+        L"-NoProfile",
+        L"-Command",
+        L"$child = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep -Seconds 60' -PassThru; "
+        L"Write-Output $child.Id; "
+        L"Start-Sleep -Seconds 60"
+    };
+    options.timeoutMs = 10000;
+    options.cancelEvent = cancelEvent;
+    options.onStdoutLine = [&](const std::wstring& line) {
+        if (childPid || line.empty()) {
+            return;
+        }
+        try {
+            childPid = static_cast<DWORD>(std::stoul(line));
+            SetEvent(cancelEvent);
+        } catch (...) {
+        }
+    };
+
+    const ProcessRunResult result = ProcessRunner::Run(options);
+    CloseHandle(cancelEvent);
+
+    Require(result.canceled, "parent process should be canceled");
+    Require(childPid.has_value(), "child process id was not captured");
+    const bool childExited = WaitForProcessExit(*childPid, std::chrono::milliseconds(5000));
+    if (!childExited) {
+        TerminateProcessIfStillRunning(*childPid);
+    }
+    Require(childExited, "canceling a process run should kill child processes");
 }
 
 void TestYtDlpMetadataParsing() {
@@ -1548,6 +1610,7 @@ int main() {
     TestFfmpegUserPathAndExtractedTreeResolution();
     TestProcessRunnerCapturesOutputAndExitCode();
     TestProcessRunnerEmitsEachOutputLineOnce();
+    TestProcessRunnerCancelKillsChildProcessTree();
     TestYtDlpMetadataParsing();
     TestDownloadQueueSchedulingAndRetry();
     TestDownloadQueueLogsTaskLifecycle();
