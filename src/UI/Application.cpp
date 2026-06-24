@@ -4,12 +4,14 @@
 #include "DialogWindows.h"
 #include "KeyboardShortcuts.h"
 #include "resource.h"
+#include "TranscriptionClient.h"
 #include "UiActions.h"
 #include "UiRenderer.h"
 
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 
@@ -51,6 +53,13 @@ constexpr int kQueueRowGap = 10;
 constexpr int kQueueActionCancel = 1;
 constexpr int kQueueActionRetry = 2;
 constexpr int kQueueActionDelete = 3;
+constexpr int kQueueActionTranscript = 4;
+constexpr int kQueueButtonWidth = 96;
+constexpr int kQueueTranscriptButtonWidth = 132;
+constexpr int kQueueButtonHeight = 26;
+constexpr int kQueueButtonGap = 8;
+constexpr int kTranscriptMenuOpenFile = 1;
+constexpr int kTranscriptMenuRevealInExplorer = 2;
 
 enum ControlId {
     IdUrlEdit = 1001,
@@ -271,6 +280,23 @@ size_t CountTasksInState(const std::vector<DownloadTaskSnapshot>& tasks, Downloa
     }));
 }
 
+void AddUniqueOutputPath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+    if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+        paths.push_back(path);
+    }
+}
+
+std::filesystem::path ResolveWhisperExePath(const AppPaths& paths, const AppConfig& config) {
+    return config.whisperPath.empty() ? paths.localWhisperExePath() : config.whisperPath;
+}
+
+std::filesystem::path ResolveWhisperModelPath(const AppPaths& paths, const AppConfig& config) {
+    return config.whisperModelPath.empty() ? paths.localWhisperModelPath() : config.whisperModelPath;
+}
+
 RECT QueuePanelRectForClient(const RECT& client) {
     return {20, 334, client.right - 20, client.bottom - 20};
 }
@@ -278,6 +304,48 @@ RECT QueuePanelRectForClient(const RECT& client) {
 RECT QueueRowRectAt(const RECT& queueRect, int index) {
     const int y = queueRect.top + 18 + (index * (kQueueRowHeight + kQueueRowGap));
     return {queueRect.left + 16, y, queueRect.right - 32, y + kQueueRowHeight};
+}
+
+RECT QueueRightButtonRect(const RECT& row) {
+    const int buttonRight = row.right - 12;
+    return {buttonRight - kQueueButtonWidth, row.top + 12, buttonRight, row.top + 12 + kQueueButtonHeight};
+}
+
+RECT QueueRetryButtonRect(const RECT& row) {
+    const RECT rightButton = QueueRightButtonRect(row);
+    return {
+        rightButton.left - kQueueButtonGap - kQueueButtonWidth,
+        rightButton.top,
+        rightButton.left - kQueueButtonGap,
+        rightButton.bottom
+    };
+}
+
+RECT QueueTranscriptButtonRect(const RECT& row) {
+    const RECT rightButton = QueueRightButtonRect(row);
+    return {
+        rightButton.left - kQueueButtonGap - kQueueTranscriptButtonWidth,
+        rightButton.top,
+        rightButton.left - kQueueButtonGap,
+        rightButton.bottom
+    };
+}
+
+bool TaskHasTranscriptTextPath(const DownloadTaskSnapshot& task) {
+    return !FindTranscriptTextPath(task.outputFiles).empty();
+}
+
+int QueueTextRight(const RECT& row, const DownloadTaskSnapshot& task) {
+    if (IsRunningTaskState(task.state)) {
+        return QueueRightButtonRect(row).left - 12;
+    }
+    if (task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) {
+        return QueueRetryButtonRect(row).left - 12;
+    }
+    if (task.state == DownloadTaskState::Completed && TaskHasTranscriptTextPath(task)) {
+        return QueueTranscriptButtonRect(row).left - 12;
+    }
+    return QueueRightButtonRect(row).left - 12;
 }
 
 int QueueVisibleRowCount(const RECT& queueRect) {
@@ -1206,15 +1274,11 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         }
 
         const int textLeft = thumb.right + 14;
-        const int buttonRight = row.right - 12;
-        const int buttonWidth = 96;
-        const int buttonHeight = 26;
-        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        const int textRight = IsRunningTaskState(task.state)
-            ? cancelButton.left - 12
-            : ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) ? retryButton.left - 12 : deleteButton.left - 12);
+        const RECT primaryButton = QueueRightButtonRect(row);
+        const RECT retryButton = QueueRetryButtonRect(row);
+        const RECT transcriptButton = QueueTranscriptButtonRect(row);
+        const int textRight = QueueTextRight(row, task);
+        const bool hasTranscript = TaskHasTranscriptTextPath(task);
 
         RECT titleRect = {textLeft, row.top + 9, textRight, row.top + 31};
         const std::wstring title = task.title.empty() ? task.request.url : task.title;
@@ -1257,7 +1321,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         if (IsRunningTaskState(task.state)) {
             DrawSmallActionButton(
                 dc,
-                cancelButton,
+                primaryButton,
                 L"Отменить",
                 false,
                 m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionCancel
@@ -1272,15 +1336,24 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
             );
             DrawSmallActionButton(
                 dc,
-                deleteButton,
+                primaryButton,
                 L"Удалить",
                 false,
                 m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
             );
         } else if (task.state == DownloadTaskState::Completed) {
+            if (hasTranscript) {
+                DrawSmallActionButton(
+                    dc,
+                    transcriptButton,
+                    L"Расшифровка",
+                    true,
+                    m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionTranscript
+                );
+            }
             DrawSmallActionButton(
                 dc,
-                deleteButton,
+                primaryButton,
                 L"Закрыть",
                 false,
                 m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
@@ -1315,6 +1388,53 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
     DeleteObject(titleFont);
     DeleteObject(textFont);
     DeleteObject(smallFont);
+}
+
+bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const RECT& buttonRect) {
+    const std::filesystem::path transcriptPath = FindTranscriptTextPath(task.outputFiles);
+    if (transcriptPath.empty()) {
+        SetTransientStatus(L"Файл расшифровки не найден");
+        return true;
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) {
+        SetTransientStatus(L"Не удалось открыть меню расшифровки");
+        return true;
+    }
+    AppendMenuW(menu, MF_STRING, kTranscriptMenuOpenFile, L"Открыть TXT");
+    AppendMenuW(menu, MF_STRING, kTranscriptMenuRevealInExplorer, L"Показать в Проводнике");
+
+    POINT anchor = {buttonRect.left, buttonRect.bottom};
+    ClientToScreen(m_window, &anchor);
+    const int selected = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+        anchor.x,
+        anchor.y,
+        0,
+        m_window,
+        nullptr
+    );
+    DestroyMenu(menu);
+
+    if (selected == kTranscriptMenuOpenFile) {
+        const std::wstring path = transcriptPath.wstring();
+        const std::wstring directory = transcriptPath.parent_path().wstring();
+        HINSTANCE result = ShellExecuteW(m_window, L"open", path.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) <= 32) {
+            SetTransientStatus(L"Не удалось открыть расшифровку");
+        } else {
+            SetTransientStatus(L"Открыта расшифровка: " + transcriptPath.filename().wstring());
+        }
+    } else if (selected == kTranscriptMenuRevealInExplorer) {
+        const std::wstring arguments = L"/select,\"" + transcriptPath.wstring() + L"\"";
+        HINSTANCE result = ShellExecuteW(m_window, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(result) <= 32) {
+            SetTransientStatus(L"Не удалось показать расшифровку в Проводнике");
+        }
+    }
+    return true;
 }
 
 bool Application::HandleQueueClick(POINT point) {
@@ -1358,24 +1478,25 @@ bool Application::HandleQueueClick(POINT point) {
             continue;
         }
 
-        const int buttonRight = row.right - 12;
-        constexpr int buttonWidth = 96;
-        constexpr int buttonHeight = 26;
-        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+        const RECT primaryButton = QueueRightButtonRect(row);
+        const RECT retryButton = QueueRetryButtonRect(row);
+        const RECT transcriptButton = QueueTranscriptButtonRect(row);
 
         const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
         bool handled = false;
-        if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
+        if (IsRunningTaskState(task.state) && PtInRect(&primaryButton, point)) {
             handled = m_downloadQueue->Cancel(task.id);
         } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
                    PtInRect(&retryButton, point)) {
             handled = m_downloadQueue->Retry(task.id);
+        } else if (task.state == DownloadTaskState::Completed &&
+                   TaskHasTranscriptTextPath(task) &&
+                   PtInRect(&transcriptButton, point)) {
+            handled = ShowTranscriptActions(task, transcriptButton);
         } else if ((task.state == DownloadTaskState::Canceled ||
                     task.state == DownloadTaskState::Failed ||
                     task.state == DownloadTaskState::Completed) &&
-                   PtInRect(&deleteButton, point)) {
+                   PtInRect(&primaryButton, point)) {
             handled = m_downloadQueue->DeleteFiles(task.id);
         }
 
@@ -1427,25 +1548,27 @@ bool Application::UpdateQueueHover(POINT point) {
                 continue;
             }
 
-            const int buttonRight = row.right - 12;
-            constexpr int buttonWidth = 96;
-            constexpr int buttonHeight = 26;
-            RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-            RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-            RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
+            const RECT primaryButton = QueueRightButtonRect(row);
+            const RECT retryButton = QueueRetryButtonRect(row);
+            const RECT transcriptButton = QueueTranscriptButtonRect(row);
 
             const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
-            if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
+            if (IsRunningTaskState(task.state) && PtInRect(&primaryButton, point)) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionCancel;
             } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
                        PtInRect(&retryButton, point)) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionRetry;
+            } else if (task.state == DownloadTaskState::Completed &&
+                       TaskHasTranscriptTextPath(task) &&
+                       PtInRect(&transcriptButton, point)) {
+                hotTaskId = task.id;
+                hotAction = kQueueActionTranscript;
             } else if ((task.state == DownloadTaskState::Canceled ||
                         task.state == DownloadTaskState::Failed ||
                         task.state == DownloadTaskState::Completed) &&
-                       PtInRect(&deleteButton, point)) {
+                       PtInRect(&primaryButton, point)) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionDelete;
             }
@@ -1615,6 +1738,9 @@ void Application::InitializeBackend() {
         options.executable = task.request.ytDlpExePath;
         options.arguments = BuildDownloadArguments(task.request);
         options.timeoutMs = INFINITE;
+        std::vector<std::filesystem::path> outputFiles;
+        const std::vector<OutputDirectoryFile> outputDirectoryBefore =
+            SnapshotOutputDirectory(task.request.outputDirectory);
 
         HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         std::atomic<bool> monitorDone = false;
@@ -1628,44 +1754,98 @@ void Application::InitializeBackend() {
             }
         });
         options.cancelEvent = cancelEvent;
-        options.onStdoutLine = [callbacks](const std::wstring& line) {
+        auto handleYtDlpLine = [&outputFiles, callbacks](const std::wstring& line) {
             if (callbacks.onOutputLine) {
                 callbacks.onOutputLine(line);
             }
-            const YtDlpProgress progress = ParseYtDlpProgressLine(line);
-            if (progress.recognized && callbacks.onProgressDetails) {
-                callbacks.onProgressDetails(progress);
+            const YtDlpProcessLine parsed = ParseYtDlpProcessLine(line);
+            AddUniqueOutputPath(outputFiles, parsed.outputPath);
+            if (parsed.progress.recognized && callbacks.onProgressDetails) {
+                callbacks.onProgressDetails(parsed.progress);
             }
         };
-        options.onStderrLine = callbacks.onOutputLine;
+        options.onStdoutLine = handleYtDlpLine;
+        options.onStderrLine = handleYtDlpLine;
 
-        ProcessRunResult result;
-        try {
-            result = ProcessRunner::Run(options);
-        } catch (const std::exception& ex) {
+        auto finish = [&](DownloadTaskResult taskResult) {
             monitorDone = true;
             SetEvent(cancelEvent);
             if (cancelMonitor.joinable()) {
                 cancelMonitor.join();
             }
             CloseHandle(cancelEvent);
-            return DownloadTaskResult{false, std::wstring(ex.what(), ex.what() + std::strlen(ex.what())), {}};
-        }
+            return taskResult;
+        };
 
-        monitorDone = true;
-        SetEvent(cancelEvent);
-        if (cancelMonitor.joinable()) {
-            cancelMonitor.join();
+        ProcessRunResult result;
+        try {
+            result = ProcessRunner::Run(options);
+        } catch (const std::exception& ex) {
+            return finish(DownloadTaskResult{false, std::wstring(ex.what(), ex.what() + std::strlen(ex.what())), outputFiles});
         }
-        CloseHandle(cancelEvent);
 
         if (result.canceled) {
-            return DownloadTaskResult{false, L"Отменено", {}};
+            return finish(DownloadTaskResult{false, L"Отменено", outputFiles});
         }
         if (result.exitCode != 0) {
-            return DownloadTaskResult{false, result.stderrText.empty() ? result.stdoutText : result.stderrText, {}};
+            return finish(DownloadTaskResult{false, result.stderrText.empty() ? result.stdoutText : result.stderrText, outputFiles});
         }
-        return DownloadTaskResult{true, L"", {}};
+
+        if (callbacks.isCanceled && callbacks.isCanceled()) {
+            return finish(DownloadTaskResult{false, L"Отменено", outputFiles});
+        }
+
+        if (!task.request.transcribeAfterDownload) {
+            AddUniqueOutputPath(
+                outputFiles,
+                FindDownloadedMediaFile(outputFiles, task.request.outputDirectory, outputDirectoryBefore)
+            );
+            return finish(DownloadTaskResult{true, L"", outputFiles});
+        }
+
+        const std::filesystem::path mediaPath =
+            FindDownloadedMediaFile(outputFiles, task.request.outputDirectory, outputDirectoryBefore);
+        if (mediaPath.empty()) {
+            return finish(DownloadTaskResult{true, L"", outputFiles, L"Готово · файл для расшифровки не найден"});
+        }
+
+        AddUniqueOutputPath(outputFiles, mediaPath);
+
+        TranscriptionRequest transcription;
+        transcription.mediaPath = mediaPath;
+        transcription.tempDirectory = task.request.transcriptionTempDir;
+        transcription.ffmpegExePath = task.request.ffmpegExePath;
+        transcription.whisperExePath = task.request.whisperExePath;
+        transcription.whisperModelPath = task.request.whisperModelPath;
+        transcription.language = task.request.whisperLanguage;
+
+        const TranscriptionResult transcriptionResult = TranscriptionClient::Transcribe(
+            transcription,
+            TranscriptionCallbacks{
+                {},
+                [callbacks](double percent, const std::wstring& status) {
+                    if (callbacks.onPostProcessing) {
+                        callbacks.onPostProcessing(percent, status);
+                    }
+                }
+            },
+            cancelEvent
+        );
+        if (transcriptionResult.canceled) {
+            return finish(DownloadTaskResult{false, L"Отменено", outputFiles});
+        }
+        if (!transcriptionResult.success) {
+            return finish(DownloadTaskResult{
+                true,
+                L"",
+                outputFiles,
+                L"Готово · расшифровка не выполнена: " + transcriptionResult.errorText
+            });
+        }
+
+        AddUniqueOutputPath(outputFiles, transcriptionResult.textPath);
+        AddUniqueOutputPath(outputFiles, transcriptionResult.srtPath);
+        return finish(DownloadTaskResult{true, L"", outputFiles, L"Готово · расшифровка сохранена"});
     });
 
     SetTimer(m_window, kQueueRefreshTimer, 500, nullptr);
@@ -1817,8 +1997,15 @@ void Application::EnqueueCurrentUrl() {
         request.cookiesPath = m_config.cookiesPath;
         request.ffmpegExePath = m_ffmpeg.ffmpegExe;
         request.ffmpegAvailable = m_ffmpeg.available;
+        if (m_paths) {
+            request.whisperExePath = ResolveWhisperExePath(*m_paths, m_config);
+            request.whisperModelPath = ResolveWhisperModelPath(*m_paths, m_config);
+            request.transcriptionTempDir = m_paths->transcriptionTempDir();
+        }
         request.quality = m_config.quality;
         request.container = m_config.container;
+        request.whisperLanguage = m_config.whisperLanguage;
+        request.transcribeAfterDownload = m_config.transcribeAfterDownload;
         return request;
     };
 

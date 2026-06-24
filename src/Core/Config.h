@@ -9,10 +9,14 @@ struct AppConfig {
     std::filesystem::path downloadDir;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegPath;
+    std::filesystem::path whisperPath;
+    std::filesystem::path whisperModelPath;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
+    std::wstring whisperLanguage = L"auto";
     int maxParallelDownloads = 3;
     bool autoUpdateApp = true;
+    bool transcribeAfterDownload = false;
     std::wstring lastYtDlpCheckAt;
     std::wstring lastYtDlpVersion;
 };

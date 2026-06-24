@@ -59,3 +59,23 @@ std::filesystem::path AppPaths::localFfprobeExePath() const {
 std::filesystem::path AppPaths::localFfplayExePath() const {
     return localFfmpegBinDir() / L"ffplay.exe";
 }
+
+std::filesystem::path AppPaths::localWhisperDir() const {
+    return toolsDir() / L"whisper";
+}
+
+std::filesystem::path AppPaths::localWhisperExePath() const {
+    return localWhisperDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperModelsDir() const {
+    return localWhisperDir() / L"models";
+}
+
+std::filesystem::path AppPaths::localWhisperModelPath() const {
+    return localWhisperModelsDir() / L"ggml-large-v3-turbo.bin";
+}
+
+std::filesystem::path AppPaths::transcriptionTempDir() const {
+    return stuffDir() / L"transcription_tmp";
+}

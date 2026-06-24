@@ -125,6 +125,32 @@ void CopyIfExists(const std::filesystem::path& source, const std::filesystem::pa
     }
 }
 
+void CopyRegularFilesFromDir(const std::filesystem::path& sourceDir, const std::filesystem::path& targetDir) {
+    std::error_code ec;
+    std::filesystem::create_directories(targetDir, ec);
+    if (ec) {
+        throw std::runtime_error("failed to create tool directory");
+    }
+
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        std::filesystem::copy_file(
+            entry.path(),
+            targetDir / entry.path().filename(),
+            std::filesystem::copy_options::overwrite_existing,
+            ec
+        );
+        if (ec) {
+            throw std::runtime_error("failed to copy tool files");
+        }
+    }
+}
+
 std::wstring QuotePowerShellLiteral(const std::filesystem::path& path) {
     std::wstring value = path.wstring();
     std::wstring escaped;
@@ -448,6 +474,238 @@ FfmpegStatus FfmpegManager::InstallEssentials(
     }
     status.source = FfmpegSource::LocalTools;
     return status;
+}
+
+const char* WhisperManager::WindowsCpuAssetName() {
+    return "whisper-bin-x64.zip";
+}
+
+std::vector<WhisperModelInfo> WhisperManager::ModelCatalog() {
+    constexpr std::uint64_t mib = 1024ull * 1024ull;
+    constexpr const wchar_t* baseUrl = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+
+    auto model = [baseUrl](
+        std::wstring id,
+        std::wstring name,
+        std::wstring fileName,
+        std::uint64_t sizeBytes,
+        std::wstring tags,
+        std::wstring description,
+        bool recommended = false,
+        bool bestQuality = false
+    ) {
+        WhisperModelInfo info;
+        info.id = std::move(id);
+        info.name = std::move(name);
+        info.fileName = fileName;
+        info.downloadUrl = std::wstring(baseUrl) + fileName;
+        info.sizeBytes = sizeBytes;
+        info.tags = std::move(tags);
+        info.description = std::move(description);
+        info.recommended = recommended;
+        info.bestQuality = bestQuality;
+        return info;
+    };
+
+    return {
+        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"очень быстро · низкое качество · 75 MiB", L"Минимальная модель для слабых ПК и быстрых черновиков."),
+        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"быстро · базовое качество · 142 MiB", L"Небольшая модель по умолчанию, если важнее скорость."),
+        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"баланс · лучше base · 466 MiB", L"Хороший компромисс для коротких роликов."),
+        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"качественнее · дольше · 1.5 GiB", L"Заметно лучше small, но ощутимо медленнее."),
+        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"рекомендовано · быстрее · высокое качество · 1.5 GiB", L"Практичный выбор: близко к large по качеству и быстрее.", true, false),
+        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"максимум качества · дольше · 2.9 GiB", L"Лучшее качество распознавания, но самая тяжелая обычная модель.", false, true),
+        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"меньше размер · быстрее · чуть хуже качество", L"Сжатый small для экономии места и скорости."),
+        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"меньше размер · быстрее medium · чуть хуже качество", L"Сжатый medium, если хочется качества выше small без 1.5 GiB."),
+        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"компактно · быстрее · хорошее качество", L"Сжатый turbo: меньше места, немного ниже точность."),
+        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"компактнее large · качественно · дольше", L"Сжатый large-v3 для высокого качества без 2.9 GiB."),
+        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"компромисс · быстрее · качество выше q5", L"Сжатый turbo с меньшей потерей качества, чем q5.")
+    };
+}
+
+std::filesystem::path WhisperManager::ModelPath(const AppPaths& paths, const WhisperModelInfo& model) {
+    return paths.localWhisperModelsDir() / model.fileName;
+}
+
+std::filesystem::path WhisperManager::FindExecutableDir(const std::filesystem::path& extractedRoot) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(extractedRoot, ec)) {
+        return {};
+    }
+
+    std::filesystem::path mainExeDir;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(extractedRoot, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        const std::filesystem::path filename = entry.path().filename();
+        if (filename == L"whisper-cli.exe") {
+            return entry.path().parent_path();
+        }
+        if (filename == L"main.exe" && mainExeDir.empty()) {
+            mainExeDir = entry.path().parent_path();
+        }
+    }
+    return mainExeDir;
+}
+
+ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig& config) {
+    ToolInstallStatus status;
+    if (IsExecutableFile(config.whisperPath)) {
+        status.installed = true;
+        status.executable = config.whisperPath;
+        return status;
+    }
+    if (IsExecutableFile(paths.localWhisperExePath())) {
+        status.installed = true;
+        status.executable = paths.localWhisperExePath();
+    }
+    return status;
+}
+
+ReleaseAssetInfo WhisperManager::CheckLatestRelease() {
+    const std::string json = WinHttpClient::GetString(L"https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest");
+    return ParseGitHubReleaseAsset(json, WindowsCpuAssetName());
+}
+
+ToolInstallStatus WhisperManager::Install(
+    const AppPaths& paths,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    const ReleaseAssetInfo release = CheckLatestRelease();
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("whisper.cpp release asset was not found");
+    }
+
+    const std::filesystem::path archiveTmp = paths.stuffDir() / L"whisper-bin-x64.zip.tmp";
+    const std::filesystem::path archive = paths.stuffDir() / L"whisper-bin-x64.zip";
+    const std::filesystem::path extractDir = paths.stuffDir() / L"whisper_extract";
+
+    std::error_code ec;
+    std::filesystem::create_directories(paths.stuffDir(), ec);
+    std::filesystem::remove(archiveTmp, ec);
+    std::filesystem::remove(archive, ec);
+    std::filesystem::remove_all(extractDir, ec);
+
+    if (onProgress) {
+        onProgress(0, 0, L"Скачивание whisper.cpp...");
+    }
+    WinHttpClient::DownloadFile(
+        release.downloadUrl,
+        archiveTmp,
+        [onProgress](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, L"Скачивание whisper.cpp...");
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    std::filesystem::rename(archiveTmp, archive, ec);
+    if (ec) {
+        throw std::runtime_error("failed to finalize whisper.cpp archive");
+    }
+
+    std::filesystem::create_directories(extractDir, ec);
+    if (onProgress) {
+        onProgress(0, 0, L"Распаковка whisper.cpp...");
+    }
+
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (!std::filesystem::is_regular_file(options.executable, ec)) {
+        options.executable = L"powershell.exe";
+    }
+    options.arguments = {
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
+            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
+    };
+    options.timeoutMs = 120000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult extract = ProcessRunner::Run(options);
+    if (extract.canceled) {
+        throw std::runtime_error("operation canceled");
+    }
+    if (extract.exitCode != 0) {
+        throw std::runtime_error("failed to extract whisper.cpp archive");
+    }
+
+    const std::filesystem::path executableDir = FindExecutableDir(extractDir);
+    if (executableDir.empty()) {
+        throw std::runtime_error("whisper-cli.exe was not found in extracted archive");
+    }
+
+    if (onProgress) {
+        onProgress(0, 0, L"Установка whisper.cpp...");
+    }
+
+    std::filesystem::create_directories(paths.localWhisperDir(), ec);
+    CopyRegularFilesFromDir(executableDir, paths.localWhisperDir());
+
+    ToolInstallStatus status = Resolve(paths, AppConfig{});
+    if (!status.installed) {
+        throw std::runtime_error("installed whisper.cpp could not be resolved");
+    }
+    return status;
+}
+
+std::filesystem::path WhisperManager::DownloadModel(
+    const AppPaths& paths,
+    const WhisperModelInfo& model,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    if (model.downloadUrl.empty() || model.fileName.empty()) {
+        throw std::runtime_error("whisper model metadata is incomplete");
+    }
+
+    const std::filesystem::path target = ModelPath(paths, model);
+    const std::filesystem::path tmp = target.wstring() + L".tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(paths.localWhisperModelsDir(), ec);
+    std::filesystem::remove(tmp, ec);
+
+    const std::wstring statusText = L"Скачивание модели " + model.name + L"...";
+    if (onProgress) {
+        onProgress(0, model.sizeBytes, statusText);
+    }
+    WinHttpClient::DownloadFile(
+        model.downloadUrl,
+        tmp,
+        [onProgress, statusText](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, statusText);
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::filesystem::remove(target, ec);
+        ec.clear();
+        std::filesystem::rename(tmp, target, ec);
+    }
+    if (ec) {
+        throw std::runtime_error("failed to finalize whisper model");
+    }
+    return target;
 }
 
 YtDlpManager::YtDlpManager(AppPaths paths)

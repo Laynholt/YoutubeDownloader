@@ -47,6 +47,7 @@ struct DownloadTaskSnapshot {
 struct DownloadTaskCallbacks {
     std::function<void(double percent, const std::wstring& status)> onProgress;
     std::function<void(const YtDlpProgress& progress)> onProgressDetails;
+    std::function<void(double percent, const std::wstring& status)> onPostProcessing;
     std::function<void(const std::wstring& line)> onOutputLine;
     std::function<bool()> isCanceled;
 };
@@ -55,6 +56,7 @@ struct DownloadTaskResult {
     bool success = false;
     std::wstring errorText;
     std::vector<std::filesystem::path> outputFiles;
+    std::wstring statusText;
 };
 
 using DownloadTaskExecutor = std::function<DownloadTaskResult(

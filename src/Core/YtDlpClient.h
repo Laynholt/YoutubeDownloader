@@ -17,9 +17,14 @@ struct YtDlpDownloadRequest {
     std::filesystem::path outputDirectory;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegExePath;
+    std::filesystem::path whisperExePath;
+    std::filesystem::path whisperModelPath;
+    std::filesystem::path transcriptionTempDir;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
+    std::wstring whisperLanguage = L"auto";
     bool ffmpegAvailable = false;
+    bool transcribeAfterDownload = false;
 };
 
 struct YtDlpProgress {
@@ -35,6 +40,17 @@ struct YtDlpProgress {
     std::wstring formatId;
     std::wstring extension;
     std::wstring resolution;
+};
+
+struct YtDlpProcessLine {
+    std::filesystem::path outputPath;
+    YtDlpProgress progress;
+};
+
+struct OutputDirectoryFile {
+    std::filesystem::path path;
+    std::filesystem::file_time_type lastWriteTime = {};
+    std::uintmax_t size = 0;
 };
 
 struct VideoPreview {
@@ -56,7 +72,15 @@ struct YtDlpClientOptions {
 };
 
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request);
+std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line);
+std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory);
+std::filesystem::path FindDownloadedMediaFile(
+    const std::vector<std::filesystem::path>& reportedOutputFiles,
+    const std::filesystem::path& outputDirectory,
+    const std::vector<OutputDirectoryFile>& beforeDownload
+);
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line);
+YtDlpProcessLine ParseYtDlpProcessLine(const std::wstring& line);
 VideoPreview ParseVideoPreviewJson(const std::string& jsonText);
 
 class YtDlpClient {

@@ -20,6 +20,11 @@ public:
     std::filesystem::path localFfmpegExePath() const;
     std::filesystem::path localFfprobeExePath() const;
     std::filesystem::path localFfplayExePath() const;
+    std::filesystem::path localWhisperDir() const;
+    std::filesystem::path localWhisperExePath() const;
+    std::filesystem::path localWhisperModelsDir() const;
+    std::filesystem::path localWhisperModelPath() const;
+    std::filesystem::path transcriptionTempDir() const;
 
 private:
     std::filesystem::path m_root;

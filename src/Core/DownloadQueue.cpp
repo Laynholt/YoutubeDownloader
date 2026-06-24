@@ -4,54 +4,12 @@
 
 #include <algorithm>
 #include <array>
-#include <cwchar>
-#include <cwctype>
 #include <cstring>
 #include <ranges>
 #include <string_view>
 #include <system_error>
 
 namespace {
-
-std::filesystem::path ExtractQuotedPath(const std::wstring& line) {
-    const size_t firstQuote = line.find(L'"');
-    if (firstQuote == std::wstring::npos) {
-        return {};
-    }
-    const size_t lastQuote = line.find_last_of(L'"');
-    if (lastQuote == firstQuote || lastQuote == std::wstring::npos) {
-        return {};
-    }
-    return std::filesystem::path(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
-}
-
-std::filesystem::path ExtractKnownOutputPath(const std::wstring& line) {
-    constexpr const wchar_t* kDestination = L"[download] Destination:";
-    constexpr const wchar_t* kMerging = L"[Merger] Merging formats into";
-
-    std::wstring normalized = line;
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
-    }
-    if (!normalized.empty() && normalized.front() == L'\r') {
-        normalized.erase(normalized.begin());
-    }
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
-    }
-
-    if (normalized.starts_with(kDestination)) {
-        std::wstring value = normalized.substr(std::wcslen(kDestination));
-        while (!value.empty() && iswspace(value.front())) {
-            value.erase(value.begin());
-        }
-        return std::filesystem::path(value);
-    }
-    if (normalized.starts_with(kMerging)) {
-        return ExtractQuotedPath(normalized);
-    }
-    return {};
-}
 
 void AddUniquePath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
     if (path.empty()) {
@@ -517,12 +475,25 @@ void DownloadQueue::StartTask(int id) {
         snapshot.resolution = progress.resolution;
         ++m_revision;
     };
+    callbacks.onPostProcessing = [this, id](double percent, const std::wstring& status) {
+        std::lock_guard lock(m_mutex);
+        auto it = m_tasks.find(id);
+        if (it == m_tasks.end()) {
+            return;
+        }
+        it->second.snapshot.state = DownloadTaskState::PostProcessing;
+        it->second.snapshot.percent = std::clamp(percent, 0.0, 100.0);
+        it->second.snapshot.statusText = status;
+        it->second.snapshot.speedBytesPerSecond = 0;
+        it->second.snapshot.etaSeconds = 0;
+        ++m_revision;
+    };
     callbacks.onOutputLine = [this, id](const std::wstring& line) {
         std::lock_guard lock(m_mutex);
         auto it = m_tasks.find(id);
         if (it != m_tasks.end()) {
             it->second.snapshot.lastOutputLine = line;
-            AddUniquePath(it->second.snapshot.outputFiles, ExtractKnownOutputPath(line));
+            AddUniquePath(it->second.snapshot.outputFiles, ExtractYtDlpOutputPath(line));
             ++m_revision;
         }
     };
@@ -556,7 +527,7 @@ void DownloadQueue::StartTask(int id) {
             } else if (result.success) {
                 it->second.snapshot.state = DownloadTaskState::Completed;
                 it->second.snapshot.percent = 100.0;
-                it->second.snapshot.statusText = L"Готово";
+                it->second.snapshot.statusText = result.statusText.empty() ? L"Готово" : result.statusText;
                 for (const std::filesystem::path& path : result.outputFiles) {
                     AddUniquePath(it->second.snapshot.outputFiles, path);
                 }
@@ -580,16 +551,17 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     options.executable = task.request.ytDlpExePath.empty() ? std::filesystem::path(L"yt-dlp.exe") : task.request.ytDlpExePath;
     options.arguments = BuildDownloadArguments(task.request);
     options.timeoutMs = INFINITE;
-    options.onStdoutLine = [callbacks](const std::wstring& line) {
+    auto handleLine = [callbacks](const std::wstring& line) {
         if (callbacks.onOutputLine) {
             callbacks.onOutputLine(line);
         }
-        const YtDlpProgress progress = ParseYtDlpProgressLine(line);
-        if (progress.recognized && callbacks.onProgressDetails) {
-            callbacks.onProgressDetails(progress);
+        const YtDlpProcessLine parsed = ParseYtDlpProcessLine(line);
+        if (parsed.progress.recognized && callbacks.onProgressDetails) {
+            callbacks.onProgressDetails(parsed.progress);
         }
     };
-    options.onStderrLine = callbacks.onOutputLine;
+    options.onStdoutLine = handleLine;
+    options.onStderrLine = handleLine;
 
     const ProcessRunResult result = ProcessRunner::Run(options);
     if (callbacks.isCanceled && callbacks.isCanceled()) {

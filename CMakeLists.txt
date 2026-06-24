@@ -31,6 +31,7 @@ set(CORE_SOURCES
     src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
     src/Core/ToolManagers.cpp
+    src/Core/TranscriptionClient.cpp
     src/Core/Version.cpp
     src/Core/YtDlpClient.cpp
     src/Platform/ProcessRunner.cpp
@@ -46,6 +47,7 @@ set(CORE_HEADERS
     src/Core/KeyboardShortcuts.h
     src/Core/Logger.h
     src/Core/ToolManagers.h
+    src/Core/TranscriptionClient.h
     src/Core/Version.h
     src/Core/YtDlpClient.h
     src/Platform/ProcessRunner.h

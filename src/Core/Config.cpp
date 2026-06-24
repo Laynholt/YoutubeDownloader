@@ -85,11 +85,15 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.downloadDir = PathFromJsonString(json, "download_dir", config.downloadDir);
         config.cookiesPath = PathFromJsonString(json, "cookies_path", config.cookiesPath);
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
+        config.whisperPath = PathFromJsonString(json, "whisper_path", config.whisperPath);
+        config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
+        config.whisperLanguage = WStringFromJson(json, "whisper_language", config.whisperLanguage);
         config.maxParallelDownloads = IntFromJson(json, "max_parallel_downloads", config.maxParallelDownloads);
         config.maxParallelDownloads = std::clamp(config.maxParallelDownloads, 3, 10);
         config.autoUpdateApp = BoolFromJson(json, "auto_update_app", config.autoUpdateApp);
+        config.transcribeAfterDownload = BoolFromJson(json, "transcribe_after_download", config.transcribeAfterDownload);
         config.lastYtDlpCheckAt = WStringFromJson(json, "last_ytdlp_check_at", config.lastYtDlpCheckAt);
         config.lastYtDlpVersion = WStringFromJson(json, "last_ytdlp_version", config.lastYtDlpVersion);
     } catch (...) {
@@ -110,10 +114,14 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["download_dir"] = PathToJsonString(config.downloadDir);
     json["cookies_path"] = PathToJsonString(config.cookiesPath);
     json["ffmpeg_path"] = PathToJsonString(config.ffmpegPath);
+    json["whisper_path"] = PathToJsonString(config.whisperPath);
+    json["whisper_model_path"] = PathToJsonString(config.whisperModelPath);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
+    json["whisper_language"] = WideToUtf8(config.whisperLanguage);
     json["max_parallel_downloads"] = config.maxParallelDownloads;
     json["auto_update_app"] = config.autoUpdateApp;
+    json["transcribe_after_download"] = config.transcribeAfterDownload;
     json["last_ytdlp_check_at"] = WideToUtf8(config.lastYtDlpCheckAt);
     json["last_ytdlp_version"] = WideToUtf8(config.lastYtDlpVersion);
 

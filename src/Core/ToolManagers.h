@@ -9,9 +9,11 @@
 #include "AppPaths.h"
 #include "Config.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 struct ReleaseAssetInfo {
     bool found = false;
@@ -57,9 +59,42 @@ struct ToolInstallStatus {
     std::wstring version;
 };
 
+struct WhisperModelInfo {
+    std::wstring id;
+    std::wstring name;
+    std::wstring fileName;
+    std::wstring downloadUrl;
+    std::uint64_t sizeBytes = 0;
+    std::wstring tags;
+    std::wstring description;
+    bool recommended = false;
+    bool bestQuality = false;
+};
+
 bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
 bool ShouldInstallAppUpdate(const ReleaseAssetInfo& latest);
 std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release);
+
+class WhisperManager {
+public:
+    static const char* WindowsCpuAssetName();
+    static std::vector<WhisperModelInfo> ModelCatalog();
+    static std::filesystem::path ModelPath(const AppPaths& paths, const WhisperModelInfo& model);
+    static std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
+    static ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
+    static ReleaseAssetInfo CheckLatestRelease();
+    static ToolInstallStatus Install(
+        const AppPaths& paths,
+        const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
+        HANDLE cancelEvent = nullptr
+    );
+    static std::filesystem::path DownloadModel(
+        const AppPaths& paths,
+        const WhisperModelInfo& model,
+        const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
+        HANDLE cancelEvent = nullptr
+    );
+};
 
 class YtDlpManager {
 public:

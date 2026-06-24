@@ -43,6 +43,7 @@ private:
     void DrawPreviewContent(HDC dc, const RECT& previewRect);
     void DrawQueueContent(HDC dc, const RECT& queueRect);
     bool HandleQueueClick(POINT point);
+    bool ShowTranscriptActions(const DownloadTaskSnapshot& task, const RECT& buttonRect);
     bool UpdateQueueHover(POINT point);
     void ClearQueueHover();
     bool ScrollQueue(int wheelDelta, POINT point);
