@@ -89,9 +89,6 @@ std::wstring LanguageMetadataCode(const std::wstring& language) {
     if (lang == L"en" || lang == L"eng") {
         return L"eng";
     }
-    if (lang == L"kk" || lang == L"kaz") {
-        return L"kaz";
-    }
     return lang;
 }
 
@@ -102,9 +99,6 @@ std::wstring LanguageTitle(const std::wstring& language) {
     }
     if (lang == L"en" || lang == L"eng") {
         return L"English";
-    }
-    if (lang == L"kk" || lang == L"kaz") {
-        return L"Kazakh";
     }
     return lang;
 }

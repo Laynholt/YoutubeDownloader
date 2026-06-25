@@ -167,6 +167,30 @@ void TestConfigDropsLegacyFfmpegPromptFlag() {
     );
 }
 
+void TestConfigNormalizesUnsupportedVoiceOverLanguages() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VoiceOverLanguageMigration");
+    const AppPaths paths(root);
+
+    fs::create_directories(paths.configPath().parent_path());
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"voice_over_language":"kk"})json";
+    }
+    Require(
+        ConfigStore::Load(paths).voiceOverLanguage == L"ru",
+        "legacy kk voice-over language should migrate to ru"
+    );
+
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"voice_over_language":"kaz"})json";
+    }
+    Require(
+        ConfigStore::Load(paths).voiceOverLanguage == L"ru",
+        "legacy kaz voice-over language should migrate to ru"
+    );
+}
+
 void TestMainWindowShortcutResolution() {
     Require(
         ResolveMainWindowShortcut(true, 'V') == MainWindowShortcutAction::PasteUrl,
@@ -774,6 +798,21 @@ void TestVoiceOverCommandArguments() {
         L"title=VOT Russian",
         separatePaths.finalVideoPath.wstring()
     }), "voice-over mux arguments mismatch");
+
+    const std::vector<std::wstring> unsupportedLanguageMuxArgs = BuildVoiceOverMuxArguments(
+        media,
+        separatePaths.tempAudioPath,
+        separatePaths.finalVideoPath,
+        L"kk"
+    );
+    Require(
+        ContainsArg(unsupportedLanguageMuxArgs, L"language=kk"),
+        "unsupported voice-over language metadata should not map to Kazakh"
+    );
+    Require(
+        ContainsArg(unsupportedLanguageMuxArgs, L"title=VOT kk"),
+        "unsupported voice-over title should not map to Kazakh"
+    );
 
     const VoiceOverTranslationPaths mixedPaths = BuildVoiceOverPaths(webmMedia, temp, request.language, L"mixed");
     Require(mixedPaths.finalVideoPath == root / L"Clip [def].vot-mixed.ru.mkv", "voice-over non-mp4 mixed output path mismatch");
@@ -2785,6 +2824,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigDropsLegacyFfmpegPromptFlag();
+    TestConfigNormalizesUnsupportedVoiceOverLanguages();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
     TestWhisperUtilityStatusText();

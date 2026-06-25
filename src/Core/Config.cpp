@@ -55,6 +55,13 @@ WhisperBackend WhisperBackendFromJson(const nlohmann::json& json, const char* ke
     return WhisperBackendFromConfigValue(Utf8ToWide(it->get<std::string>()));
 }
 
+std::wstring NormalizeVoiceOverLanguage(const std::wstring& value) {
+    if (value == L"en") {
+        return L"en";
+    }
+    return L"ru";
+}
+
 std::filesystem::path DefaultDownloadDir() {
     wchar_t* profile = nullptr;
     size_t profileLength = 0;
@@ -128,6 +135,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.container = WStringFromJson(json, "container", config.container);
         config.whisperLanguage = WStringFromJson(json, "whisper_language", config.whisperLanguage);
         config.voiceOverLanguage = WStringFromJson(json, "voice_over_language", config.voiceOverLanguage);
+        config.voiceOverLanguage = NormalizeVoiceOverLanguage(config.voiceOverLanguage);
         config.voiceOverMode = WStringFromJson(json, "voice_over_mode", config.voiceOverMode);
         if (config.voiceOverMode != L"mixed") {
             config.voiceOverMode = L"separate";
@@ -165,7 +173,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
     json["whisper_language"] = WideToUtf8(config.whisperLanguage);
-    json["voice_over_language"] = WideToUtf8(config.voiceOverLanguage);
+    json["voice_over_language"] = WideToUtf8(NormalizeVoiceOverLanguage(config.voiceOverLanguage));
     json["voice_over_mode"] = WideToUtf8(config.voiceOverMode == L"mixed" ? L"mixed" : L"separate");
     json["original_volume_percent"] = std::clamp(config.originalVolumePercent, 0, 100);
     json["max_parallel_downloads"] = config.maxParallelDownloads;
