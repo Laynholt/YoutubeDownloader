@@ -65,6 +65,13 @@ constexpr int kSettingsSidebarCollapseWidth = 820;
 constexpr int kSettingsSidebarGap = 18;
 constexpr int kSettingsContentTop = 92;
 constexpr int kSettingsCardGap = 14;
+constexpr int kSettingsCardPadding = 18;
+constexpr int kSettingsChoiceCardHeight = 118;
+constexpr int kSettingsBehaviorCardHeight = 172;
+constexpr int kSettingsVoiceModeCardHeight = 126;
+constexpr int kSettingsAboutCardHeight = 170;
+constexpr int kSettingsCardControlTop = 70;
+constexpr int kSettingsBehaviorSecondRowTop = 120;
 constexpr int kSettingsParallelControlWidth = 40;
 constexpr int kSettingsParallelValueWidth = 52;
 constexpr int kSettingsCancelButtonWidth = 132;
@@ -258,7 +265,21 @@ int SettingsBottomButtonY(int height) {
 
 RECT SettingsCardRect(const DialogState* state, int width, int height, int index, int cardHeight) {
     const RECT content = SettingsContentRect(state, width, height);
-    const int top = content.top + kSettingsContentTop + (index * (cardHeight + kSettingsCardGap));
+    int top = content.top + kSettingsContentTop;
+    if (state && state->settingsSection == SettingsSection::Downloads) {
+        if (index > 0) {
+            top += kSettingsChoiceCardHeight + kSettingsCardGap;
+        }
+        if (index > 1) {
+            top += kSettingsChoiceCardHeight + kSettingsCardGap;
+        }
+    } else if (state && state->settingsSection == SettingsSection::VoiceOver) {
+        if (index > 0) {
+            top += kSettingsVoiceModeCardHeight + kSettingsCardGap;
+        }
+    } else {
+        top += index * (cardHeight + kSettingsCardGap);
+    }
     return {content.left, top, content.right, top + cardHeight};
 }
 
@@ -283,9 +304,14 @@ RECT SettingsToolCardRect(const DialogState* state, int width, int height, int i
 }
 
 RECT SettingsParallelValueRect(const DialogState* state, int width, int height) {
-    const RECT card = SettingsCardRect(state, width, height, 2, 152);
-    const int valueRight = card.right - 18 - kSettingsParallelControlWidth - kDialogButtonGap;
-    return {valueRight - kSettingsParallelValueWidth, card.top + 94, valueRight, card.top + 128};
+    const RECT card = SettingsCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
+    const int valueRight = card.right - kSettingsCardPadding - kSettingsParallelControlWidth - kDialogButtonGap;
+    return {
+        valueRight - kSettingsParallelValueWidth,
+        card.top + kSettingsBehaviorSecondRowTop,
+        valueRight,
+        card.top + kSettingsBehaviorSecondRowTop + kDialogButtonHeight
+    };
 }
 
 void EnableDarkTitleBar(HWND window) {
@@ -759,19 +785,19 @@ void RefreshSettingsButtons(DialogState* state) {
         state->window,
         IdSettingsNavDownloads,
         state->settingsSection == SettingsSection::Downloads,
-        collapsed ? L"З" : L"Загрузки"
+        collapsed ? L"\u2193" : L"Загрузки"
     );
     SetDarkButtonState(
         state->window,
         IdSettingsNavVoiceOver,
         state->settingsSection == SettingsSection::VoiceOver,
-        collapsed ? L"О" : L"Озвучка"
+        collapsed ? L"\u266B" : L"Озвучка"
     );
     SetDarkButtonState(
         state->window,
         IdSettingsNavTools,
         state->settingsSection == SettingsSection::Tools,
-        collapsed ? L"И" : L"Инструменты"
+        collapsed ? L"\u2699" : L"Инструменты"
     );
     SetDarkButtonState(
         state->window,
@@ -1103,18 +1129,24 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     const int navWidth = collapsed ? 44 : (sidebar.right - sidebar.left - 24);
     const int navHeight = 40;
 
-    const std::array<int, 5> navIds = {
-        IdSettingsToggleSidebar,
+    HWND collapseButton = GetDlgItem(state->window, IdSettingsToggleSidebar);
+    if (collapseButton) {
+        const int collapseWidth = collapsed ? navWidth : navHeight;
+        const int collapseLeft = collapsed ? navLeft : (sidebar.right - 12 - collapseWidth);
+        MoveWindow(collapseButton, collapseLeft, sidebar.top + 18, collapseWidth, navHeight, TRUE);
+    }
+
+    const int firstNavY = sidebar.top + (collapsed ? 76 : 104);
+    const std::array<int, 4> navIds = {
         IdSettingsNavDownloads,
         IdSettingsNavVoiceOver,
         IdSettingsNavTools,
         IdSettingsNavAbout
     };
-    const std::array<int, 5> navY = {
-        sidebar.top + 18,
-        sidebar.top + 88,
-        sidebar.top + 136,
-        sidebar.top + 184,
+    const std::array<int, 4> navY = {
+        firstNavY,
+        firstNavY + 48,
+        firstNavY + 96,
         sidebar.bottom - 58
     };
     for (size_t i = 0; i < navIds.size(); ++i) {
@@ -1153,8 +1185,8 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     SetControlsVisible(state->window, aboutIds, state->settingsSection == SettingsSection::About);
 
     const std::array<int, 6> qualityIds = {101, 102, 103, 104, 105, 106};
-    RECT card = SettingsCardRect(state, width, height, 0, 96);
-    const int cardPadding = 18;
+    RECT card = SettingsCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
+    const int cardPadding = kSettingsCardPadding;
     const int qualityButtonWidth = std::max(
         72,
         (static_cast<int>(card.right - card.left) - (cardPadding * 2) - (kDialogButtonGap * 5)) / 6
@@ -1163,13 +1195,13 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     for (int id : qualityIds) {
         HWND button = GetDlgItem(state->window, id);
         if (button) {
-            MoveWindow(button, x, card.top + 50, qualityButtonWidth, 32, TRUE);
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, qualityButtonWidth, kDialogButtonHeight, TRUE);
             x += qualityButtonWidth + kDialogButtonGap;
         }
     }
 
     const std::array<int, 4> containerIds = {111, 112, 113, 114};
-    card = SettingsCardRect(state, width, height, 1, 96);
+    card = SettingsCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
     const int containerButtonWidth = std::max(
         96,
         (static_cast<int>(card.right - card.left) - (cardPadding * 2) - (kDialogButtonGap * 3)) / 4
@@ -1178,7 +1210,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     for (int id : containerIds) {
         HWND button = GetDlgItem(state->window, id);
         if (button) {
-            MoveWindow(button, x, card.top + 50, containerButtonWidth, 32, TRUE);
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, containerButtonWidth, kDialogButtonHeight, TRUE);
             x += containerButtonWidth + kDialogButtonGap;
         }
     }
@@ -1200,45 +1232,63 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND checkUpdates = GetDlgItem(state->window, IdCheckUpdates);
     HWND cancel = GetDlgItem(state->window, IdCancel);
     HWND ok = GetDlgItem(state->window, IdOk);
-    card = SettingsCardRect(state, width, height, 2, 152);
+    card = SettingsCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
+    const int behaviorRowWidth = std::max(0, static_cast<int>(card.right - card.left) - (cardPadding * 2));
+    const int behaviorButtonWidth = std::max(140, (behaviorRowWidth - kDialogButtonGap) / 2);
+    const int transcribeButtonWidth = std::max(140, behaviorRowWidth - behaviorButtonWidth - kDialogButtonGap);
     if (autoUpdate) {
-        MoveWindow(autoUpdate, card.left + cardPadding, card.top + 50, 220, 34, TRUE);
+        MoveWindow(autoUpdate, card.left + cardPadding, card.top + kSettingsCardControlTop, behaviorButtonWidth, kDialogButtonHeight, TRUE);
     }
     const RECT parallelValue = SettingsParallelValueRect(state, width, height);
     if (parallelMinus) {
         MoveWindow(
             parallelMinus,
             parallelValue.left - kDialogButtonGap - kSettingsParallelControlWidth,
-            card.top + 94,
+            parallelValue.top,
             kSettingsParallelControlWidth,
-            34,
+            kDialogButtonHeight,
             TRUE
         );
     }
     if (parallelPlus) {
-        MoveWindow(parallelPlus, card.right - cardPadding - kSettingsParallelControlWidth, card.top + 94, kSettingsParallelControlWidth, 34, TRUE);
+        MoveWindow(parallelPlus, card.right - cardPadding - kSettingsParallelControlWidth, parallelValue.top, kSettingsParallelControlWidth, kDialogButtonHeight, TRUE);
     }
     if (transcribe) {
-        MoveWindow(transcribe, card.left + cardPadding + 232, card.top + 50, 250, 34, TRUE);
+        MoveWindow(
+            transcribe,
+            card.left + cardPadding + behaviorButtonWidth + kDialogButtonGap,
+            card.top + kSettingsCardControlTop,
+            transcribeButtonWidth,
+            kDialogButtonHeight,
+            TRUE
+        );
     }
 
-    card = SettingsCardRect(state, width, height, 0, 112);
+    card = SettingsCardRect(state, width, height, 0, kSettingsVoiceModeCardHeight);
+    const int modeRowWidth = std::max(0, static_cast<int>(card.right - card.left) - (cardPadding * 2));
+    const int modeButtonWidth = std::max(150, (modeRowWidth - kDialogButtonGap) / 2);
     if (voiceOverSeparate) {
-        MoveWindow(voiceOverSeparate, card.left + cardPadding, card.top + 58, 260, 34, TRUE);
+        MoveWindow(voiceOverSeparate, card.left + cardPadding, card.top + kSettingsCardControlTop, modeButtonWidth, kDialogButtonHeight, TRUE);
     }
     if (voiceOverMixed) {
-        MoveWindow(voiceOverMixed, card.left + cardPadding + 272, card.top + 58, 300, 34, TRUE);
+        MoveWindow(
+            voiceOverMixed,
+            card.left + cardPadding + modeButtonWidth + kDialogButtonGap,
+            card.top + kSettingsCardControlTop,
+            std::max(150, modeRowWidth - modeButtonWidth - kDialogButtonGap),
+            kDialogButtonHeight,
+            TRUE
+        );
     }
-    card = SettingsCardRect(state, width, height, 1, 96);
+    card = SettingsCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
     if (voiceOverLangRu) {
-        MoveWindow(voiceOverLangRu, card.left + cardPadding, card.top + 50, 120, 34, TRUE);
+        MoveWindow(voiceOverLangRu, card.left + cardPadding, card.top + kSettingsCardControlTop, 120, kDialogButtonHeight, TRUE);
     }
     if (voiceOverLangEn) {
-        MoveWindow(voiceOverLangEn, card.left + cardPadding + 132, card.top + 50, 120, 34, TRUE);
+        MoveWindow(voiceOverLangEn, card.left + cardPadding + 132, card.top + kSettingsCardControlTop, 120, kDialogButtonHeight, TRUE);
     }
 
-    auto layoutToolCard = [&](int index, int cardHeight, HWND action, HWND details) {
-        UNREFERENCED_PARAMETER(cardHeight);
+    auto layoutToolCard = [&](int index, HWND action, HWND details) {
         RECT toolCard = SettingsToolCardRect(state, width, height, index);
         const int buttonY = toolCard.top + 18;
         const int detailsWidth = 110;
@@ -1250,12 +1300,20 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
             MoveWindow(action, toolCard.right - cardPadding - detailsWidth - kDialogButtonGap - actionWidth, buttonY, actionWidth, 34, TRUE);
         }
     };
-    layoutToolCard(0, state->ffmpegDetailsExpanded ? 156 : 96, ffmpeg, ffmpegDetails);
-    layoutToolCard(1, state->whisperDetailsExpanded ? 190 : 112, whisper, whisperDetails);
-    layoutToolCard(2, state->votCliDetailsExpanded ? 176 : 104, votCli, votCliDetails);
+    layoutToolCard(0, ffmpeg, ffmpegDetails);
+    layoutToolCard(1, whisper, whisperDetails);
+    layoutToolCard(2, votCli, votCliDetails);
 
     if (checkUpdates) {
-        MoveWindow(checkUpdates, content.left, content.top + kSettingsContentTop + 92, 220, 34, TRUE);
+        const RECT aboutCard = SettingsCardRect(state, width, height, 0, kSettingsAboutCardHeight);
+        MoveWindow(
+            checkUpdates,
+            aboutCard.left + cardPadding,
+            aboutCard.top + 112,
+            220,
+            kDialogButtonHeight,
+            TRUE
+        );
     }
     const int panelRight = width - kDialogPanelInset;
     const int bottomButtonY = SettingsBottomButtonY(height);
@@ -1490,11 +1548,11 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         graphics.FillPath(&fillBrush, &path);
         graphics.DrawPath(&borderPen, &path);
     };
-    auto drawCard = [&](const RECT& rect, const std::wstring& title, const std::wstring& subtitle) {
+    auto drawCard = [&](const RECT& rect, const std::wstring& title, const std::wstring& subtitle, int rightReserve = 18) {
         drawRounded(dc, rect, Gdiplus::Color(255, 25, 29, 38), Gdiplus::Color(255, 48, 55, 68), 10);
-        RECT titleRect = {rect.left + 18, rect.top + 14, rect.right - 280, rect.top + 38};
+        RECT titleRect = {rect.left + kSettingsCardPadding, rect.top + 14, rect.right - rightReserve, rect.top + 38};
         DrawTextBlock(dc, title, titleRect, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        RECT subtitleRect = {rect.left + 18, rect.top + 38, rect.right - 280, rect.top + 62};
+        RECT subtitleRect = {rect.left + kSettingsCardPadding, rect.top + 40, rect.right - rightReserve, rect.top + 64};
         DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     };
     auto drawStatus = [&](const RECT& rect, const std::wstring& text, bool ok) {
@@ -1512,20 +1570,22 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     const RECT content = SettingsContentRect(state, client.right, client.bottom);
     const bool collapsed = IsSettingsSidebarCollapsed(state, client.right);
     drawRounded(dc, sidebar, Gdiplus::Color(255, 24, 28, 37), Gdiplus::Color(255, 48, 55, 68), 10);
-    RECT sidebarTitle = {
-        sidebar.left + (collapsed ? 0 : 16),
-        sidebar.top + 18,
-        sidebar.right - (collapsed ? 0 : 58),
-        sidebar.top + 58
-    };
-    DrawTextBlock(
-        dc,
-        collapsed ? L"⚙" : L"Настройки",
-        sidebarTitle,
-        kTextColor,
-        collapsed ? titleFont : labelFont,
-        collapsed ? (DT_CENTER | DT_VCENTER | DT_SINGLELINE) : (DT_LEFT | DT_VCENTER | DT_SINGLELINE)
-    );
+    if (!collapsed) {
+        RECT sidebarTitle = {
+            sidebar.left + 16,
+            sidebar.top + 18,
+            sidebar.right - 58,
+            sidebar.top + 58
+        };
+        DrawTextBlock(
+            dc,
+            L"Настройки",
+            sidebarTitle,
+            kTextColor,
+            labelFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE
+        );
+    }
 
     std::wstring sectionTitle;
     std::wstring sectionSubtitle;
@@ -1552,24 +1612,29 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawTextBlock(dc, sectionSubtitle, {content.left, content.top + 38, content.right, content.top + 66}, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
     if (state->settingsSection == SettingsSection::Downloads) {
-        RECT qualityCard = SettingsCardRect(state, client.right, client.bottom, 0, 96);
+        RECT qualityCard = SettingsCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight);
         drawCard(qualityCard, L"Качество", L"Качество по умолчанию для новых загрузок.");
-        RECT formatCard = SettingsCardRect(state, client.right, client.bottom, 1, 96);
+        RECT formatCard = SettingsCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight);
         drawCard(formatCard, L"Формат", L"Контейнер итогового файла.");
-        RECT behaviorCard = SettingsCardRect(state, client.right, client.bottom, 2, 152);
+        RECT behaviorCard = SettingsCardRect(state, client.right, client.bottom, 2, kSettingsBehaviorCardHeight);
         drawCard(behaviorCard, L"Поведение", L"Автопроверка, расшифровка и параллельные загрузки.");
-        RECT parallelLabel = {behaviorCard.left + 18, behaviorCard.top + 94, behaviorCard.right - 190, behaviorCard.top + 128};
+        RECT parallelLabel = {
+            behaviorCard.left + kSettingsCardPadding,
+            behaviorCard.top + kSettingsBehaviorSecondRowTop,
+            behaviorCard.right - 190,
+            behaviorCard.top + kSettingsBehaviorSecondRowTop + kDialogButtonHeight
+        };
         DrawTextBlock(dc, L"Параллельные загрузки", parallelLabel, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         DrawTextBlock(dc, std::to_wstring(state->workingConfig.maxParallelDownloads), SettingsParallelValueRect(state, client.right, client.bottom), kTextColor, labelFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else if (state->settingsSection == SettingsSection::VoiceOver) {
-        drawCard(SettingsCardRect(state, client.right, client.bottom, 0, 112), L"Режим", L"Как сохранить перевод после скачивания.");
-        drawCard(SettingsCardRect(state, client.right, client.bottom, 1, 96), L"Язык результата", L"Доступны русский и английский.");
+        drawCard(SettingsCardRect(state, client.right, client.bottom, 0, kSettingsVoiceModeCardHeight), L"Режим", L"Как сохранить перевод после скачивания.");
+        drawCard(SettingsCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"Язык результата", L"Доступны русский и английский.");
     } else if (state->settingsSection == SettingsSection::Tools) {
         RECT ffmpegCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
         FfmpegStatus ffmpegStatus = state->paths
             ? FfmpegManager::Resolve(*state->paths, state->workingConfig)
             : FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath);
-        drawCard(ffmpegCard, L"FFmpeg", ffmpegStatus.available ? L"Готов для объединения и обработки медиа." : L"Не найден или путь недоступен.");
+        drawCard(ffmpegCard, L"FFmpeg", ffmpegStatus.available ? L"Готов для объединения и обработки медиа." : L"Не найден или путь недоступен.", 280);
         drawStatus({ffmpegCard.left + 18, ffmpegCard.top + 66, ffmpegCard.left + 126, ffmpegCard.top + 90}, ffmpegStatus.available ? L"Найден" : L"Нет", ffmpegStatus.available);
         if (state->ffmpegDetailsExpanded) {
             DrawUtilityStatusPath(dc, ffmpegStatus.available ? L"Путь:" : L"Статус:", ffmpegStatus.ffmpegExe, ffmpegCard.left + 18, ffmpegCard.top + 96, ffmpegCard.right - 18, textFont);
@@ -1583,7 +1648,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         const std::wstring whisperSubtitle = whisperStatus.installed
             ? L"Backend: " + WhisperManager::BackendDisplayName(whisperStatus.whisperBackend)
             : L"Нужен для расшифровки аудиодорожек.";
-        drawCard(whisperCard, L"Whisper.cpp", whisperSubtitle);
+        drawCard(whisperCard, L"Whisper.cpp", whisperSubtitle, 280);
         drawStatus({whisperCard.left + 18, whisperCard.top + 70, whisperCard.left + 126, whisperCard.top + 94}, whisperStatus.installed ? L"Найден" : L"Нет", whisperStatus.installed);
         drawStatus({whisperCard.left + 138, whisperCard.top + 70, whisperCard.left + 246, whisperCard.top + 94}, whisperModelAvailable ? L"Модель" : L"Нет модели", whisperModelAvailable);
         if (state->whisperDetailsExpanded) {
@@ -1593,7 +1658,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
 
         RECT votCard = SettingsToolCardRect(state, client.right, client.bottom, 2);
         const VotCliStatus votCliStatus = VotCliManager::Resolve(state->workingConfig);
-        drawCard(votCard, L"vot-cli", votCliStatus.available ? L"Готов для озвучки видео." : (votCliStatus.message.empty() ? L"Не найден." : votCliStatus.message));
+        drawCard(votCard, L"vot-cli", votCliStatus.available ? L"Готов для озвучки видео." : (votCliStatus.message.empty() ? L"Не найден." : votCliStatus.message), 280);
         drawStatus({votCard.left + 18, votCard.top + 66, votCard.left + 126, votCard.top + 90}, votCliStatus.available ? L"Найден" : L"Нет", votCliStatus.available);
         drawStatus({votCard.left + 138, votCard.top + 66, votCard.left + 246, votCard.top + 90}, votCliStatus.nodeAvailable ? L"Node" : L"Нет Node", votCliStatus.nodeAvailable);
         if (state->votCliDetailsExpanded) {
@@ -1601,9 +1666,16 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             DrawUtilityStatusPath(dc, votCliStatus.nodeAvailable ? L"Node:" : L"Node:", votCliStatus.nodeExecutable, votCard.left + 18, votCard.top + 144, votCard.right - 18, textFont);
         }
     } else {
-        RECT aboutCard = SettingsCardRect(state, client.right, client.bottom, 0, 154);
+        RECT aboutCard = SettingsCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
         drawCard(aboutCard, L"YouTube Downloader", L"Портативный Win32-загрузчик видео с поддержкой yt-dlp, FFmpeg, Whisper.cpp и vot-cli.");
-        DrawTextBlock(dc, L"Версия: " YTD_APP_VERSION_WIDE, {aboutCard.left + 18, aboutCard.top + 72, aboutCard.right - 18, aboutCard.top + 98}, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        DrawTextBlock(
+            dc,
+            L"Версия: " YTD_APP_VERSION_WIDE,
+            {aboutCard.left + kSettingsCardPadding, aboutCard.top + 78, aboutCard.right - kSettingsCardPadding, aboutCard.top + 104},
+            kTextColor,
+            textFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE
+        );
     }
 
     DeleteObject(titleFont);
