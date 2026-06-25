@@ -90,6 +90,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
     Require(defaults.transcribeAfterDownload == false, "default transcription flag mismatch");
+    Require(defaults.settingsSidebarCollapsed == false, "default settings sidebar state mismatch");
     Require(defaults.whisperBackend == WhisperBackend::Auto, "default whisper backend mismatch");
     Require(defaults.whisperLanguage == L"auto", "default whisper language mismatch");
     Require(defaults.voiceOverLanguage == L"ru", "default voice-over language mismatch");
@@ -115,6 +116,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.container = L"mp4";
     saved.maxParallelDownloads = 5;
     saved.autoUpdateApp = true;
+    saved.settingsSidebarCollapsed = true;
     saved.lastYtDlpCheckAt = L"2026-06-17T20:00:00Z";
     saved.lastYtDlpVersion = L"2026.06.09";
 
@@ -138,6 +140,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.container == L"mp4", "container round-trip mismatch");
     Require(loaded.maxParallelDownloads == 5, "max parallel round-trip mismatch");
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
+    Require(loaded.settingsSidebarCollapsed == true, "settings sidebar state round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
 }

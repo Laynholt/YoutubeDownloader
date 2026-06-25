@@ -32,6 +32,7 @@ struct AppConfig {
     int maxParallelDownloads = 3;
     bool autoUpdateApp = true;
     bool transcribeAfterDownload = false;
+    bool settingsSidebarCollapsed = false;
     std::wstring lastYtDlpCheckAt;
     std::wstring lastYtDlpVersion;
 };

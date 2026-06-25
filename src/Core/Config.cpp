@@ -146,6 +146,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.maxParallelDownloads = std::clamp(config.maxParallelDownloads, 3, 10);
         config.autoUpdateApp = BoolFromJson(json, "auto_update_app", config.autoUpdateApp);
         config.transcribeAfterDownload = BoolFromJson(json, "transcribe_after_download", config.transcribeAfterDownload);
+        config.settingsSidebarCollapsed = BoolFromJson(json, "settings_sidebar_collapsed", config.settingsSidebarCollapsed);
         config.lastYtDlpCheckAt = WStringFromJson(json, "last_ytdlp_check_at", config.lastYtDlpCheckAt);
         config.lastYtDlpVersion = WStringFromJson(json, "last_ytdlp_version", config.lastYtDlpVersion);
     } catch (...) {
@@ -179,6 +180,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["max_parallel_downloads"] = config.maxParallelDownloads;
     json["auto_update_app"] = config.autoUpdateApp;
     json["transcribe_after_download"] = config.transcribeAfterDownload;
+    json["settings_sidebar_collapsed"] = config.settingsSidebarCollapsed;
     json["last_ytdlp_check_at"] = WideToUtf8(config.lastYtDlpCheckAt);
     json["last_ytdlp_version"] = WideToUtf8(config.lastYtDlpVersion);
 
