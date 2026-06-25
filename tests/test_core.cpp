@@ -177,20 +177,11 @@ void TestConfigNormalizesUnsupportedVoiceOverLanguages() {
     fs::create_directories(paths.configPath().parent_path());
     {
         std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"voice_over_language":"kk"})json";
+        out << R"json({"voice_over_language":"zz"})json";
     }
     Require(
         ConfigStore::Load(paths).voiceOverLanguage == L"ru",
-        "legacy kk voice-over language should migrate to ru"
-    );
-
-    {
-        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"voice_over_language":"kaz"})json";
-    }
-    Require(
-        ConfigStore::Load(paths).voiceOverLanguage == L"ru",
-        "legacy kaz voice-over language should migrate to ru"
+        "unsupported voice-over language should migrate to ru"
     );
 }
 
@@ -806,15 +797,15 @@ void TestVoiceOverCommandArguments() {
         media,
         separatePaths.tempAudioPath,
         separatePaths.finalVideoPath,
-        L"kk"
+        L"zz"
     );
     Require(
-        ContainsArg(unsupportedLanguageMuxArgs, L"language=kk"),
-        "unsupported voice-over language metadata should not map to Kazakh"
+        ContainsArg(unsupportedLanguageMuxArgs, L"language=zz"),
+        "unsupported voice-over language metadata should remain generic"
     );
     Require(
-        ContainsArg(unsupportedLanguageMuxArgs, L"title=VOT kk"),
-        "unsupported voice-over title should not map to Kazakh"
+        ContainsArg(unsupportedLanguageMuxArgs, L"title=VOT zz"),
+        "unsupported voice-over title should remain generic"
     );
 
     const VoiceOverTranslationPaths mixedPaths = BuildVoiceOverPaths(webmMedia, temp, request.language, L"mixed");
