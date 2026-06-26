@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,11 @@ struct EditContextMenuItem {
     bool enabled = true;
 };
 
+struct WhisperUtilityStatusText {
+    std::wstring executableText;
+    std::wstring modelText;
+};
+
 DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoading);
 std::vector<EditContextMenuItem> BuildEditContextMenuItems(
     bool canUndo,
@@ -32,6 +38,21 @@ std::vector<EditContextMenuItem> BuildEditContextMenuItems(
 );
 int EditContextMenuHeight(const std::vector<EditContextMenuItem>& items);
 UINT HitTestEditContextMenuItem(const std::vector<EditContextMenuItem>& items, int y);
+WhisperUtilityStatusText BuildWhisperUtilityStatusText(
+    bool executableAvailable,
+    const std::filesystem::path& executablePath,
+    bool modelAvailable,
+    const std::filesystem::path& modelPath
+);
+std::vector<std::filesystem::path> FindTranscriptFilePaths(const std::vector<std::filesystem::path>& outputFiles);
+bool HasWhisperTranscriptFilePath(const std::vector<std::filesystem::path>& outputFiles);
+bool ShouldOfferVotSubtitlesAction(const std::vector<std::filesystem::path>& outputFiles);
+std::wstring TranscriptMenuFileLabel(const std::filesystem::path& path);
+std::filesystem::path FindTranscriptTextPath(const std::vector<std::filesystem::path>& outputFiles);
+std::filesystem::path FindVoiceOverVideoPath(
+    const std::vector<std::filesystem::path>& outputFiles,
+    const std::wstring& language
+);
 void PasteReplacingEditText(HWND editControl);
 void CopyTextToClipboard(HWND owner, const std::wstring& text);
 void RestoreModalOwner(HWND owner, bool ownerWasEnabled);

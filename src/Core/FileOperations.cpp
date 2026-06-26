@@ -12,6 +12,11 @@
 
 namespace {
 
+bool IsRegularFile(const std::filesystem::path& path) {
+    std::error_code ec;
+    return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
 [[noreturn]] void RejectStagedFile(const std::filesystem::path& staged, const char* message) {
     std::error_code ec;
     std::filesystem::remove(staged, ec);
@@ -19,6 +24,34 @@ namespace {
 }
 
 } // namespace
+
+bool MoveFileReplacing(const std::filesystem::path& source, const std::filesystem::path& destination) {
+    if (!IsRegularFile(source)) {
+        return false;
+    }
+
+    std::error_code ec;
+    const std::filesystem::path parent = destination.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent, ec);
+    }
+    ec.clear();
+    std::filesystem::remove(destination, ec);
+    ec.clear();
+    std::filesystem::rename(source, destination, ec);
+    if (!ec && IsRegularFile(destination)) {
+        return true;
+    }
+
+    ec.clear();
+    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec || !IsRegularFile(destination)) {
+        return false;
+    }
+    ec.clear();
+    std::filesystem::remove(source, ec);
+    return true;
+}
 
 void CommitDownloadedFile(
     const std::filesystem::path& staged,

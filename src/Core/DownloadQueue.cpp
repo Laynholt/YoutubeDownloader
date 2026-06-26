@@ -1,57 +1,82 @@
 #include "DownloadQueue.h"
 
+#include "BackendText.h"
 #include "Logger.h"
 #include "ProcessRunner.h"
 
 #include <algorithm>
 #include <array>
-#include <cwchar>
-#include <cwctype>
+#include <chrono>
+#include <cmath>
 #include <cstring>
+#include <iomanip>
 #include <ranges>
+#include <sstream>
 #include <string_view>
 #include <system_error>
 
 namespace {
 
-std::filesystem::path ExtractQuotedPath(const std::wstring& line) {
-    const size_t firstQuote = line.find(L'"');
-    if (firstQuote == std::wstring::npos) {
-        return {};
+std::uint64_t ElapsedSecondsSince(std::chrono::steady_clock::time_point startedAt) {
+    if (startedAt == std::chrono::steady_clock::time_point{}) {
+        return 0;
     }
-    const size_t lastQuote = line.find_last_of(L'"');
-    if (lastQuote == firstQuote || lastQuote == std::wstring::npos) {
-        return {};
+
+    const auto elapsed = std::chrono::steady_clock::now() - startedAt;
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+    if (milliseconds <= 0) {
+        return 1;
     }
-    return std::filesystem::path(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
+    return static_cast<std::uint64_t>((milliseconds + 999) / 1000);
 }
 
-std::filesystem::path ExtractKnownOutputPath(const std::wstring& line) {
-    constexpr const wchar_t* kDestination = L"[download] Destination:";
-    constexpr const wchar_t* kMerging = L"[Merger] Merging formats into";
+std::wstring FormatDurationForLog(std::uint64_t seconds) {
+    if (seconds == 0) {
+        return L"0 с";
+    }
+    return FormatDuration(seconds);
+}
 
-    std::wstring normalized = line;
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
+std::wstring FormatPercentForLog(double percent) {
+    std::wostringstream out;
+    out << std::fixed << std::setprecision(1) << std::clamp(percent, 0.0, 100.0) << L"%";
+    return out.str();
+}
+
+std::wstring FormatEtaForLog(double percent, std::uint64_t elapsedSeconds) {
+    if (percent <= 0.0 || elapsedSeconds == 0) {
+        return L"pending";
     }
-    if (!normalized.empty() && normalized.front() == L'\r') {
-        normalized.erase(normalized.begin());
-    }
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
+    if (percent >= 100.0) {
+        return L"0 с";
     }
 
-    if (normalized.starts_with(kDestination)) {
-        std::wstring value = normalized.substr(std::wcslen(kDestination));
-        while (!value.empty() && iswspace(value.front())) {
-            value.erase(value.begin());
+    const double remainingSeconds = (static_cast<double>(elapsedSeconds) * (100.0 - percent)) / percent;
+    return FormatDurationForLog(static_cast<std::uint64_t>(std::ceil(std::max(0.0, remainingSeconds))));
+}
+
+std::wstring SanitizeLogField(std::wstring value) {
+    for (wchar_t& ch : value) {
+        if (ch == L'\r' || ch == L'\n') {
+            ch = L' ';
+        } else if (ch == L'"') {
+            ch = L'\'';
         }
-        return std::filesystem::path(value);
     }
-    if (normalized.starts_with(kMerging)) {
-        return ExtractQuotedPath(normalized);
-    }
-    return {};
+    return value;
+}
+
+std::wstring BuildPostProcessingProgressLog(
+    int id,
+    double percent,
+    const std::wstring& status,
+    std::uint64_t elapsedSeconds
+) {
+    return L"Post-processing progress: id=" + std::to_wstring(id) +
+        L" status=\"" + SanitizeLogField(status) + L"\"" +
+        L" progress=" + FormatPercentForLog(percent) +
+        L" elapsed=" + FormatDurationForLog(elapsedSeconds) +
+        L" eta=" + FormatEtaForLog(percent, elapsedSeconds);
 }
 
 void AddUniquePath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
@@ -191,13 +216,15 @@ bool EnrichTaskMetadata(DownloadTaskSnapshot& task, std::wstring title, std::fil
 bool IsPersistedRunningState(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
-           state == DownloadTaskState::Downloading;
+           state == DownloadTaskState::Downloading ||
+           state == DownloadTaskState::PostProcessing;
 }
 
 bool ShouldReuseExistingTask(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
-           state == DownloadTaskState::Downloading;
+           state == DownloadTaskState::Downloading ||
+           state == DownloadTaskState::PostProcessing;
 }
 
 DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
@@ -226,6 +253,9 @@ DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
             break;
         case DownloadTaskState::Downloading:
             snapshot.statusText = L"Загрузка";
+            break;
+        case DownloadTaskState::PostProcessing:
+            snapshot.statusText = L"Обработка";
             break;
         }
     }
@@ -363,6 +393,11 @@ bool DownloadQueue::Retry(int id) {
         return false;
     }
     task.cancelRequested = false;
+    task.postProcessingOnly = false;
+    task.startedAt = {};
+    task.postProcessingStartedAt = {};
+    task.lastPostProcessingLoggedPercent = -1.0;
+    task.lastPostProcessingLoggedStatus.clear();
     task.snapshot.state = DownloadTaskState::Queued;
     task.snapshot.percent = 0.0;
     task.snapshot.errorText.clear();
@@ -379,6 +414,45 @@ bool DownloadQueue::Retry(int id) {
         m_logger->Info(L"Download task retried: id=" + std::to_wstring(id));
     }
     ++m_revision;
+    m_cv.notify_all();
+    return true;
+}
+
+bool DownloadQueue::StartPostProcessing(int id, DownloadTaskExecutor executor, std::wstring statusText) {
+    if (!executor) {
+        return false;
+    }
+
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_tasks.find(id);
+        if (it == m_tasks.end()) {
+            return false;
+        }
+        TaskRecord& task = it->second;
+        if (task.active || task.snapshot.state != DownloadTaskState::Completed) {
+            return false;
+        }
+
+        task.active = true;
+        task.cancelRequested = false;
+        task.postProcessingOnly = true;
+        task.postProcessingStartedAt = std::chrono::steady_clock::now();
+        task.lastPostProcessingLoggedPercent = -1.0;
+        task.lastPostProcessingLoggedStatus.clear();
+        task.snapshot.state = DownloadTaskState::PostProcessing;
+        task.snapshot.percent = 0.0;
+        task.snapshot.errorText.clear();
+        task.snapshot.statusText = statusText.empty() ? L"Обработка" : std::move(statusText);
+        task.snapshot.speedBytesPerSecond = 0;
+        task.snapshot.etaSeconds = 0;
+        ++m_activeCount;
+        ++m_revision;
+        m_workers.emplace(id, std::jthread([this, id, executor = std::move(executor)](std::stop_token stopToken) mutable {
+            RunTask(id, std::move(executor), stopToken);
+        }));
+    }
+
     m_cv.notify_all();
     return true;
 }
@@ -610,6 +684,11 @@ void DownloadQueue::SchedulerLoop() {
             }
             const int id = nextTask->first;
             nextTask->second.active = true;
+            nextTask->second.postProcessingOnly = false;
+            nextTask->second.startedAt = std::chrono::steady_clock::now();
+            nextTask->second.postProcessingStartedAt = {};
+            nextTask->second.lastPostProcessingLoggedPercent = -1.0;
+            nextTask->second.lastPostProcessingLoggedStatus.clear();
             nextTask->second.snapshot.state = DownloadTaskState::Preparing;
             nextTask->second.snapshot.statusText = L"Подготовка";
             ++m_revision;
@@ -622,15 +701,22 @@ void DownloadQueue::SchedulerLoop() {
 }
 
 void DownloadQueue::StartTask(int id, std::stop_token stopToken) {
-    DownloadTaskSnapshot task;
     DownloadTaskExecutor executor;
+    {
+        std::lock_guard lock(m_mutex);
+        executor = m_executor;
+    }
+    RunTask(id, std::move(executor), stopToken);
+}
+
+void DownloadQueue::RunTask(int id, DownloadTaskExecutor executor, std::stop_token stopToken) {
+    DownloadTaskSnapshot task;
     bool found = false;
     {
         std::lock_guard taskLock(m_mutex);
         auto it = m_tasks.find(id);
         if (it != m_tasks.end()) {
             task = it->second.snapshot;
-            executor = m_executor;
             found = true;
         }
     }
@@ -641,6 +727,42 @@ void DownloadQueue::StartTask(int id, std::stop_token stopToken) {
     DownloadTaskCallbacks callbacks;
     callbacks.onProgressDetails = [this, id](const YtDlpProgress& progress) {
         UpdateTaskProgress(id, progress);
+    };
+    callbacks.onPostProcessing = [this, id](double percent, const std::wstring& status) {
+        std::wstring logLine;
+        {
+            std::lock_guard lock(m_mutex);
+            auto it = m_tasks.find(id);
+            if (it == m_tasks.end()) {
+                return;
+            }
+            TaskRecord& task = it->second;
+            const double clampedPercent = std::clamp(percent, 0.0, 100.0);
+            if (task.postProcessingStartedAt == std::chrono::steady_clock::time_point{}) {
+                task.postProcessingStartedAt = std::chrono::steady_clock::now();
+            }
+
+            const bool firstLog = task.lastPostProcessingLoggedPercent < 0.0;
+            const bool statusChanged = task.lastPostProcessingLoggedStatus != status;
+            const bool progressAdvanced = clampedPercent >= task.lastPostProcessingLoggedPercent + 10.0;
+            const bool finalProgress = clampedPercent >= 99.0 && task.lastPostProcessingLoggedPercent < 99.0;
+            if (firstLog || statusChanged || progressAdvanced || finalProgress) {
+                const std::uint64_t elapsedSeconds = ElapsedSecondsSince(task.postProcessingStartedAt);
+                logLine = BuildPostProcessingProgressLog(id, clampedPercent, status, elapsedSeconds);
+                task.lastPostProcessingLoggedPercent = clampedPercent;
+                task.lastPostProcessingLoggedStatus = status;
+            }
+
+            task.snapshot.state = DownloadTaskState::PostProcessing;
+            task.snapshot.percent = clampedPercent;
+            task.snapshot.statusText = status;
+            task.snapshot.speedBytesPerSecond = 0;
+            task.snapshot.etaSeconds = 0;
+            ++m_revision;
+        }
+        if (m_logger && !logLine.empty()) {
+            m_logger->Info(logLine);
+        }
     };
     callbacks.onOutputLine = [this, id](const std::wstring& line) {
         RecordTaskOutput(id, line);
@@ -677,7 +799,8 @@ void DownloadQueue::UpdateTaskProgress(int id, const YtDlpProgress& progress) {
 
     snapshot.state = DownloadTaskState::Downloading;
     snapshot.statusText = progress.stage;
-    const std::uint64_t diskBytes = DiskBytesForPaths(snapshot.outputFiles);
+    const bool progressHasTrack = !progress.mediaKind.empty();
+    const std::uint64_t diskBytes = progressHasTrack ? 0 : DiskBytesForPaths(snapshot.outputFiles);
     const std::uint64_t reportedBytes = diskBytes > 0 ? diskBytes : progress.downloadedBytes;
     if (switchedTrack) {
         snapshot.percent = std::clamp(progress.percent, 0.0, 100.0);
@@ -713,7 +836,7 @@ void DownloadQueue::RecordTaskOutput(int id, const std::wstring& line) {
         return;
     }
     const size_t before = it->second.snapshot.outputFiles.size();
-    AddUniquePath(it->second.snapshot.outputFiles, ExtractKnownOutputPath(line));
+    AddUniquePath(it->second.snapshot.outputFiles, ExtractYtDlpOutputPath(line));
     if (it->second.snapshot.outputFiles.size() != before) {
         ++m_revision;
     }
@@ -728,9 +851,24 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
 
     it->second.active = false;
     --m_activeCount;
+    const bool postProcessingOnly = it->second.postProcessingOnly;
+    it->second.postProcessingOnly = false;
     if (it->second.cancelRequested || stopToken.stop_requested()) {
-        it->second.snapshot.state = DownloadTaskState::Canceled;
-        it->second.snapshot.statusText = L"Отменено";
+        it->second.cancelRequested = false;
+        if (postProcessingOnly) {
+            it->second.snapshot.state = DownloadTaskState::Completed;
+            it->second.snapshot.percent = 100.0;
+            it->second.snapshot.errorText.clear();
+            it->second.snapshot.statusText = result.statusText.empty()
+                ? L"Готово · расшифровка отменена"
+                : result.statusText;
+            for (const std::filesystem::path& path : result.outputFiles) {
+                AddUniquePath(it->second.snapshot.outputFiles, path);
+            }
+        } else {
+            it->second.snapshot.state = DownloadTaskState::Canceled;
+            it->second.snapshot.statusText = L"Отменено";
+        }
         if (m_logger) {
             m_logger->Info(L"Download task canceled: id=" + std::to_wstring(id));
         }
@@ -738,12 +876,39 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
     } else if (result.success) {
         it->second.snapshot.state = DownloadTaskState::Completed;
         it->second.snapshot.percent = 100.0;
-        it->second.snapshot.statusText = L"Готово";
+        if (!result.statusText.empty()) {
+            it->second.snapshot.statusText = result.statusText;
+        } else if (postProcessingOnly) {
+            it->second.snapshot.statusText = L"Готово";
+        } else {
+            const std::uint64_t elapsedSeconds = ElapsedSecondsSince(it->second.startedAt);
+            it->second.snapshot.statusText = elapsedSeconds == 0
+                ? L"Готово"
+                : L"Готово · скачано за " + FormatElapsedDuration(elapsedSeconds);
+        }
         for (const std::filesystem::path& path : result.outputFiles) {
             AddUniquePath(it->second.snapshot.outputFiles, path);
         }
         if (m_logger) {
             m_logger->Info(L"Download task completed: id=" + std::to_wstring(id));
+        }
+        ++m_revision;
+    } else if (postProcessingOnly) {
+        it->second.snapshot.state = DownloadTaskState::Completed;
+        it->second.snapshot.percent = 100.0;
+        it->second.snapshot.errorText.clear();
+        it->second.snapshot.statusText = result.statusText.empty()
+            ? L"Готово · расшифровка не выполнена: " + result.errorText
+            : result.statusText;
+        for (const std::filesystem::path& path : result.outputFiles) {
+            AddUniquePath(it->second.snapshot.outputFiles, path);
+        }
+        if (m_logger) {
+            std::wstring error = result.errorText.substr(0, 1000);
+            m_logger->Error(
+                L"Download task post-processing failed: id=" + std::to_wstring(id) +
+                (error.empty() ? L"" : L" error=" + error)
+            );
         }
         ++m_revision;
     } else {
@@ -759,6 +924,10 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
         }
         ++m_revision;
     }
+    it->second.startedAt = {};
+    it->second.postProcessingStartedAt = {};
+    it->second.lastPostProcessingLoggedPercent = -1.0;
+    it->second.lastPostProcessingLoggedStatus.clear();
     m_finishedWorkerIds.push_back(id);
 }
 
@@ -776,16 +945,17 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
         throw std::runtime_error("failed to create download cancellation event");
     }
     options.cancelEvent = cancelEvent;
-    options.onStdoutLine = [callbacks](const std::wstring& line) {
+    auto handleLine = [callbacks](const std::wstring& line) {
         if (callbacks.onOutputLine) {
             callbacks.onOutputLine(line);
         }
-        const YtDlpProgress progress = ParseYtDlpProgressLine(line);
-        if (progress.recognized && callbacks.onProgressDetails) {
-            callbacks.onProgressDetails(progress);
+        const YtDlpProcessLine parsed = ParseYtDlpProcessLine(line);
+        if (parsed.progress.recognized && callbacks.onProgressDetails) {
+            callbacks.onProgressDetails(parsed.progress);
         }
     };
-    options.onStderrLine = callbacks.onOutputLine;
+    options.onStdoutLine = handleLine;
+    options.onStderrLine = handleLine;
 
     ProcessRunResult result;
     try {

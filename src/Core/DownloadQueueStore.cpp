@@ -60,6 +60,8 @@ std::string StateToString(DownloadTaskState state) {
         return "Preparing";
     case DownloadTaskState::Downloading:
         return "Downloading";
+    case DownloadTaskState::PostProcessing:
+        return "PostProcessing";
     case DownloadTaskState::Completed:
         return "Completed";
     case DownloadTaskState::Failed:
@@ -79,6 +81,9 @@ DownloadTaskState StateFromString(const std::string& state) {
     }
     if (state == "Downloading") {
         return DownloadTaskState::Downloading;
+    }
+    if (state == "PostProcessing") {
+        return DownloadTaskState::PostProcessing;
     }
     if (state == "Completed") {
         return DownloadTaskState::Completed;
@@ -119,9 +124,14 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["output_directory"] = PathToJsonString(task.request.outputDirectory);
     json["cookies_path"] = PathToJsonString(task.request.cookiesPath);
     json["ffmpeg_exe_path"] = PathToJsonString(task.request.ffmpegExePath);
+    json["whisper_exe_path"] = PathToJsonString(task.request.whisperExePath);
+    json["whisper_model_path"] = PathToJsonString(task.request.whisperModelPath);
+    json["transcription_temp_dir"] = PathToJsonString(task.request.transcriptionTempDir);
     json["quality"] = WideToUtf8(task.request.quality);
     json["container"] = WideToUtf8(task.request.container);
+    json["whisper_language"] = WideToUtf8(task.request.whisperLanguage);
     json["ffmpeg_available"] = task.request.ffmpegAvailable;
+    json["transcribe_after_download"] = task.request.transcribeAfterDownload;
     json["title"] = WideToUtf8(task.title);
     json["thumbnail_path"] = PathToJsonString(task.thumbnailPath);
     json["state"] = StateToString(task.state);
@@ -158,9 +168,14 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     task.request.outputDirectory = PathFromJsonString(json, "output_directory");
     task.request.cookiesPath = PathFromJsonString(json, "cookies_path");
     task.request.ffmpegExePath = PathFromJsonString(json, "ffmpeg_exe_path");
+    task.request.whisperExePath = PathFromJsonString(json, "whisper_exe_path");
+    task.request.whisperModelPath = PathFromJsonString(json, "whisper_model_path");
+    task.request.transcriptionTempDir = PathFromJsonString(json, "transcription_temp_dir");
     task.request.quality = WStringFromJson(json, "quality", L"max");
     task.request.container = WStringFromJson(json, "container", L"auto");
+    task.request.whisperLanguage = WStringFromJson(json, "whisper_language", L"auto");
     task.request.ffmpegAvailable = BoolFromJson(json, "ffmpeg_available");
+    task.request.transcribeAfterDownload = BoolFromJson(json, "transcribe_after_download");
     task.title = WStringFromJson(json, "title");
     task.thumbnailPath = PathFromJsonString(json, "thumbnail_path");
     task.state = StateFromString(json.value("state", "Canceled"));

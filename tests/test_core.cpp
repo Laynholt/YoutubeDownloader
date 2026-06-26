@@ -9,9 +9,11 @@
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
 #include "ProcessRunner.h"
+#include "TranscriptionClient.h"
 #include "ToolManagers.h"
 #include "UiActions.h"
 #include "Version.h"
+#include "VoiceOverTranslationClient.h"
 #include "YtDlpClient.h"
 
 #include <atomic>
@@ -21,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <ranges>
 #include <string>
 #include <system_error>
@@ -61,9 +64,22 @@ void TestAppPaths() {
     Require(paths.ytDlpDir() == root / L"tools" / L"yt-dlp", "yt-dlp dir path mismatch");
     Require(paths.ytDlpExePath() == root / L"tools" / L"yt-dlp" / L"yt-dlp.exe", "yt-dlp path mismatch");
     Require(paths.ytDlpVersionPath() == root / L"tools" / L"yt-dlp" / L"version.txt", "yt-dlp version path mismatch");
+    Require(paths.localVotDir() == root / L"tools" / L"vot", "VOT helper dir path mismatch");
+    Require(paths.localVotExePath() == root / L"tools" / L"vot" / L"vot-helper.exe", "VOT helper path mismatch");
+    Require(paths.localVotVersionPath() == root / L"tools" / L"vot" / L"version.txt", "VOT helper version path mismatch");
     Require(paths.localFfmpegBinDir() == root / L"tools" / L"ffmpeg" / L"bin", "ffmpeg bin path mismatch");
     Require(paths.localFfmpegExePath() == root / L"tools" / L"ffmpeg" / L"bin" / L"ffmpeg.exe", "ffmpeg path mismatch");
     Require(paths.localFfprobeExePath() == root / L"tools" / L"ffmpeg" / L"bin" / L"ffprobe.exe", "ffprobe path mismatch");
+    Require(paths.localWhisperDir() == root / L"tools" / L"whisper", "whisper dir path mismatch");
+    Require(paths.localWhisperExePath() == root / L"tools" / L"whisper" / L"whisper-cli.exe", "whisper exe path mismatch");
+    Require(paths.localWhisperCpuDir() == root / L"tools" / L"whisper" / L"cpu", "whisper CPU dir path mismatch");
+    Require(paths.localWhisperCudaDir() == root / L"tools" / L"whisper" / L"cuda", "whisper CUDA dir path mismatch");
+    Require(paths.localWhisperCpuExePath() == root / L"tools" / L"whisper" / L"cpu" / L"whisper-cli.exe", "whisper CPU exe path mismatch");
+    Require(paths.localWhisperCudaExePath() == root / L"tools" / L"whisper" / L"cuda" / L"whisper-cli.exe", "whisper CUDA exe path mismatch");
+    Require(paths.localWhisperModelsDir() == root / L"tools" / L"whisper" / L"models", "whisper models path mismatch");
+    Require(paths.localWhisperModelPath() == root / L"tools" / L"whisper" / L"models" / L"ggml-large-v3-turbo.bin", "whisper model path mismatch");
+    Require(paths.transcriptionTempDir() == root / L"stuff" / L"transcription_tmp", "transcription temp path mismatch");
+    Require(paths.voiceOverTempDir() == root / L"stuff" / L"voiceover_tmp", "voice-over temp path mismatch");
 }
 
 void TestConfigDefaultsAndRoundTrip() {
@@ -76,16 +92,34 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.container == L"auto", "default container mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
+    Require(defaults.transcribeAfterDownload == false, "default transcription flag mismatch");
+    Require(defaults.settingsSidebarCollapsed == false, "default settings sidebar state mismatch");
+    Require(defaults.whisperBackend == WhisperBackend::Auto, "default whisper backend mismatch");
+    Require(defaults.whisperLanguage == L"auto", "default whisper language mismatch");
+    Require(defaults.voiceOverLanguage == L"ru", "default voice-over language mismatch");
+    Require(defaults.voiceOverMode == L"separate", "default voice-over mode mismatch");
+    Require(defaults.votCliPath.empty(), "default VOT helper path should be empty");
+    Require(defaults.originalVolumePercent == 25, "default original volume mismatch");
     Require(!defaults.downloadDir.empty(), "default download dir is empty");
 
     AppConfig saved = defaults;
     saved.downloadDir = root / L"Downloads";
     saved.cookiesPath = root / L"cookies.txt";
     saved.ffmpegPath = root / L"ffmpeg.exe";
+    saved.transcribeAfterDownload = true;
+    saved.whisperPath = root / L"whisper" / L"whisper-cli.exe";
+    saved.whisperModelPath = root / L"models" / L"ggml-small.bin";
+    saved.whisperBackend = WhisperBackend::Cuda;
+    saved.whisperLanguage = L"ru";
+    saved.votCliPath = root / L"vot" / L"vot-helper.exe";
+    saved.voiceOverLanguage = L"en";
+    saved.voiceOverMode = L"mixed";
+    saved.originalVolumePercent = 40;
     saved.quality = L"720p";
     saved.container = L"mp4";
     saved.maxParallelDownloads = 5;
     saved.autoUpdateApp = true;
+    saved.settingsSidebarCollapsed = true;
     saved.lastYtDlpCheckAt = L"2026-06-17T20:00:00Z";
     saved.lastYtDlpVersion = L"2026.06.09";
 
@@ -96,10 +130,20 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.downloadDir == saved.downloadDir, "download dir round-trip mismatch");
     Require(loaded.cookiesPath == saved.cookiesPath, "cookies path round-trip mismatch");
     Require(loaded.ffmpegPath == saved.ffmpegPath, "ffmpeg path round-trip mismatch");
+    Require(loaded.transcribeAfterDownload == true, "transcribe flag round-trip mismatch");
+    Require(loaded.whisperPath == saved.whisperPath, "whisper path round-trip mismatch");
+    Require(loaded.whisperModelPath == saved.whisperModelPath, "whisper model path round-trip mismatch");
+    Require(loaded.whisperBackend == WhisperBackend::Cuda, "whisper backend round-trip mismatch");
+    Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
+    Require(loaded.votCliPath == saved.votCliPath, "VOT helper path round-trip mismatch");
+    Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
+    Require(loaded.voiceOverMode == L"mixed", "voice-over mode round-trip mismatch");
+    Require(loaded.originalVolumePercent == 40, "original volume round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
     Require(loaded.container == L"mp4", "container round-trip mismatch");
     Require(loaded.maxParallelDownloads == 5, "max parallel round-trip mismatch");
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
+    Require(loaded.settingsSidebarCollapsed == true, "settings sidebar state round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
 }
@@ -126,6 +170,21 @@ void TestConfigDropsLegacyFfmpegPromptFlag() {
     Require(
         savedText.find("ffmpeg_prompt_dismissed") == std::string::npos,
         "saved config should drop the legacy ffmpeg prompt flag"
+    );
+}
+
+void TestConfigNormalizesUnsupportedVoiceOverLanguages() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VoiceOverLanguageMigration");
+    const AppPaths paths(root);
+
+    fs::create_directories(paths.configPath().parent_path());
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"voice_over_language":"zz"})json";
+    }
+    Require(
+        ConfigStore::Load(paths).voiceOverLanguage == L"ru",
+        "unsupported voice-over language should migrate to ru"
     );
 }
 
@@ -161,6 +220,19 @@ void TestDownloadAttemptResolution() {
         ResolveDownloadAttempt(true, false) == DownloadAttemptAction::Enqueue,
         "download should enqueue when yt-dlp is ready"
     );
+}
+
+void TestWhisperUtilityStatusText() {
+    const fs::path executable = L"C:/Tools/whisper/whisper-cli.exe";
+    const fs::path model = L"C:/Tools/whisper/models/ggml-large-v3-turbo.bin";
+
+    const WhisperUtilityStatusText found = BuildWhisperUtilityStatusText(true, executable, true, model);
+    Require(found.executableText == L"Найден: " + executable.wstring(), "found whisper executable text mismatch");
+    Require(found.modelText == L"Модель: " + model.wstring(), "found whisper model text mismatch");
+
+    const WhisperUtilityStatusText missing = BuildWhisperUtilityStatusText(false, {}, false, model);
+    Require(missing.executableText == L"Не найден", "missing whisper executable text mismatch");
+    Require(missing.modelText == L"Модель не скачана", "missing whisper model text mismatch");
 }
 
 void TestEditContextMenuModel() {
@@ -438,6 +510,32 @@ void TestCommitDownloadedFilePreservesTargetUntilValidated() {
     Require(!fs::exists(staged), "committed staged file should be consumed");
 }
 
+void TestSharedTextAndMoveHelpers() {
+    Require(TrimWhitespace(L" \t hello \r\n") == L"hello", "whitespace should be trimmed from both sides");
+    Require(TrimWhitespace(L"\r\n\t ") == L"", "blank text should trim to empty");
+    Require(LastNonEmptyLine(L"first\n\n  second  \r\n") == L"second", "last non-empty line should be trimmed");
+    Require(LastNonEmptyLine(L"\n \t \n").empty(), "empty line set should return empty text");
+
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_MoveFileReplacing");
+    const fs::path target = root / L"target.txt";
+    const fs::path source = root / L"source.tmp";
+
+    {
+        std::ofstream out(target, std::ios::binary);
+        out << "old";
+    }
+    {
+        std::ofstream out(source, std::ios::binary);
+        out << "new";
+    }
+
+    Require(MoveFileReplacing(source, target), "replacement move should succeed");
+    Require(!fs::exists(source), "source should be consumed by replacement move");
+    std::ifstream in(target, std::ios::binary);
+    const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    Require(text == "new", "replacement move should overwrite target content");
+}
+
 void TestWaitForDelayCompletesOrStopsPromptly() {
     std::stop_source running;
     const auto startedAt = std::chrono::steady_clock::now();
@@ -479,6 +577,12 @@ void TestProgressPresentation() {
     Require(FormatDuration(3600) == L"1 ч", "hour duration mismatch");
     Require(FormatDuration(9000) == L"2 ч 30 мин", "large second count should become hours and minutes");
     Require(FormatDuration(172861) == L"2 д 1 мин", "multi-day duration mismatch");
+
+    Require(FormatElapsedDuration(1) == L"1 секунда", "single elapsed second text mismatch");
+    Require(FormatElapsedDuration(2) == L"2 секунды", "few elapsed seconds text mismatch");
+    Require(FormatElapsedDuration(7) == L"7 секунд", "many elapsed seconds text mismatch");
+    Require(FormatElapsedDuration(62) == L"1 минута 2 секунды", "elapsed minute text mismatch");
+    Require(FormatElapsedDuration(125) == L"2 минуты 5 секунд", "elapsed minutes text mismatch");
 
     Require(CalculateProgressPercent(0, 0) == 0, "unknown-total percent should be zero");
     Require(CalculateProgressPercent(50, 100) == 50, "half progress percent mismatch");
@@ -527,6 +631,8 @@ void TestYtDlpDownloadArguments() {
     Require(args.at(ArgIndex(args, L"--ffmpeg-location") + 1) == request.ffmpegExePath.parent_path().wstring(), "ffmpeg location mismatch");
     Require(ContainsArg(args, L"--merge-output-format"), "merge output format missing");
     Require(args.at(ArgIndex(args, L"--merge-output-format") + 1) == L"mp4", "merge output format value mismatch");
+    Require(!ContainsArg(args, L"--no-simulate"), "download arguments should keep the pre-whisper progress behavior");
+    Require(!ContainsArg(args, L"--print"), "download arguments should not add print output during downloads");
     Require(ContainsArg(args, L"--progress-template"), "progress template missing");
     Require(ContainsArg(args, L"--output"), "output template missing");
     Require(args.at(ArgIndex(args, L"--output") + 1).find(L"%(title).200s [%(id)s].%(ext)s") != std::wstring::npos, "output template mismatch");
@@ -541,6 +647,334 @@ void TestYtDlpDownloadArguments() {
     Require(audioArgs.at(ArgIndex(audioArgs, L"--format") + 1) == L"bestaudio/best", "audio format mismatch");
     Require(!ContainsArg(audioArgs, L"--cookies"), "cookies should be omitted when path is empty");
     Require(!ContainsArg(audioArgs, L"--merge-output-format"), "auto container should not force remux");
+}
+
+void TestYtDlpOutputPathParsing() {
+    const fs::path direct = L"C:/Downloads/Video [abc].mp4";
+    Require(
+        ExtractYtDlpOutputPath(L"[download] Destination: " + direct.wstring()) == direct,
+        "download destination output path mismatch"
+    );
+
+    const fs::path merged = L"C:/Downloads/Video [abc].mkv";
+    Require(
+        ExtractYtDlpOutputPath(L"[Merger] Merging formats into \"" + merged.wstring() + L"\"") == merged,
+        "merger output path mismatch"
+    );
+
+    Require(
+        ExtractYtDlpOutputPath(L"\r  [download] Destination: " + direct.wstring()) == direct,
+        "indented destination output path mismatch"
+    );
+    Require(
+        ExtractYtDlpOutputPath(L"__YTDLP_OUTPUT__:" + merged.wstring()) == merged,
+        "printed after_move output path mismatch"
+    );
+    Require(
+        ExtractYtDlpOutputPath(L"[download] " + direct.wstring() + L" has already been downloaded") == direct,
+        "already downloaded output path mismatch"
+    );
+    Require(ExtractYtDlpOutputPath(L"[download] 50% of 1MiB").empty(), "plain progress line should not produce a path");
+}
+
+void TestYtDlpOutputFileFallbackFindsNewMedia() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_OutputFallback");
+    const fs::path oldVideo = root / L"old.mp4";
+    {
+        std::ofstream out(oldVideo);
+        out << "old";
+    }
+
+    const std::vector<OutputDirectoryFile> before = SnapshotOutputDirectory(root);
+
+    const fs::path partial = root / L"short.webm.part";
+    const fs::path metadata = root / L"short.info.json";
+    const fs::path newVideo = root / L"short.webm";
+    {
+        std::ofstream out(partial);
+        out << "partial";
+    }
+    {
+        std::ofstream out(metadata);
+        out << "{}";
+    }
+    {
+        std::ofstream out(newVideo);
+        out << "new";
+    }
+
+    Require(
+        FindDownloadedMediaFile({}, root, before) == newVideo,
+        "fallback should find newly downloaded media when yt-dlp did not report an output path"
+    );
+    Require(
+        FindDownloadedMediaFile({newVideo}, root, before) == newVideo,
+        "reported media path should be preferred when available"
+    );
+}
+
+void TestTranscriptionCommandArguments() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TranscriptionArgs");
+    const fs::path media = root / L"Video [abc].mp4";
+    const fs::path wav = root / L"tmp" / L"Video [abc].wav";
+    const fs::path outputBase = root / L"Video [abc]";
+
+    const std::vector<std::wstring> ffmpegArgs = BuildFfmpegAudioExtractionArguments(media, wav);
+    Require(ffmpegArgs == std::vector<std::wstring>({
+        L"-y",
+        L"-i",
+        media.wstring(),
+        L"-vn",
+        L"-ac",
+        L"1",
+        L"-ar",
+        L"16000",
+        L"-c:a",
+        L"pcm_s16le",
+        wav.wstring()
+    }), "ffmpeg audio extraction arguments mismatch");
+
+    TranscriptionRequest request;
+    request.whisperModelPath = root / L"models" / L"ggml-base.bin";
+    request.language = L"auto";
+
+    const std::vector<std::wstring> whisperArgs = BuildWhisperArguments(request, wav, outputBase);
+    Require(ContainsArg(whisperArgs, L"-m"), "whisper model argument missing");
+    Require(whisperArgs.at(ArgIndex(whisperArgs, L"-m") + 1) == request.whisperModelPath.wstring(), "whisper model path mismatch");
+    Require(ContainsArg(whisperArgs, L"-f"), "whisper input argument missing");
+    Require(whisperArgs.at(ArgIndex(whisperArgs, L"-f") + 1) == wav.wstring(), "whisper wav path mismatch");
+    Require(ContainsArg(whisperArgs, L"-otxt"), "whisper txt output flag missing");
+    Require(ContainsArg(whisperArgs, L"-osrt"), "whisper srt output flag missing");
+    Require(ContainsArg(whisperArgs, L"-of"), "whisper output base argument missing");
+    Require(whisperArgs.at(ArgIndex(whisperArgs, L"-of") + 1) == outputBase.wstring(), "whisper output base mismatch");
+    Require(ContainsArg(whisperArgs, L"-l"), "whisper language argument missing");
+    Require(whisperArgs.at(ArgIndex(whisperArgs, L"-l") + 1) == L"auto", "whisper language mismatch");
+    Require(TranscriptOutputBaseFor(media) == outputBase, "transcript output base mismatch");
+}
+
+void TestVoiceOverCommandArguments() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VoiceOverArgs");
+    const fs::path temp = root / L"tmp";
+    const fs::path media = root / L"Video [abc].mp4";
+    const fs::path webmMedia = root / L"Clip [def].webm";
+
+    VoiceOverTranslationRequest request;
+    request.mediaPath = media;
+    request.tempDirectory = temp;
+    request.ffmpegExePath = root / L"ffmpeg.exe";
+    request.votCliPath = root / L"vot-helper.exe";
+    request.youtubeUrl = L"https://www.youtube.com/watch?v=abc";
+    request.language = L"ru";
+    request.mode = L"separate";
+    request.originalVolumePercent = 25;
+
+    const VoiceOverTranslationPaths separatePaths = BuildVoiceOverPaths(media, temp, request.language, request.mode);
+    Require(separatePaths.tempAudioPath == temp / L"Video [abc].vot.ru.mp3", "voice-over temp audio path mismatch");
+    Require(separatePaths.finalAudioPath == root / L"Video [abc].vot.ru.mp3", "voice-over final audio path mismatch");
+    Require(separatePaths.finalVideoPath == root / L"Video [abc].vot.ru.mp4", "voice-over mp4 output path mismatch");
+
+    const std::vector<std::wstring> votArgs = BuildVotCliArguments(request, separatePaths.tempAudioPath);
+    Require(votArgs == std::vector<std::wstring>({
+        L"translate",
+        L"--url",
+        request.youtubeUrl,
+        L"--target-lang",
+        L"ru",
+        L"--output",
+        separatePaths.tempAudioPath.wstring(),
+        L"--force"
+    }), "vot-helper translate arguments mismatch");
+    Require(ContainsArg(votArgs, L"--output"), "vot-helper output argument missing");
+    Require(votArgs.at(ArgIndex(votArgs, L"--output") + 1) == separatePaths.tempAudioPath.wstring(), "vot-helper output path mismatch");
+    Require(ContainsArg(votArgs, L"--target-lang"), "vot-helper target language argument missing");
+    Require(votArgs.at(ArgIndex(votArgs, L"--target-lang") + 1) == L"ru", "vot-helper target language mismatch");
+
+    const VoiceOverProcessInvocation exeInvocation = BuildVotCliInvocation(request, separatePaths.tempAudioPath);
+    Require(exeInvocation.executable == request.votCliPath, "vot-helper should launch directly");
+    Require(exeInvocation.arguments == BuildVotCliArguments(request, separatePaths.tempAudioPath), "vot-helper exe arguments mismatch");
+
+    request.language = L"en";
+    const std::vector<std::wstring> englishVotArgs = BuildVotCliArguments(request, separatePaths.tempAudioPath);
+    Require(englishVotArgs.at(ArgIndex(englishVotArgs, L"--target-lang") + 1) == L"en", "vot-helper should use configured voice-over language");
+    request.language = L"ru";
+
+    const std::vector<std::wstring> muxArgs = BuildVoiceOverMuxArguments(
+        media,
+        separatePaths.tempAudioPath,
+        separatePaths.finalVideoPath,
+        request.language
+    );
+    Require(muxArgs == std::vector<std::wstring>({
+        L"-y",
+        L"-i",
+        media.wstring(),
+        L"-i",
+        separatePaths.tempAudioPath.wstring(),
+        L"-map",
+        L"0:v",
+        L"-map",
+        L"0:a?",
+        L"-map",
+        L"1:a",
+        L"-c:v",
+        L"copy",
+        L"-c:a",
+        L"aac",
+        L"-metadata:s:a:1",
+        L"language=rus",
+        L"-metadata:s:a:1",
+        L"title=VOT Russian",
+        separatePaths.finalVideoPath.wstring()
+    }), "voice-over mux arguments mismatch");
+
+    const std::vector<std::wstring> unsupportedLanguageMuxArgs = BuildVoiceOverMuxArguments(
+        media,
+        separatePaths.tempAudioPath,
+        separatePaths.finalVideoPath,
+        L"zz"
+    );
+    Require(
+        ContainsArg(unsupportedLanguageMuxArgs, L"language=zz"),
+        "unsupported voice-over language metadata should remain generic"
+    );
+    Require(
+        ContainsArg(unsupportedLanguageMuxArgs, L"title=VOT zz"),
+        "unsupported voice-over title should remain generic"
+    );
+
+    const VoiceOverTranslationPaths mixedPaths = BuildVoiceOverPaths(webmMedia, temp, request.language, L"mixed");
+    Require(mixedPaths.finalVideoPath == root / L"Clip [def].vot-mixed.ru.mkv", "voice-over non-mp4 mixed output path mismatch");
+
+    const std::vector<std::wstring> mixArgs = BuildVoiceOverMixArguments(
+        webmMedia,
+        mixedPaths.tempAudioPath,
+        mixedPaths.finalVideoPath,
+        request.originalVolumePercent
+    );
+    Require(ContainsArg(mixArgs, L"-filter_complex"), "voice-over mix filter missing");
+    Require(
+        mixArgs.at(ArgIndex(mixArgs, L"-filter_complex") + 1) ==
+            L"[0:a]volume=0.25[orig];[orig][1:a]amix=inputs=2:duration=first[a]",
+        "voice-over mix filter mismatch"
+    );
+    Require(ContainsArg(mixArgs, L"-map"), "voice-over mix map argument missing");
+    Require(mixArgs.back() == mixedPaths.finalVideoPath.wstring(), "voice-over mix output should be last argument");
+}
+
+void TestVotSubtitlesCommandArguments() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VotSubtitlesArgs");
+    const fs::path media = root / L"Video [abc].mp4";
+    const fs::path output = BuildVotSubtitlesPath(media, L"en", L"srt");
+
+    Require(output == root / L"Video [abc].vot-subtitles.en.srt", "VOT subtitles output path mismatch");
+
+    VotSubtitlesRequest request;
+    request.votCliPath = root / L"vot-helper.exe";
+    request.youtubeUrl = L"https://www.youtube.com/watch?v=abc";
+    request.language = L"en";
+    request.format = L"srt";
+
+    const std::vector<std::wstring> args = BuildVotSubtitlesArguments(request, output);
+    Require(args == std::vector<std::wstring>({
+        L"subtitles",
+        L"--url",
+        request.youtubeUrl,
+        L"--target-lang",
+        L"en",
+        L"--format",
+        L"srt",
+        L"--output",
+        output.wstring(),
+        L"--force"
+    }), "VOT subtitles arguments mismatch");
+}
+
+void TestVotHelperJsonParsing() {
+    const VotHelperResult translate = ParseVotHelperResult(Utf8ToWide(R"json({
+        "schemaVersion": 1,
+        "ok": true,
+        "operation": "translate",
+        "data": {
+            "state": "ready",
+            "output": {"path": "C:/Temp/audio.mp3"}
+        }
+    })json"));
+    Require(translate.parsed, "VOT translate JSON should parse");
+    Require(translate.ok, "VOT translate JSON should be ok");
+    Require(translate.state == L"ready", "VOT translate state mismatch");
+    Require(translate.outputPath == fs::path(L"C:/Temp/audio.mp3"), "VOT translate output path mismatch");
+    Require(translate.errorText.empty(), "VOT translate success should not expose an error");
+
+    const VotHelperResult pending = ParseVotHelperResult(Utf8ToWide(R"json({
+        "ok": true,
+        "operation": "translate",
+        "data": {"state": "pending", "remainingTimeSeconds": 30}
+    })json"));
+    Require(pending.parsed, "VOT pending JSON should parse");
+    Require(pending.ok, "VOT pending JSON should preserve ok envelope");
+    Require(pending.state == L"pending", "VOT pending state mismatch");
+    Require(pending.outputPath.empty(), "VOT pending should not expose an output path");
+
+    const VotHelperResult error = ParseVotHelperResult(Utf8ToWide(R"json({
+        "ok": false,
+        "operation": "subtitles",
+        "error": {"message": "Subtitle track selection is ambiguous."}
+    })json"));
+    Require(error.parsed, "VOT error JSON should parse");
+    Require(!error.ok, "VOT error JSON should not be ok");
+    Require(error.errorText == L"Subtitle track selection is ambiguous.", "VOT error message mismatch");
+
+    const VotHelperResult invalid = ParseVotHelperResult(L"not json");
+    Require(!invalid.parsed, "invalid VOT JSON should not parse");
+    Require(!invalid.ok, "invalid VOT JSON should not be ok");
+    Require(!invalid.errorText.empty(), "invalid VOT JSON should produce an error");
+}
+
+void TestTranscriptionUsesAsciiTemporaryWhisperPaths() {
+    const fs::path root = fs::path(L"C:/Downloads");
+    const fs::path media = root / L"Человек-паук： Новый день [abc].webm";
+    const fs::path temp = fs::path(L"C:/Portable/YoutubeDownloader/stuff/transcription_tmp");
+    const TranscriptionPaths paths = BuildTranscriptionPaths(media, temp, 42);
+
+    Require(paths.finalTextPath == root / L"Человек-паук： Новый день [abc].txt", "final transcript txt path mismatch");
+    Require(paths.finalSrtPath == root / L"Человек-паук： Новый день [abc].srt", "final transcript srt path mismatch");
+    Require(paths.wavPath == temp / L"audio-42.wav", "temporary wav path should be ASCII");
+    Require(paths.whisperOutputBase == temp / L"transcript-42", "temporary whisper output base should be ASCII");
+    Require(paths.tempTextPath == temp / L"transcript-42.txt", "temporary txt path mismatch");
+    Require(paths.tempSrtPath == temp / L"transcript-42.srt", "temporary srt path mismatch");
+}
+
+void TestWhisperProgressParsing() {
+    const std::optional<double> bracketed = ParseWhisperProgressPercent(L"whisper: [ 42%] audio processed");
+    Require(bracketed && *bracketed == 42.0, "bracketed whisper progress mismatch");
+
+    const std::optional<double> named = ParseWhisperProgressPercent(L"whisper_print_progress_callback: progress = 87%");
+    Require(named && *named == 87.0, "named whisper progress mismatch");
+
+    const std::optional<double> decimal = ParseWhisperProgressPercent(L"progress = 12.5%");
+    Require(decimal && *decimal == 12.5, "decimal whisper progress mismatch");
+
+    Require(!ParseWhisperProgressPercent(L"no percentage here"), "plain whisper line should not produce progress");
+    Require(ParseWhisperProgressPercent(L"progress = 140%").value_or(0.0) == 100.0, "whisper progress should be clamped");
+}
+
+void TestTranscriptionErrorSummaryUsesLastMeaningfulLine() {
+    Require(
+        BuildProcessErrorSummary(
+            L"load_backend: loaded CPU backend\r\nwhisper: failed to open output file\r\n",
+            L"",
+            L"fallback"
+        ) == L"whisper: failed to open output file",
+        "stderr summary should use the last meaningful line"
+    );
+    Require(
+        BuildProcessErrorSummary(L"\r\n", L"stdout first\nstdout last\n", L"fallback") == L"stdout last",
+        "stdout summary should be used when stderr has no meaningful line"
+    );
+    Require(
+        BuildProcessErrorSummary(L"", L"", L"fallback") == L"fallback",
+        "fallback should be used when process output is empty"
+    );
 }
 
 void TestYtDlpProgressParsing() {
@@ -580,6 +1014,25 @@ void TestYtDlpProgressParsing() {
     Require(finished.resolution == L"720p", "finished video resolution mismatch");
 }
 
+void TestYtDlpProcessLineParsing() {
+    const YtDlpProcessLine progress = ParseYtDlpProcessLine(
+        L"__YTDLP_PROGRESS__ status=downloading downloaded=256 total=1024 total_estimate=1024 speed=1024 eta=7 part=medium vcodec=none acodec=mp4a.40.2 ext=m4a format=140 height=NA"
+    );
+    Require(progress.progress.recognized, "process line should expose yt-dlp progress");
+    Require(progress.progress.mediaKind == L"audio", "process line progress should keep audio media kind");
+    Require(progress.outputPath.empty(), "progress-only line should not expose an output path");
+
+    const YtDlpProcessLine output = ParseYtDlpProcessLine(L"__YTDLP_OUTPUT__:C:\\Downloads\\video.webm");
+    Require(!output.progress.recognized, "output-only line should not expose progress");
+    Require(output.outputPath == fs::path(L"C:\\Downloads\\video.webm"), "process line output path mismatch");
+
+    const YtDlpProcessLine carriageReturnProgress = ParseYtDlpProcessLine(
+        L"\r __YTDLP_PROGRESS__ status=downloading downloaded=512 total=1024 total_estimate=1024 speed=2048 eta=5 part=video vcodec=av01 acodec=none ext=mp4 format=399 height=1080"
+    );
+    Require(carriageReturnProgress.progress.recognized, "progress with leading carriage return should be recognized");
+    Require(carriageReturnProgress.progress.mediaKind == L"video", "trimmed progress media kind mismatch");
+}
+
 void TestGitHubReleaseParsing() {
     const std::string ytDlpRelease = R"json(
 {
@@ -616,6 +1069,319 @@ void TestGitHubReleaseParsing() {
     Require(!missing.found, "missing asset should not be found");
 }
 
+void TestWhisperReleaseParsing() {
+    const std::string release = R"json(
+{
+  "tag_name": "v1.9.1",
+  "html_url": "https://github.com/ggml-org/whisper.cpp/releases/tag/v1.9.1",
+  "assets": [
+    {
+      "name": "whisper-bin-x64.zip",
+      "browser_download_url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip"
+    },
+    {
+      "name": "whisper-cublas-12.4.0-bin-x64.zip",
+      "browser_download_url": "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip"
+    }
+  ]
+}
+)json";
+
+    const ReleaseAssetInfo whisper = ParseGitHubReleaseAsset(release, WhisperManager::WindowsCpuAssetName());
+    Require(whisper.found, "whisper release asset should be found");
+    Require(whisper.version == L"1.9.1", "whisper release version mismatch");
+    Require(
+        whisper.downloadUrl == L"https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip",
+        "whisper release download URL mismatch"
+    );
+
+    const ReleaseAssetInfo cuda = ParseGitHubReleaseAsset(release, WhisperManager::WindowsCudaAssetName());
+    Require(cuda.found, "whisper CUDA release asset should be found");
+    Require(cuda.version == L"1.9.1", "whisper CUDA release version mismatch");
+    Require(
+        cuda.downloadUrl == L"https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-cublas-12.4.0-bin-x64.zip",
+        "whisper CUDA release download URL mismatch"
+    );
+
+    Require(
+        std::string(WhisperManager::BackendAssetName(WhisperBackend::Cpu)) == "whisper-bin-x64.zip",
+        "CPU backend asset mismatch"
+    );
+    Require(
+        std::string(WhisperManager::BackendAssetName(WhisperBackend::Cuda)) == "whisper-cublas-12.4.0-bin-x64.zip",
+        "CUDA backend asset mismatch"
+    );
+}
+
+void TestWhisperBackendResolution() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperBackendResolution");
+    const AppPaths paths(root);
+    AppConfig config;
+
+    ToolInstallStatus missing = WhisperManager::Resolve(paths, config);
+    Require(!missing.installed, "missing whisper backend should not resolve");
+
+    fs::create_directories(paths.localWhisperCudaExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCudaExePath());
+        out << "cuda";
+    }
+
+    ToolInstallStatus cudaOnly = WhisperManager::Resolve(paths, config);
+    Require(cudaOnly.installed, "single CUDA backend should resolve");
+    Require(cudaOnly.executable == paths.localWhisperCudaExePath(), "single CUDA backend path mismatch");
+    Require(cudaOnly.whisperBackend == WhisperBackend::Cuda, "single CUDA backend type mismatch");
+
+    fs::create_directories(paths.localWhisperCpuExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCpuExePath());
+        out << "cpu";
+    }
+
+    config.whisperBackend = WhisperBackend::Cpu;
+    ToolInstallStatus selectedCpu = WhisperManager::Resolve(paths, config);
+    Require(selectedCpu.installed, "selected CPU backend should resolve");
+    Require(selectedCpu.executable == paths.localWhisperCpuExePath(), "selected CPU backend path mismatch");
+    Require(selectedCpu.whisperBackend == WhisperBackend::Cpu, "selected CPU backend type mismatch");
+
+    config.whisperBackend = WhisperBackend::Cuda;
+    ToolInstallStatus selectedCuda = WhisperManager::Resolve(paths, config);
+    Require(selectedCuda.installed, "selected CUDA backend should resolve");
+    Require(selectedCuda.executable == paths.localWhisperCudaExePath(), "selected CUDA backend path mismatch");
+    Require(selectedCuda.whisperBackend == WhisperBackend::Cuda, "selected CUDA backend type mismatch");
+
+    std::error_code ec;
+    fs::remove(paths.localWhisperCudaExePath(), ec);
+    ToolInstallStatus fallbackCpu = WhisperManager::Resolve(paths, config);
+    Require(fallbackCpu.installed, "missing selected backend should fall back to the installed backend");
+    Require(fallbackCpu.executable == paths.localWhisperCpuExePath(), "fallback CPU backend path mismatch");
+    Require(fallbackCpu.whisperBackend == WhisperBackend::Cpu, "fallback CPU backend type mismatch");
+
+    config.whisperPath = root / L"custom" / L"whisper-cli.exe";
+    fs::create_directories(config.whisperPath.parent_path());
+    {
+        std::ofstream out(config.whisperPath);
+        out << "custom";
+    }
+
+    ToolInstallStatus custom = WhisperManager::Resolve(paths, config);
+    Require(custom.installed, "custom whisper path should resolve");
+    Require(custom.executable == config.whisperPath, "custom whisper path mismatch");
+    Require(custom.whisperBackend == WhisperBackend::Custom, "custom whisper backend type mismatch");
+}
+
+void TestWhisperResolutionHonorsLegacyCpuSelectionAlongsideCuda() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperLegacyCpuSelection");
+    const AppPaths paths(root);
+
+    fs::create_directories(paths.localWhisperExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperExePath());
+        out << "legacy cpu";
+    }
+    fs::create_directories(paths.localWhisperCudaExePath().parent_path());
+    {
+        std::ofstream out(paths.localWhisperCudaExePath());
+        out << "cuda";
+    }
+
+    AppConfig config;
+    config.whisperBackend = WhisperBackend::Cpu;
+    const ToolInstallStatus selectedCpu = WhisperManager::Resolve(paths, config);
+    Require(selectedCpu.installed, "legacy CPU should resolve when CPU is selected");
+    Require(selectedCpu.executable == paths.localWhisperExePath(), "legacy CPU selected path mismatch");
+    Require(selectedCpu.whisperBackend == WhisperBackend::Cpu, "legacy CPU selected backend mismatch");
+}
+
+void TestWhisperModelCatalog() {
+    const std::vector<WhisperModelInfo> models = WhisperManager::ModelCatalog();
+    Require(models.size() >= 8, "whisper model catalog should include common and quantized models");
+
+    const auto turbo = std::ranges::find_if(models, [](const WhisperModelInfo& model) {
+        return model.id == L"large-v3-turbo";
+    });
+    Require(turbo != models.end(), "large-v3-turbo model missing");
+    Require(turbo->recommended, "large-v3-turbo should be recommended");
+    Require(turbo->fileName == L"ggml-large-v3-turbo.bin", "large-v3-turbo filename mismatch");
+    Require(
+        turbo->downloadUrl.find(L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin") == 0,
+        "large-v3-turbo URL mismatch"
+    );
+    Require(turbo->tags.find(L"быстрее") != std::wstring::npos, "large-v3-turbo should mention speed");
+    Require(turbo->tags.find(L"качество") != std::wstring::npos, "large-v3-turbo should mention quality");
+    Require(turbo->sizeBytes > 1024ull * 1024ull * 1024ull, "large-v3-turbo size should be over 1 GiB");
+
+    const auto large = std::ranges::find_if(models, [](const WhisperModelInfo& model) {
+        return model.id == L"large-v3";
+    });
+    Require(large != models.end(), "large-v3 model missing");
+    Require(large->bestQuality, "large-v3 should be marked as best quality");
+    Require(large->tags.find(L"дольше") != std::wstring::npos, "large-v3 should mention slow speed");
+
+    const fs::path root = fs::path(L"C:/Portable/YoutubeDownloader");
+    const AppPaths paths(root);
+    Require(
+        WhisperManager::ModelPath(paths, *turbo) == root / L"tools" / L"whisper" / L"models" / L"ggml-large-v3-turbo.bin",
+        "whisper model path mismatch"
+    );
+}
+
+void TestWhisperExecutableDiscovery() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperFindExe");
+    const fs::path binDir = root / L"whisper-bin-x64";
+    fs::create_directories(binDir);
+    {
+        std::ofstream out(binDir / L"whisper-cli.exe");
+        out << "exe";
+    }
+    {
+        std::ofstream out(binDir / L"ggml.dll");
+        out << "dll";
+    }
+
+    Require(WhisperManager::FindExecutableDir(root) == binDir, "whisper executable directory mismatch");
+}
+
+void TestVotHelperReleaseAndUpdateDecision() {
+    const std::string json = R"json({
+        "tag_name": "vot-2.4.12-r2",
+        "assets": [
+            {"name": "vot-helper.exe", "browser_download_url": "https://example.invalid/vot-helper.exe"}
+        ]
+    })json";
+
+    const ReleaseAssetInfo release = ParseGitHubReleaseAsset(json, VotCliManager::WindowsAssetName());
+    Require(release.found, "VOT helper release asset should be found");
+    Require(release.version == L"vot-2.4.12-r2", "VOT helper release version should keep vot prefix");
+    Require(release.downloadUrl == L"https://example.invalid/vot-helper.exe", "VOT helper release URL mismatch");
+
+    ToolInstallStatus current;
+    current.installed = true;
+    current.version = L"vot-2.4.12-r1";
+    Require(ShouldInstallVotUpdate(current, release), "older VOT helper should be updated");
+
+    current.version = L"vot-2.4.12-r2";
+    Require(!ShouldInstallVotUpdate(current, release), "current VOT helper should not be updated");
+
+    current.installed = false;
+    current.version.clear();
+    Require(ShouldInstallVotUpdate(current, release), "missing VOT helper should be installed");
+
+    ReleaseAssetInfo missing = release;
+    missing.found = false;
+    Require(!ShouldInstallVotUpdate(current, missing), "missing VOT helper release metadata should not trigger update");
+}
+
+void TestVotHelperResolutionRejectsLegacyCli() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VotHelperResolution");
+    const fs::path legacy = root / L"vot-cli.cmd";
+    const fs::path helper = root / L"vot-helper.exe";
+    {
+        std::ofstream out(legacy);
+        out << "legacy";
+    }
+    {
+        std::ofstream out(helper);
+        out << "helper";
+    }
+
+    const VotCliStatus legacyStatus = VotCliManager::ResolveUserPath(legacy);
+    Require(!legacyStatus.available, "legacy vot-cli.cmd should be rejected");
+    Require(legacyStatus.executable.empty(), "legacy vot-cli.cmd should not be selected");
+
+    const VotCliStatus helperDirStatus = VotCliManager::ResolveUserPath(root);
+    Require(helperDirStatus.available, "directory with vot-helper.exe should be accepted");
+    Require(helperDirStatus.executable == helper, "directory resolution should select vot-helper.exe");
+}
+
+void TestTranscriptTextPathResolution() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TranscriptPath");
+    const fs::path media = root / L"video.webm";
+    const fs::path whisperSubtitles = root / L"video.srt";
+    const fs::path votSubtitles = root / L"video.vot-subtitles.ru.srt";
+    const fs::path transcript = root / L"video.txt";
+    {
+        std::ofstream out(media);
+        out << "fake media";
+    }
+    {
+        std::ofstream out(whisperSubtitles);
+        out << "1";
+    }
+    {
+        std::ofstream out(votSubtitles);
+        out << "vot subtitles";
+    }
+    {
+        std::ofstream out(transcript);
+        out << "text";
+    }
+
+    const std::vector<fs::path> outputs = {media, whisperSubtitles, transcript, votSubtitles, transcript};
+    const std::vector<fs::path> transcriptFiles = FindTranscriptFilePaths(outputs);
+    Require(transcriptFiles.size() == 3, "all unique transcript artifacts should be listed");
+    Require(transcriptFiles[0] == whisperSubtitles, "Whisper srt should be listed first");
+    Require(transcriptFiles[1] == transcript, "Whisper txt should be listed second");
+    Require(transcriptFiles[2] == votSubtitles, "VOT srt should be listed third");
+    Require(HasWhisperTranscriptFilePath(outputs), "Whisper transcript artifacts should block another Whisper run");
+    Require(!ShouldOfferVotSubtitlesAction(outputs), "existing transcript menu should not offer VOT subtitles again");
+    Require(TranscriptMenuFileLabel(transcript) == L"TXT", "transcript menu txt label should be compact");
+    Require(TranscriptMenuFileLabel(whisperSubtitles) == L"SRT", "transcript menu srt label should be compact");
+    Require(TranscriptMenuFileLabel(votSubtitles) == L"VOT SRT", "transcript menu VOT label should be compact");
+    Require(FindTranscriptTextPath(outputs) == transcript, "transcript txt path should be selected from output files");
+
+    const std::vector<fs::path> subtitleOnly = {media, votSubtitles};
+    Require(FindTranscriptTextPath(subtitleOnly) == votSubtitles, "VOT subtitles srt path should be selected from output files");
+    Require(!HasWhisperTranscriptFilePath(subtitleOnly), "VOT subtitles should not block Whisper transcription");
+    Require(!ShouldOfferVotSubtitlesAction(subtitleOnly), "VOT-only menu should not offer VOT subtitles again");
+
+    const std::vector<fs::path> noTranscript = {media};
+    Require(FindTranscriptTextPath(noTranscript).empty(), "missing transcript txt should return empty path");
+    Require(!HasWhisperTranscriptFilePath(noTranscript), "missing transcript should not block Whisper transcription");
+    Require(ShouldOfferVotSubtitlesAction(noTranscript), "empty transcript menu can offer VOT subtitles");
+}
+
+void TestVoiceOverVideoPathResolution() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_VoiceOverPath");
+    const fs::path media = root / L"video.mp4";
+    const fs::path audio = root / L"video.vot.ru.mp3";
+    const fs::path translated = root / L"video.vot.ru.mp4";
+    const fs::path mixed = root / L"clip.vot-mixed.ru.mkv";
+    {
+        std::ofstream out(media);
+        out << "fake media";
+    }
+    {
+        std::ofstream out(audio);
+        out << "voice-over audio";
+    }
+    {
+        std::ofstream out(translated);
+        out << "translated video";
+    }
+    {
+        std::ofstream out(mixed);
+        out << "mixed translated video";
+    }
+
+    Require(
+        FindVoiceOverVideoPath({media, audio, translated}, L"ru") == translated,
+        "separate voice-over video path should be selected"
+    );
+    Require(
+        FindVoiceOverVideoPath({media, mixed}, L"ru") == mixed,
+        "mixed voice-over video path should be selected"
+    );
+    Require(
+        FindVoiceOverVideoPath({media, audio}, L"ru").empty(),
+        "voice-over audio alone should not count as a translated video"
+    );
+    Require(
+        FindVoiceOverVideoPath({translated}, L"en").empty(),
+        "voice-over lookup should respect the requested language"
+    );
+}
+
 void TestYtDlpUpdateDecision() {
     ReleaseAssetInfo latest;
     latest.found = true;
@@ -640,7 +1406,10 @@ void TestYtDlpUpdateDecision() {
 void TestAppUpdateDecision() {
     ReleaseAssetInfo latest;
     latest.found = true;
-    latest.version = L"9.9.9";
+    latest.version =
+        std::to_wstring(YTD_APP_VERSION_MAJOR) + L"." +
+        std::to_wstring(YTD_APP_VERSION_MINOR) + L"." +
+        std::to_wstring(YTD_APP_VERSION_PATCH + 1);
     Require(ShouldInstallAppUpdate(latest), "newer app version should be offered");
 
     latest.version = YTD_APP_VERSION_WIDE;
@@ -1102,6 +1871,236 @@ void TestDownloadQueueSchedulingAndRetry() {
     Require(attempts.load() >= 5, "executor attempt count mismatch");
 }
 
+void TestDownloadQueuePostProcessingStatus() {
+    std::atomic<bool> release = false;
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot& task,
+        std::stop_token stopToken,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onPostProcessing(37.0, L"Recognizing speech");
+        while (!release.load()) {
+            if (stopToken.stop_requested()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{true, L"", {}, L"Ready with transcript"};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/post-processing";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Post Processing");
+    for (int i = 0; i < 100; ++i) {
+        const DownloadTaskSnapshot task = queue.GetTask(id);
+        if (task.state == DownloadTaskState::PostProcessing) {
+            Require(task.statusText == L"Recognizing speech", "post-processing status mismatch");
+            Require(task.percent == 37.0, "post-processing percent mismatch");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    Require(queue.GetTask(id).state == DownloadTaskState::PostProcessing, "task should enter post-processing state");
+
+    release = true;
+    queue.WaitForIdle();
+    const DownloadTaskSnapshot completed = queue.GetTask(id);
+    Require(completed.state == DownloadTaskState::Completed, "post-processing task should complete");
+    Require(completed.statusText == L"Ready with transcript", "completed task should keep executor status");
+}
+
+void TestDownloadQueueCompletedTaskShowsElapsedTime() {
+    DownloadQueue queue(1);
+    queue.SetExecutor([](
+        const DownloadTaskSnapshot& task,
+        std::stop_token,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(callbacks);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/elapsed-time";
+    request.outputDirectory = fs::temp_directory_path();
+
+    const int id = queue.Enqueue(request, L"Elapsed Time");
+    queue.WaitForIdle();
+
+    const DownloadTaskSnapshot completed = queue.GetTask(id);
+    Require(completed.state == DownloadTaskState::Completed, "elapsed-time task should complete");
+    Require(
+        completed.statusText.find(L"скачано за") != std::wstring::npos,
+        "completed task should show elapsed download time"
+    );
+    Require(
+        completed.statusText.find(L"секунда") != std::wstring::npos ||
+            completed.statusText.find(L"секунды") != std::wstring::npos ||
+            completed.statusText.find(L"секунд") != std::wstring::npos,
+        "completed task should format elapsed seconds"
+    );
+}
+
+void TestDownloadQueueProgressResetsForNextDownloadTrack() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TrackProgressReset");
+    const fs::path output = root / L"video.mp4";
+    std::atomic<bool> release = false;
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot& task,
+        std::stop_token stopToken,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onOutputLine(L"[download] Destination: " + output.wstring());
+
+        {
+            std::ofstream out(output, std::ios::binary);
+            out << std::string(1000, 'v');
+        }
+
+        YtDlpProgress video;
+        video.recognized = true;
+        video.stage = L"Скачивание видео:";
+        video.mediaKind = L"video";
+        video.percent = 100.0;
+        video.downloadedBytes = 1000;
+        video.totalBytes = 1000;
+        callbacks.onProgressDetails(video);
+
+        YtDlpProgress audio;
+        audio.recognized = true;
+        audio.stage = L"Скачивание аудио:";
+        audio.mediaKind = L"audio";
+        audio.percent = 25.0;
+        audio.downloadedBytes = 250;
+        audio.totalBytes = 1000;
+        callbacks.onProgressDetails(audio);
+
+        YtDlpProgress audioNext = audio;
+        audioNext.percent = 40.0;
+        audioNext.downloadedBytes = 400;
+        callbacks.onProgressDetails(audioNext);
+
+        while (!release.load()) {
+            if (stopToken.stop_requested()) {
+                return DownloadTaskResult{false, L"canceled", {}};
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return DownloadTaskResult{false, L"planned stop", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/track-progress-reset";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Track Progress Reset");
+    for (int i = 0; i < 100; ++i) {
+        const DownloadTaskSnapshot task = queue.GetTask(id);
+        if (task.state == DownloadTaskState::Downloading && task.mediaKind == L"audio" && task.percent >= 40.0) {
+            Require(task.percent == 40.0, "audio track progress should not include completed video bytes");
+            Require(task.downloadedBytes == 400, "audio downloaded bytes should reset to the current track");
+            Require(task.totalBytes == 1000, "audio total bytes should come from the current track");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    const DownloadTaskSnapshot audioTask = queue.GetTask(id);
+    Require(audioTask.mediaKind == L"audio", "task should expose audio as the active track");
+    Require(audioTask.percent == 40.0, "audio progress should remain at the current track percent");
+
+    release = true;
+    queue.WaitForIdle();
+}
+
+void TestDownloadQueueStartsPostProcessingForCompletedTask() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ManualPostProcessing");
+    const fs::path media = root / L"video.mp4";
+    const fs::path transcript = root / L"video.txt";
+    std::atomic<bool> release = false;
+
+    DownloadQueue queue(1);
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot& task,
+        std::stop_token stopToken,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        UNREFERENCED_PARAMETER(task);
+        UNREFERENCED_PARAMETER(stopToken);
+        callbacks.onOutputLine(L"[download] Destination: " + media.wstring());
+        {
+            std::ofstream out(media, std::ios::binary);
+            out << "downloaded media";
+        }
+        return DownloadTaskResult{true, L"", {media}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/manual-transcription";
+    request.outputDirectory = root;
+
+    const int id = queue.Enqueue(request, L"Manual Transcription");
+    queue.WaitForIdle();
+    Require(queue.GetTask(id).state == DownloadTaskState::Completed, "fixture task should complete before manual post-processing");
+
+    const bool started = queue.StartPostProcessing(
+        id,
+        [&](
+            const DownloadTaskSnapshot& task,
+            std::stop_token stopToken,
+            const DownloadTaskCallbacks& callbacks
+        ) {
+            Require(task.state == DownloadTaskState::PostProcessing, "manual post-processing snapshot state mismatch");
+            Require(
+                std::ranges::find(task.outputFiles, media) != task.outputFiles.end(),
+                "manual post-processing should receive completed media output"
+            );
+            callbacks.onPostProcessing(42.0, L"Recognizing speech");
+            while (!release.load()) {
+                if (stopToken.stop_requested()) {
+                    return DownloadTaskResult{true, L"", task.outputFiles, L"Ready without transcript"};
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            {
+                std::ofstream out(transcript);
+                out << "transcript";
+            }
+            return DownloadTaskResult{true, L"", {transcript}, L"Ready with transcript"};
+        },
+        L"Recognizing speech"
+    );
+    Require(started, "manual post-processing should start for a completed task");
+
+    for (int i = 0; i < 100; ++i) {
+        const DownloadTaskSnapshot task = queue.GetTask(id);
+        if (task.state == DownloadTaskState::PostProcessing && task.percent == 42.0) {
+            Require(task.statusText == L"Recognizing speech", "manual post-processing status mismatch");
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    Require(queue.GetTask(id).state == DownloadTaskState::PostProcessing, "task should enter manual post-processing state");
+
+    release = true;
+    queue.WaitForIdle();
+
+    const DownloadTaskSnapshot completed = queue.GetTask(id);
+    Require(completed.state == DownloadTaskState::Completed, "manual post-processing task should return to completed");
+    Require(completed.statusText == L"Ready with transcript", "manual post-processing should keep completion status");
+    Require(std::ranges::find(completed.outputFiles, media) != completed.outputFiles.end(), "manual post-processing should keep media output");
+    Require(std::ranges::find(completed.outputFiles, transcript) != completed.outputFiles.end(), "manual post-processing should add transcript output");
+}
+
 void TestDownloadQueueLogsTaskLifecycle() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueLogger");
     const AppPaths paths(root);
@@ -1129,6 +2128,38 @@ void TestDownloadQueueLogsTaskLifecycle() {
     };
     Require(text.find("https://example.invalid/logged-task") != std::string::npos, "queue log should identify the task URL");
     Require(text.find("completed") != std::string::npos, "queue log should record task completion");
+}
+
+void TestDownloadQueueLogsPostProcessingProgress() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_PostProcessingLogger");
+    const AppPaths paths(root);
+    Logger logger(paths);
+    DownloadQueue queue(1, &logger);
+    queue.SetExecutor([](
+        const DownloadTaskSnapshot& task,
+        std::stop_token,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        UNREFERENCED_PARAMETER(task);
+        callbacks.onPostProcessing(50.0, L"Recognizing speech");
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/logged-post-processing";
+    queue.Enqueue(request, L"Logged post-processing");
+    queue.WaitForIdle();
+
+    std::ifstream log(paths.logPath(), std::ios::binary);
+    const std::string text{
+        std::istreambuf_iterator<char>(log),
+        std::istreambuf_iterator<char>()
+    };
+    Require(text.find("Post-processing progress") != std::string::npos, "queue log should record post-processing progress");
+    Require(text.find("status=\"Recognizing speech\"") != std::string::npos, "queue log should include post-processing status");
+    Require(text.find("progress=50.0%") != std::string::npos, "queue log should include post-processing percent");
+    Require(text.find("elapsed=") != std::string::npos, "queue log should include post-processing elapsed time");
+    Require(text.find("eta=") != std::string::npos, "queue log should include post-processing eta");
 }
 
 void TestDownloadQueueShutdownWaitsForActiveWorker() {
@@ -1945,8 +2976,10 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigDropsLegacyFfmpegPromptFlag();
+    TestConfigNormalizesUnsupportedVoiceOverLanguages();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
+    TestWhisperUtilityStatusText();
     TestEditContextMenuModel();
     TestPasteReplacesExistingEditText();
     TestPasteReplacingEditTextIgnoresInvalidHandles();
@@ -1957,12 +2990,32 @@ int main(int argc, char** argv) {
     TestLoggerTruncatesAtStartupAndAppendsWithinRun();
     TestLoggerReadsCurrentLogText();
     TestCommitDownloadedFilePreservesTargetUntilValidated();
+    TestSharedTextAndMoveHelpers();
     TestWaitForDelayCompletesOrStopsPromptly();
     TestProgressPresentation();
     TestVersionCompare();
     TestYtDlpDownloadArguments();
+    TestYtDlpOutputPathParsing();
+    TestYtDlpOutputFileFallbackFindsNewMedia();
+    TestTranscriptionCommandArguments();
+    TestVoiceOverCommandArguments();
+    TestVotSubtitlesCommandArguments();
+    TestVotHelperJsonParsing();
+    TestTranscriptionUsesAsciiTemporaryWhisperPaths();
+    TestWhisperProgressParsing();
+    TestTranscriptionErrorSummaryUsesLastMeaningfulLine();
     TestYtDlpProgressParsing();
+    TestYtDlpProcessLineParsing();
     TestGitHubReleaseParsing();
+    TestWhisperReleaseParsing();
+    TestWhisperBackendResolution();
+    TestWhisperResolutionHonorsLegacyCpuSelectionAlongsideCuda();
+    TestWhisperModelCatalog();
+    TestWhisperExecutableDiscovery();
+    TestVotHelperReleaseAndUpdateDecision();
+    TestVotHelperResolutionRejectsLegacyCli();
+    TestTranscriptTextPathResolution();
+    TestVoiceOverVideoPathResolution();
     TestYtDlpUpdateDecision();
     TestYtDlpExecutableVersionValidation();
     TestAppUpdateDecision();
@@ -1974,7 +3027,12 @@ int main(int argc, char** argv) {
     TestProcessRunnerCancelKillsChildProcessTree();
     TestYtDlpMetadataParsing();
     TestDownloadQueueSchedulingAndRetry();
+    TestDownloadQueuePostProcessingStatus();
+    TestDownloadQueueCompletedTaskShowsElapsedTime();
+    TestDownloadQueueProgressResetsForNextDownloadTrack();
+    TestDownloadQueueStartsPostProcessingForCompletedTask();
     TestDownloadQueueLogsTaskLifecycle();
+    TestDownloadQueueLogsPostProcessingProgress();
     TestDownloadQueueShutdownWaitsForActiveWorker();
     TestDownloadQueueUpdatesParallelismAtRuntime();
     TestDownloadQueueRejectsDuplicateVisibleUrl();

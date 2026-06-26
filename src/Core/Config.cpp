@@ -47,6 +47,21 @@ bool BoolFromJson(const nlohmann::json& json, const char* key, bool fallback) {
     return it->get<bool>();
 }
 
+WhisperBackend WhisperBackendFromJson(const nlohmann::json& json, const char* key, WhisperBackend fallback) {
+    const auto it = json.find(key);
+    if (it == json.end() || !it->is_string()) {
+        return fallback;
+    }
+    return WhisperBackendFromConfigValue(Utf8ToWide(it->get<std::string>()));
+}
+
+std::wstring NormalizeVoiceOverLanguage(const std::wstring& value) {
+    if (value == L"en") {
+        return L"en";
+    }
+    return L"ru";
+}
+
 std::filesystem::path DefaultDownloadDir() {
     wchar_t* profile = nullptr;
     size_t profileLength = 0;
@@ -60,6 +75,33 @@ std::filesystem::path DefaultDownloadDir() {
 }
 
 } // namespace
+
+std::wstring WhisperBackendToConfigValue(WhisperBackend backend) {
+    switch (backend) {
+    case WhisperBackend::Cpu:
+        return L"cpu";
+    case WhisperBackend::Cuda:
+        return L"cuda";
+    case WhisperBackend::Custom:
+        return L"custom";
+    case WhisperBackend::Auto:
+    default:
+        return L"auto";
+    }
+}
+
+WhisperBackend WhisperBackendFromConfigValue(const std::wstring& value) {
+    if (value == L"cpu") {
+        return WhisperBackend::Cpu;
+    }
+    if (value == L"cuda") {
+        return WhisperBackend::Cuda;
+    }
+    if (value == L"custom") {
+        return WhisperBackend::Custom;
+    }
+    return WhisperBackend::Auto;
+}
 
 AppConfig ConfigStore::Defaults() {
     AppConfig config;
@@ -85,11 +127,26 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.downloadDir = PathFromJsonString(json, "download_dir", config.downloadDir);
         config.cookiesPath = PathFromJsonString(json, "cookies_path", config.cookiesPath);
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
+        config.whisperPath = PathFromJsonString(json, "whisper_path", config.whisperPath);
+        config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
+        config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
+        config.votCliPath = PathFromJsonString(json, "vot_cli_path", config.votCliPath);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
+        config.whisperLanguage = WStringFromJson(json, "whisper_language", config.whisperLanguage);
+        config.voiceOverLanguage = WStringFromJson(json, "voice_over_language", config.voiceOverLanguage);
+        config.voiceOverLanguage = NormalizeVoiceOverLanguage(config.voiceOverLanguage);
+        config.voiceOverMode = WStringFromJson(json, "voice_over_mode", config.voiceOverMode);
+        if (config.voiceOverMode != L"mixed") {
+            config.voiceOverMode = L"separate";
+        }
+        config.originalVolumePercent = IntFromJson(json, "original_volume_percent", config.originalVolumePercent);
+        config.originalVolumePercent = std::clamp(config.originalVolumePercent, 0, 100);
         config.maxParallelDownloads = IntFromJson(json, "max_parallel_downloads", config.maxParallelDownloads);
         config.maxParallelDownloads = std::clamp(config.maxParallelDownloads, 3, 10);
         config.autoUpdateApp = BoolFromJson(json, "auto_update_app", config.autoUpdateApp);
+        config.transcribeAfterDownload = BoolFromJson(json, "transcribe_after_download", config.transcribeAfterDownload);
+        config.settingsSidebarCollapsed = BoolFromJson(json, "settings_sidebar_collapsed", config.settingsSidebarCollapsed);
         config.lastYtDlpCheckAt = WStringFromJson(json, "last_ytdlp_check_at", config.lastYtDlpCheckAt);
         config.lastYtDlpVersion = WStringFromJson(json, "last_ytdlp_version", config.lastYtDlpVersion);
     } catch (...) {
@@ -110,10 +167,20 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["download_dir"] = PathToJsonString(config.downloadDir);
     json["cookies_path"] = PathToJsonString(config.cookiesPath);
     json["ffmpeg_path"] = PathToJsonString(config.ffmpegPath);
+    json["whisper_path"] = PathToJsonString(config.whisperPath);
+    json["whisper_model_path"] = PathToJsonString(config.whisperModelPath);
+    json["whisper_backend"] = WideToUtf8(WhisperBackendToConfigValue(config.whisperBackend));
+    json["vot_cli_path"] = PathToJsonString(config.votCliPath);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
+    json["whisper_language"] = WideToUtf8(config.whisperLanguage);
+    json["voice_over_language"] = WideToUtf8(NormalizeVoiceOverLanguage(config.voiceOverLanguage));
+    json["voice_over_mode"] = WideToUtf8(config.voiceOverMode == L"mixed" ? L"mixed" : L"separate");
+    json["original_volume_percent"] = std::clamp(config.originalVolumePercent, 0, 100);
     json["max_parallel_downloads"] = config.maxParallelDownloads;
     json["auto_update_app"] = config.autoUpdateApp;
+    json["transcribe_after_download"] = config.transcribeAfterDownload;
+    json["settings_sidebar_collapsed"] = config.settingsSidebarCollapsed;
     json["last_ytdlp_check_at"] = WideToUtf8(config.lastYtDlpCheckAt);
     json["last_ytdlp_version"] = WideToUtf8(config.lastYtDlpVersion);
 

@@ -44,6 +44,18 @@ std::filesystem::path AppPaths::ytDlpVersionPath() const {
     return ytDlpDir() / L"version.txt";
 }
 
+std::filesystem::path AppPaths::localVotDir() const {
+    return toolsDir() / L"vot";
+}
+
+std::filesystem::path AppPaths::localVotExePath() const {
+    return localVotDir() / L"vot-helper.exe";
+}
+
+std::filesystem::path AppPaths::localVotVersionPath() const {
+    return localVotDir() / L"version.txt";
+}
+
 std::filesystem::path AppPaths::localFfmpegBinDir() const {
     return toolsDir() / L"ffmpeg" / L"bin";
 }
@@ -58,4 +70,44 @@ std::filesystem::path AppPaths::localFfprobeExePath() const {
 
 std::filesystem::path AppPaths::localFfplayExePath() const {
     return localFfmpegBinDir() / L"ffplay.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperDir() const {
+    return toolsDir() / L"whisper";
+}
+
+std::filesystem::path AppPaths::localWhisperExePath() const {
+    return localWhisperDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperCpuDir() const {
+    return localWhisperDir() / L"cpu";
+}
+
+std::filesystem::path AppPaths::localWhisperCudaDir() const {
+    return localWhisperDir() / L"cuda";
+}
+
+std::filesystem::path AppPaths::localWhisperCpuExePath() const {
+    return localWhisperCpuDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperCudaExePath() const {
+    return localWhisperCudaDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperModelsDir() const {
+    return localWhisperDir() / L"models";
+}
+
+std::filesystem::path AppPaths::localWhisperModelPath() const {
+    return localWhisperModelsDir() / L"ggml-large-v3-turbo.bin";
+}
+
+std::filesystem::path AppPaths::transcriptionTempDir() const {
+    return stuffDir() / L"transcription_tmp";
+}
+
+std::filesystem::path AppPaths::voiceOverTempDir() const {
+    return stuffDir() / L"voiceover_tmp";
 }

@@ -7,9 +7,50 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+
+namespace {
+
+const wchar_t* RussianPlural(
+    std::uint64_t value,
+    const wchar_t* singular,
+    const wchar_t* few,
+    const wchar_t* many
+) {
+    const std::uint64_t lastTwo = value % 100;
+    if (lastTwo >= 11 && lastTwo <= 14) {
+        return many;
+    }
+
+    switch (value % 10) {
+    case 1:
+        return singular;
+    case 2:
+    case 3:
+    case 4:
+        return few;
+    default:
+        return many;
+    }
+}
+
+void AddElapsedPart(
+    std::vector<std::wstring>& parts,
+    std::uint64_t value,
+    const wchar_t* singular,
+    const wchar_t* few,
+    const wchar_t* many
+) {
+    if (value == 0) {
+        return;
+    }
+    parts.push_back(std::to_wstring(value) + L" " + RussianPlural(value, singular, few, many));
+}
+
+} // namespace
 
 std::string WideToUtf8(const std::wstring& value) {
     if (value.empty()) {
@@ -87,6 +128,36 @@ std::filesystem::path PathFromUtf8(const std::string& value) {
     return std::filesystem::path(Utf8ToWide(value));
 }
 
+std::wstring TrimWhitespace(const std::wstring& text) {
+    size_t begin = 0;
+    while (begin < text.size() && std::iswspace(text[begin])) {
+        ++begin;
+    }
+
+    size_t end = text.size();
+    while (end > begin && std::iswspace(text[end - 1])) {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+std::wstring LastNonEmptyLine(const std::wstring& text) {
+    size_t end = text.size();
+    while (end > 0) {
+        const size_t newline = text.rfind(L'\n', end - 1);
+        const size_t begin = newline == std::wstring::npos ? 0 : newline + 1;
+        const std::wstring line = TrimWhitespace(text.substr(begin, end - begin));
+        if (!line.empty()) {
+            return line;
+        }
+        if (newline == std::wstring::npos) {
+            break;
+        }
+        end = newline;
+    }
+    return {};
+}
+
 std::wstring FormatBytes(std::uint64_t bytes) {
     if (bytes == 0) {
         return {};
@@ -159,6 +230,37 @@ std::wstring FormatDuration(std::uint64_t seconds) {
         }
     } else {
         parts.push_back(std::to_wstring(seconds) + L" с");
+    }
+
+    std::wstring result;
+    for (const std::wstring& part : parts) {
+        if (!result.empty()) {
+            result += L" ";
+        }
+        result += part;
+    }
+    return result;
+}
+
+std::wstring FormatElapsedDuration(std::uint64_t seconds) {
+    constexpr std::uint64_t kMinute = 60;
+    constexpr std::uint64_t kHour = 60 * kMinute;
+    constexpr std::uint64_t kDay = 24 * kHour;
+
+    const std::uint64_t days = seconds / kDay;
+    seconds %= kDay;
+    const std::uint64_t hours = seconds / kHour;
+    seconds %= kHour;
+    const std::uint64_t minutes = seconds / kMinute;
+    seconds %= kMinute;
+
+    std::vector<std::wstring> parts;
+    AddElapsedPart(parts, days, L"день", L"дня", L"дней");
+    AddElapsedPart(parts, hours, L"час", L"часа", L"часов");
+    AddElapsedPart(parts, minutes, L"минута", L"минуты", L"минут");
+    AddElapsedPart(parts, seconds, L"секунда", L"секунды", L"секунд");
+    if (parts.empty()) {
+        return L"0 секунд";
     }
 
     std::wstring result;

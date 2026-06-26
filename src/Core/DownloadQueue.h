@@ -2,6 +2,7 @@
 
 #include "YtDlpClient.h"
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -20,6 +21,7 @@ enum class DownloadTaskState {
     Queued,
     Preparing,
     Downloading,
+    PostProcessing,
     Completed,
     Failed,
     Canceled
@@ -47,6 +49,7 @@ struct DownloadTaskSnapshot {
 
 struct DownloadTaskCallbacks {
     std::function<void(const YtDlpProgress& progress)> onProgressDetails;
+    std::function<void(double percent, const std::wstring& status)> onPostProcessing;
     std::function<void(const std::wstring& line)> onOutputLine;
 };
 
@@ -54,6 +57,7 @@ struct DownloadTaskResult {
     bool success = false;
     std::wstring errorText;
     std::vector<std::filesystem::path> outputFiles;
+    std::wstring statusText;
 };
 
 using DownloadTaskExecutor = std::function<DownloadTaskResult(
@@ -76,6 +80,7 @@ public:
     bool EnrichMetadata(const std::wstring& url, std::wstring title, std::filesystem::path thumbnailPath = {});
     bool Cancel(int id);
     bool Retry(int id);
+    bool StartPostProcessing(int id, DownloadTaskExecutor executor, std::wstring statusText);
     bool DeleteFiles(int id);
     size_t ClearQueued();
     size_t ClearFinished();
@@ -92,12 +97,18 @@ public:
 private:
     struct TaskRecord {
         DownloadTaskSnapshot snapshot;
+        std::chrono::steady_clock::time_point startedAt{};
+        std::chrono::steady_clock::time_point postProcessingStartedAt{};
+        double lastPostProcessingLoggedPercent = -1.0;
+        std::wstring lastPostProcessingLoggedStatus;
         bool cancelRequested = false;
         bool active = false;
+        bool postProcessingOnly = false;
     };
 
     void SchedulerLoop();
     void StartTask(int id, std::stop_token stopToken);
+    void RunTask(int id, DownloadTaskExecutor executor, std::stop_token stopToken);
     void UpdateTaskProgress(int id, const YtDlpProgress& progress);
     void RecordTaskOutput(int id, const std::wstring& line);
     void FinishTask(int id, std::stop_token stopToken, const DownloadTaskResult& result);

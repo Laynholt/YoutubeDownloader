@@ -34,7 +34,9 @@ set(CORE_SOURCES
     src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
     src/Core/ToolManagers.cpp
+    src/Core/TranscriptionClient.cpp
     src/Core/Version.cpp
+    src/Core/VoiceOverTranslationClient.cpp
     src/Core/YtDlpClient.cpp
     src/Platform/ProcessRunner.cpp
     src/Platform/WinHttpClient.cpp
@@ -52,7 +54,9 @@ set(CORE_HEADERS
     src/Core/KeyboardShortcuts.h
     src/Core/Logger.h
     src/Core/ToolManagers.h
+    src/Core/TranscriptionClient.h
     src/Core/Version.h
+    src/Core/VoiceOverTranslationClient.h
     src/Core/YtDlpClient.h
     src/Platform/ProcessRunner.h
     src/Platform/WinHttpClient.h
