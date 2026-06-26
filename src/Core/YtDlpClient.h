@@ -37,6 +37,17 @@ struct YtDlpProgress {
     std::wstring resolution;
 };
 
+struct YtDlpProcessLine {
+    std::filesystem::path outputPath;
+    YtDlpProgress progress;
+};
+
+struct OutputDirectoryFile {
+    std::filesystem::path path;
+    std::filesystem::file_time_type lastWriteTime = {};
+    std::uintmax_t size = 0;
+};
+
 struct VideoPreview {
     std::wstring id;
     std::wstring title;
@@ -56,7 +67,15 @@ struct YtDlpClientOptions {
 };
 
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request);
+std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line);
+std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory);
+std::filesystem::path FindDownloadedMediaFile(
+    const std::vector<std::filesystem::path>& reportedOutputFiles,
+    const std::filesystem::path& outputDirectory,
+    const std::vector<OutputDirectoryFile>& beforeDownload
+);
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line);
+YtDlpProcessLine ParseYtDlpProcessLine(const std::wstring& line);
 VideoPreview ParseVideoPreviewJson(const std::string& jsonText);
 
 class YtDlpClient {

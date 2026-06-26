@@ -25,6 +25,11 @@
 #include <vector>
 
 bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowWhisperDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowVotDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowWhisperModelDownloadProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowVotInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowAppUpdateProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, const ReleaseAssetInfo& release);
 
 namespace {
@@ -34,6 +39,7 @@ constexpr const wchar_t* kDialogButtonClassName = L"YoutubeDownloaderDialogButto
 constexpr const wchar_t* kScrollTextClassName = L"YoutubeDownloaderScrollText";
 constexpr const wchar_t* kLogViewClassName = L"YoutubeDownloaderLogView";
 constexpr const wchar_t* kLogCopyMenuClassName = L"YoutubeDownloaderLogCopyMenu";
+constexpr const wchar_t* kSettingsComboMenuClassName = L"YoutubeDownloaderSettingsComboMenu";
 
 constexpr COLORREF kBackgroundColor = RGB(20, 20, 22);
 constexpr COLORREF kPanelColor = RGB(28, 28, 31);
@@ -48,7 +54,25 @@ constexpr int kScrollTextTopPadding = 12;
 constexpr int kScrollTextBottomPadding = 12;
 constexpr int kScrollTextClipTopPadding = 8;
 constexpr int kScrollTextClipBottomPadding = 8;
-constexpr RECT kParallelValueRect = {458, 296, 510, 330};
+constexpr int kSettingsDialogWidth = 980;
+constexpr int kSettingsDialogHeight = 760;
+constexpr int kSettingsMinWidth = 760;
+constexpr int kSettingsMinHeight = 600;
+constexpr int kSettingsSidebarExpandedWidth = 214;
+constexpr int kSettingsSidebarCollapsedWidth = 70;
+constexpr int kSettingsSidebarCollapseWidth = 820;
+constexpr int kSettingsSidebarGap = 18;
+constexpr int kSettingsContentTop = 86;
+constexpr int kSettingsCardGap = 14;
+constexpr int kSettingsCardPadding = 18;
+constexpr int kSettingsChoiceCardHeight = 112;
+constexpr int kSettingsBehaviorCardHeight = 158;
+constexpr int kSettingsWorkflowCardHeight = 128;
+constexpr int kSettingsWorkflowLanguageCardHeight = kSettingsChoiceCardHeight;
+constexpr int kSettingsToolCardHeight = 116;
+constexpr int kSettingsAboutCardHeight = 172;
+constexpr int kSettingsCardControlTop = 66;
+constexpr int kSettingsBottomButtonWidth = 128;
 constexpr UINT kProgressUpdateMessage = WM_APP + 40;
 constexpr UINT kProgressDoneMessage = WM_APP + 41;
 
@@ -56,16 +80,30 @@ enum class DialogType {
     Info,
     Error,
     Confirmation,
+    AffectedFiles,
     Settings,
     About,
     Logs,
     Ffmpeg,
+    Whisper,
+    Vot,
     Progress
 };
 
 enum class ProgressMode {
     FfmpegInstall,
+    WhisperInstall,
+    WhisperModelDownload,
+    VotInstall,
     AppUpdate
+};
+
+enum class SettingsSection {
+    Downloads,
+    Transcription,
+    Translation,
+    Tools,
+    About
 };
 
 enum DialogCommand {
@@ -80,12 +118,39 @@ enum DialogCommand {
     IdChooseFolder = 17,
     IdAutoUpdate = 120,
     IdParallelMinus = 121,
-    IdParallelPlus = 122
+    IdParallelPlus = 122,
+    IdSettingsNavDownloads = 123,
+    IdSettingsNavTranscription = 124,
+    IdSettingsNavTranslation = 125,
+    IdSettingsNavTools = 126,
+    IdSettingsNavAbout = 127,
+    IdSettingsToggleSidebar = 128,
+    IdTranscriptionOpenTools = 129,
+    IdTranscriptionWhisper = 130,
+    IdTranscriptionVot = 131,
+    IdVoiceModeOff = 132,
+    IdVoiceModeTrack = 133,
+    IdVoiceModeMix = 134,
+    IdSubtitleModeOff = 135,
+    IdSubtitleModeTrack = 136,
+    IdSubtitleModeBurn = 137,
+    IdWhisperLanguageEdit = 140,
+    IdVoiceLanguageEdit = 141,
+    IdChooseWhisperFolder = 142,
+    IdChooseVotFolder = 143,
+    IdTranslationOpenTools = 144,
+    IdYtDlpDetails = 145,
+    IdFfmpegDetails = 146,
+    IdWhisperDetails = 147,
+    IdVotDetails = 148,
+    IdWhisperDownloadModel = 149
 };
 
 struct ButtonState {
     int commandId = 0;
     bool primary = false;
+    bool onCard = true;
+    bool enabled = true;
     bool hot = false;
     bool pressed = false;
     std::wstring text;
@@ -122,6 +187,13 @@ struct LogCopyMenuState {
     bool hot = false;
 };
 
+struct SettingsComboMenuState {
+    HWND owner = nullptr;
+    bool whisperLanguage = false;
+    std::vector<std::wstring> values;
+    int hotIndex = -1;
+};
+
 struct ProgressUpdate {
     std::uint64_t downloaded = 0;
     std::uint64_t total = 0;
@@ -136,10 +208,19 @@ struct DialogState {
     HWND scrollText = nullptr;
     HWND logView = nullptr;
     std::wstring title;
+    std::wstring subtitle;
     std::wstring message;
+    std::wstring primaryButtonText;
+    std::wstring cancelButtonText;
     const AppPaths* paths = nullptr;
     AppConfig* config = nullptr;
     AppConfig workingConfig;
+    SettingsSection settingsSection = SettingsSection::Downloads;
+    bool settingsSidebarCollapsed = false;
+    bool ytDlpDetailsExpanded = false;
+    bool ffmpegDetailsExpanded = false;
+    bool whisperDetailsExpanded = false;
+    bool votDetailsExpanded = false;
     bool* savedResult = nullptr;
     std::uint64_t progressDownloaded = 0;
     std::uint64_t progressTotal = 0;
@@ -155,6 +236,134 @@ struct DialogState {
     std::optional<ProgressUpdate> pendingProgress;
     std::optional<std::wstring> progressError;
 };
+
+SettingsSection ToSettingsSection(SettingsInitialSection section) {
+    switch (section) {
+    case SettingsInitialSection::Transcription:
+        return SettingsSection::Transcription;
+    case SettingsInitialSection::Translation:
+        return SettingsSection::Translation;
+    case SettingsInitialSection::Tools:
+        return SettingsSection::Tools;
+    case SettingsInitialSection::About:
+        return SettingsSection::About;
+    case SettingsInitialSection::Downloads:
+    default:
+        return SettingsSection::Downloads;
+    }
+}
+
+bool IsSettingsSidebarCollapsed(const DialogState* state, int width) {
+    return width < kSettingsSidebarCollapseWidth || (state && state->settingsSidebarCollapsed);
+}
+
+int SettingsSidebarWidth(const DialogState* state, int width) {
+    return IsSettingsSidebarCollapsed(state, width)
+        ? kSettingsSidebarCollapsedWidth
+        : kSettingsSidebarExpandedWidth;
+}
+
+RECT SettingsPanelRect(int width, int height) {
+    return {kDialogPanelInset, kDialogPanelInset, width - kDialogPanelInset, height - kDialogPanelInset};
+}
+
+RECT SettingsSidebarRect(const DialogState* state, int width, int height) {
+    const RECT panel = SettingsPanelRect(width, height);
+    const int left = panel.left + kDialogButtonInset;
+    const int top = panel.top + kDialogButtonInset;
+    return {
+        left,
+        top,
+        left + SettingsSidebarWidth(state, width),
+        panel.bottom - kDialogButtonInset
+    };
+}
+
+RECT SettingsContentRect(const DialogState* state, int width, int height) {
+    const RECT panel = SettingsPanelRect(width, height);
+    const RECT sidebar = SettingsSidebarRect(state, width, height);
+    return {
+        sidebar.right + kSettingsSidebarGap,
+        panel.top + kDialogButtonInset,
+        panel.right - kDialogButtonInset,
+        panel.bottom - kDialogButtonInset - kDialogButtonHeight - 18
+    };
+}
+
+int SettingsBottomButtonY(int height) {
+    const RECT panel = SettingsPanelRect(0, height);
+    return panel.bottom - kDialogButtonInset - kDialogButtonHeight;
+}
+
+RECT SettingsStackCardRect(const DialogState* state, int width, int height, int index, int cardHeight) {
+    const RECT content = SettingsContentRect(state, width, height);
+    const int top = content.top + kSettingsContentTop + index * (cardHeight + kSettingsCardGap);
+    return {content.left, top, content.right, top + cardHeight};
+}
+
+RECT SettingsCardBelow(const RECT& previous, int cardHeight) {
+    return {previous.left, previous.bottom + kSettingsCardGap, previous.right, previous.bottom + kSettingsCardGap + cardHeight};
+}
+
+RECT SettingsTranscriptionEngineCardRect(const DialogState* state, int width, int height) {
+    return SettingsStackCardRect(state, width, height, 0, kSettingsWorkflowCardHeight);
+}
+
+RECT SettingsTranscriptionLanguageCardRect(const DialogState* state, int width, int height) {
+    return SettingsCardBelow(SettingsTranscriptionEngineCardRect(state, width, height), kSettingsWorkflowLanguageCardHeight);
+}
+
+RECT SettingsTranscriptionToolsCardRect(const DialogState* state, int width, int height) {
+    return SettingsCardBelow(SettingsTranscriptionLanguageCardRect(state, width, height), 92);
+}
+
+RECT SettingsTranslationWorkflowCardRect(const DialogState* state, int width, int height) {
+    return SettingsStackCardRect(state, width, height, 0, kSettingsWorkflowLanguageCardHeight);
+}
+
+RECT SettingsTranslationToolsCardRect(const DialogState* state, int width, int height) {
+    return SettingsCardBelow(SettingsTranslationWorkflowCardRect(state, width, height), 92);
+}
+
+int SettingsToolCardHeight(const DialogState* state, int index) {
+    if (index == 0) {
+        return state && state->ytDlpDetailsExpanded ? 124 : kSettingsToolCardHeight;
+    }
+    if (index == 1) {
+        return state && state->ffmpegDetailsExpanded ? 124 : kSettingsToolCardHeight;
+    }
+    if (index == 2) {
+        return state && state->whisperDetailsExpanded ? 146 : kSettingsToolCardHeight;
+    }
+    return state && state->votDetailsExpanded ? 124 : kSettingsToolCardHeight;
+}
+
+RECT SettingsToolCardRect(const DialogState* state, int width, int height, int index) {
+    const RECT content = SettingsContentRect(state, width, height);
+    int top = content.top + kSettingsContentTop;
+    for (int i = 0; i < index; ++i) {
+        top += SettingsToolCardHeight(state, i) + kSettingsCardGap;
+    }
+    const int cardHeight = SettingsToolCardHeight(state, index);
+    return {content.left, top, content.right, top + cardHeight};
+}
+
+RECT SettingsParallelValueRect(const DialogState* state, int width, int height) {
+    const RECT card = SettingsStackCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
+    const int valueRight = card.right - kSettingsCardPadding - 46 - kDialogButtonGap;
+    return {valueRight - 54, card.top + kSettingsCardControlTop, valueRight, card.top + kSettingsCardControlTop + kDialogButtonHeight};
+}
+
+bool IsFfmpegReady(const DialogState* state) {
+    if (!state || !state->config) {
+        return false;
+    }
+    if (state->paths) {
+        return FfmpegManager::Resolve(*state->paths, state->workingConfig).available;
+    }
+    return !state->workingConfig.ffmpegPath.empty() &&
+        FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath).available;
+}
 
 void EnableDarkTitleBar(HWND window) {
     BOOL enabled = TRUE;
@@ -215,7 +424,7 @@ void PaintBuffered(HWND window, const std::function<void(HDC, const RECT&)>& pai
     EndPaint(window, &paint);
 }
 
-std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
+std::optional<std::filesystem::path> PickFolder(HWND owner, const wchar_t* title) {
     IFileOpenDialog* dialog = nullptr;
     if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
         return std::nullopt;
@@ -225,7 +434,7 @@ std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     if (SUCCEEDED(dialog->GetOptions(&options))) {
         dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
     }
-    dialog->SetTitle(L"Выберите папку FFmpeg или папку bin");
+    dialog->SetTitle(title);
 
     std::optional<std::filesystem::path> result;
     if (SUCCEEDED(dialog->Show(owner))) {
@@ -241,6 +450,101 @@ std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     }
     dialog->Release();
     return result;
+}
+
+std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
+    return PickFolder(owner, L"Выберите папку FFmpeg или папку bin");
+}
+
+std::wstring GetChildText(HWND parent, int id) {
+    HWND control = GetDlgItem(parent, id);
+    if (!control) {
+        return {};
+    }
+    const int length = GetWindowTextLengthW(control);
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    if (length > 0) {
+        GetWindowTextW(control, text.data(), length + 1);
+    }
+    text.resize(static_cast<size_t>(length));
+    return text;
+}
+
+HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
+    HWND edit = CreateWindowExW(
+        WS_EX_CLIENTEDGE,
+        L"EDIT",
+        text.c_str(),
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        0,
+        0,
+        10,
+        10,
+        state->window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        state->instance,
+        nullptr
+    );
+    if (edit) {
+        SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    }
+    return edit;
+}
+
+HWND CreateSettingsCombo(
+    DialogState* state,
+    int id,
+    const std::vector<std::wstring>& values,
+    const std::wstring& selected
+) {
+    HWND combo = CreateWindowExW(
+        0,
+        WC_COMBOBOXW,
+        L"",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+        0,
+        0,
+        10,
+        200,
+        state->window,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+        state->instance,
+        nullptr
+    );
+    if (!combo) {
+        return nullptr;
+    }
+    SendMessageW(combo, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    int selectedIndex = 0;
+    for (size_t i = 0; i < values.size(); ++i) {
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(values[i].c_str()));
+        if (values[i] == selected) {
+            selectedIndex = static_cast<int>(i);
+        }
+    }
+    SendMessageW(combo, CB_SETCURSEL, selectedIndex, 0);
+    return combo;
+}
+
+std::vector<std::wstring> WhisperLanguageOptions() {
+    return {L"auto", L"ru", L"en", L"de", L"es", L"it", L"pt", L"ja", L"ko", L"zh"};
+}
+
+std::vector<std::wstring> VoiceLanguageOptions() {
+    return {L"ru", L"en", L"de", L"es", L"it", L"pt", L"ja", L"ko", L"zh"};
+}
+
+std::wstring SettingsLanguageButtonText(const std::wstring& value) {
+    return (value.empty() ? L"auto" : value) + L"  ▾";
+}
+
+void SetControlsVisible(HWND parent, std::initializer_list<int> ids, bool visible) {
+    for (int id : ids) {
+        HWND control = GetDlgItem(parent, id);
+        if (control) {
+            ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
+        }
+    }
 }
 
 UINT TooltipInfoSize();
@@ -348,6 +652,33 @@ bool ApplySelectedFfmpegPath(HWND owner, HINSTANCE instance, AppConfig& config, 
     return true;
 }
 
+bool ApplySelectedWhisperPath(HWND owner, HINSTANCE instance, AppConfig& config, const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path executable = path / L"whisper-cli.exe";
+    if (!std::filesystem::is_regular_file(executable, ec)) {
+        ec.clear();
+        const std::filesystem::path discoveredDir = WhisperManager::FindExecutableDir(path);
+        executable = discoveredDir.empty() ? std::filesystem::path{} : discoveredDir / L"whisper-cli.exe";
+    }
+    if (executable.empty() || !std::filesystem::is_regular_file(executable, ec)) {
+        ShowErrorDialog(owner, instance, L"Whisper не найден", L"В выбранной папке не найден whisper-cli.exe.");
+        return false;
+    }
+    config.whisperPath = executable;
+    config.whisperBackend = WhisperBackend::Custom;
+    return true;
+}
+
+bool ApplySelectedVotPath(HWND owner, HINSTANCE instance, AppConfig& config, const std::filesystem::path& path) {
+    const VotExeStatus status = VotExeManager::ResolveUserPath(path);
+    if (!status.available) {
+        ShowErrorDialog(owner, instance, L"VOT helper не найден", status.message);
+        return false;
+    }
+    config.votExePath = status.executable;
+    return true;
+}
+
 FfmpegStatus ResolveDialogFfmpegStatus(const DialogState* state) {
     if (!state || !state->config) {
         return {};
@@ -373,18 +704,85 @@ std::wstring FfmpegDialogMessage(const FfmpegStatus& status) {
     return L"FFmpeg не найден. Без него приложение сможет скачивать только готовые единые файлы без переконвертации и объединения отдельных видео/аудио дорожек.";
 }
 
+std::wstring WhisperDialogTitle(const ToolInstallStatus& status, bool modelReady) {
+    if (status.installed && modelReady) {
+        return L"Whisper.cpp готов";
+    }
+    if (status.installed) {
+        return L"Нужна модель Whisper";
+    }
+    return L"Whisper.cpp не найден";
+}
+
+std::wstring WhisperDialogMessage(const ToolInstallStatus& status, const std::filesystem::path& modelPath, bool modelReady) {
+    std::wstring message = status.installed
+        ? L"whisper-cli.exe найден и может использоваться для локальной транскрибации."
+        : L"Whisper.cpp нужен для локальной транскрибации без VOT.";
+    message += L"\n\nwhisper-cli.exe:\n";
+    message += status.executable.empty() ? L"-" : status.executable.wstring();
+    message += L"\n\nМодель:\n";
+    message += modelReady ? modelPath.wstring() : L"Не найдена. Можно скачать рекомендуемую модель.";
+    return message;
+}
+
+std::wstring VotDialogTitle(const VotExeStatus& status) {
+    return status.available ? L"VOT helper готов" : L"VOT helper не найден";
+}
+
+std::wstring VotDialogMessage(const VotExeStatus& status) {
+    if (status.available) {
+        return L"vot-helper.exe найден и будет использоваться для перевода и VOT-транскрибации.\n\nПуть:\n" +
+            status.executable.wstring();
+    }
+    return L"vot-helper.exe нужен для Voice Over Translation и VOT-транскрибации.\n\nМожно установить его автоматически или выбрать папку с готовым EXE.";
+}
+
+std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state) {
+    if (!state || !state->config) {
+        return {};
+    }
+    if (!state->config->whisperModelPath.empty()) {
+        return state->config->whisperModelPath;
+    }
+    return state->paths ? state->paths->localWhisperModelPath() : std::filesystem::path{};
+}
+
+bool IsRegularFile(const std::filesystem::path& path) {
+    std::error_code ec;
+    return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
+const WhisperModelInfo* RecommendedWhisperModel(const std::vector<WhisperModelInfo>& catalog) {
+    auto it = std::find_if(catalog.begin(), catalog.end(), [](const WhisperModelInfo& model) {
+        return model.recommended;
+    });
+    return it != catalog.end() ? &*it : (catalog.empty() ? nullptr : &catalog.front());
+}
+
+std::wstring BuildAffectedFilesMessage(const std::vector<std::filesystem::path>& affectedFiles) {
+    std::wstring message = L"Будут перезаписаны или изменены следующие файлы:\n\n";
+    for (const std::filesystem::path& path : affectedFiles) {
+        message += L"- ";
+        message += path.wstring();
+        message += L"\n";
+    }
+    return message;
+}
+
 void RegisterDialogClasses(HINSTANCE instance);
 LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK LogCopyMenuProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK SettingsComboMenuProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 HWND CreateLogView(HWND parent, HINSTANCE instance, const std::wstring& text);
 LRESULT CALLBACK ScrollTextProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
-HWND CreateDarkButton(HWND parent, HINSTANCE instance, const wchar_t* text, int id, bool primary) {
+HWND CreateDarkButton(HWND parent, HINSTANCE instance, const wchar_t* text, int id, bool primary, bool onCard = true) {
     auto* state = new ButtonState{};
     state->commandId = id;
     state->primary = primary;
+    state->onCard = onCard;
     state->text = text;
 
     HWND button = CreateWindowExW(
@@ -427,10 +825,38 @@ void SetDarkButtonState(HWND parent, int id, bool primary, const std::wstring& t
     InvalidateRect(button, nullptr, TRUE);
 }
 
+void SetDarkButtonEnabled(HWND parent, int id, bool enabled) {
+    HWND button = GetDlgItem(parent, id);
+    if (!button) {
+        return;
+    }
+    ButtonState* state = GetButtonState(button);
+    if (!state) {
+        return;
+    }
+    state->enabled = enabled;
+    if (!enabled) {
+        state->pressed = false;
+        state->hot = false;
+    }
+    InvalidateRect(button, nullptr, TRUE);
+}
+
 void RefreshSettingsButtons(DialogState* state) {
     if (!state || !state->window) {
         return;
     }
+
+    RECT client = {};
+    GetClientRect(state->window, &client);
+    const bool collapsed = IsSettingsSidebarCollapsed(state, client.right);
+
+    SetDarkButtonState(state->window, IdSettingsToggleSidebar, false, collapsed ? L">" : L"<");
+    SetDarkButtonState(state->window, IdSettingsNavDownloads, state->settingsSection == SettingsSection::Downloads, collapsed ? L"↓" : L"Загрузки");
+    SetDarkButtonState(state->window, IdSettingsNavTranscription, state->settingsSection == SettingsSection::Transcription, collapsed ? L"≡" : L"Транскрибация");
+    SetDarkButtonState(state->window, IdSettingsNavTranslation, state->settingsSection == SettingsSection::Translation, collapsed ? TranslationSettingsCollapsedIcon() : L"Перевод");
+    SetDarkButtonState(state->window, IdSettingsNavTools, state->settingsSection == SettingsSection::Tools, collapsed ? L"⚙" : L"Инструменты");
+    SetDarkButtonState(state->window, IdSettingsNavAbout, state->settingsSection == SettingsSection::About, collapsed ? L"ⓘ" : L"О программе");
 
     SetDarkButtonState(state->window, 101, state->workingConfig.quality == L"audio");
     SetDarkButtonState(state->window, 102, state->workingConfig.quality == L"360p");
@@ -450,6 +876,28 @@ void RefreshSettingsButtons(DialogState* state) {
         state->workingConfig.autoUpdateApp,
         state->workingConfig.autoUpdateApp ? L"Автопроверка: Вкл" : L"Автопроверка: Выкл"
     );
+    SetDarkButtonState(state->window, IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
+    SetDarkButtonState(state->window, IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
+    SetDarkButtonState(state->window, IdWhisperLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.whisperLanguage));
+    SetDarkButtonState(state->window, IdVoiceLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.voiceOverLanguage));
+    SetDarkButtonState(state->window, IdVoiceModeOff, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Off));
+    SetDarkButtonState(state->window, IdVoiceModeTrack, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack));
+    SetDarkButtonState(state->window, IdVoiceModeMix, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Mix, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Mix));
+    SetDarkButtonState(state->window, IdSubtitleModeOff, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::Off, SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::Off));
+    SetDarkButtonState(state->window, IdSubtitleModeTrack, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::SubtitleTrack, SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::SubtitleTrack));
+    SetDarkButtonState(state->window, IdSubtitleModeBurn, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::BurnIn));
+    SetDarkButtonState(state->window, IdYtDlpDetails, state->ytDlpDetailsExpanded, state->ytDlpDetailsExpanded ? L"Скрыть" : L"Подробно");
+    SetDarkButtonState(state->window, IdFfmpegDetails, state->ffmpegDetailsExpanded, state->ffmpegDetailsExpanded ? L"Скрыть" : L"Подробно");
+    SetDarkButtonState(state->window, IdWhisperDetails, state->whisperDetailsExpanded, state->whisperDetailsExpanded ? L"Скрыть" : L"Подробно");
+    SetDarkButtonState(state->window, IdVotDetails, state->votDetailsExpanded, state->votDetailsExpanded ? L"Скрыть" : L"Подробно");
+
+    const bool ffmpegReady = IsFfmpegReady(state);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeOff, true);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeTrack, ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeBurn, ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdVoiceModeOff, true);
+    SetDarkButtonEnabled(state->window, IdVoiceModeTrack, ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdVoiceModeMix, ffmpegReady);
 }
 
 HWND CreateScrollText(HWND parent, HINSTANCE instance, const std::wstring& text) {
@@ -595,8 +1043,11 @@ void LayoutFfmpegDialog(DialogState* state, int width, int height) {
     const int buttonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
     const int buttonLeft = panelLeft + kDialogButtonInset;
     const int availableWidth = panelRight - panelLeft - (kDialogButtonInset * 2);
-    const int buttonWidth = (availableWidth - (kDialogButtonGap * 2)) / 3;
-    const std::array<int, 3> ids = {IdInstall, IdChooseFolder, IdSkip};
+    const std::vector<int> ids = state->type == DialogType::Whisper
+        ? std::vector<int>{IdInstall, IdWhisperDownloadModel, IdChooseFolder, IdSkip}
+        : std::vector<int>{IdInstall, IdChooseFolder, IdSkip};
+    const int buttonWidth = (availableWidth - (kDialogButtonGap * static_cast<int>(ids.size() - 1))) /
+        static_cast<int>(ids.size());
     int x = buttonLeft;
     for (int id : ids) {
         HWND button = GetDlgItem(state->window, id);
@@ -657,66 +1108,226 @@ void LayoutLogsDialog(DialogState* state, int width, int height) {
 }
 
 void LayoutSettingsDialog(DialogState* state, int width, int height) {
-    UNREFERENCED_PARAMETER(width);
+    RefreshSettingsButtons(state);
+
+    const RECT sidebar = SettingsSidebarRect(state, width, height);
+    const RECT content = SettingsContentRect(state, width, height);
+
+    HWND toggle = GetDlgItem(state->window, IdSettingsToggleSidebar);
+    if (toggle) {
+        MoveWindow(toggle, sidebar.right - 46, sidebar.top + 16, 32, 32, TRUE);
+    }
+    const std::array<int, 4> navIds = {
+        IdSettingsNavDownloads,
+        IdSettingsNavTranscription,
+        IdSettingsNavTranslation,
+        IdSettingsNavTools
+    };
+    int navTop = sidebar.top + 70;
+    for (int id : navIds) {
+        HWND button = GetDlgItem(state->window, id);
+        if (button) {
+            MoveWindow(
+                button,
+                sidebar.left + 12,
+                navTop,
+                std::max(36, static_cast<int>(sidebar.right - sidebar.left - 24)),
+                36,
+                TRUE
+            );
+            navTop += 44;
+        }
+    }
+    HWND aboutButton = GetDlgItem(state->window, IdSettingsNavAbout);
+    if (aboutButton) {
+        MoveWindow(
+            aboutButton,
+            sidebar.left + 12,
+            sidebar.bottom - 12 - 36,
+            std::max(36, static_cast<int>(sidebar.right - sidebar.left - 24)),
+            36,
+            TRUE
+        );
+    }
 
     const std::array<int, 6> qualityIds = {101, 102, 103, 104, 105, 106};
-    int x = 24;
+    RECT card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
+    int x = card.left + kSettingsCardPadding;
+    const int qualityWidth = std::max(62, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 5 * 8) / 6));
     for (int id : qualityIds) {
         HWND button = GetDlgItem(state->window, id);
         if (button) {
-            MoveWindow(button, x, 118, 82, 32, TRUE);
-            x += 90;
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, qualityWidth, 32, TRUE);
+            x += qualityWidth + 8;
         }
     }
 
     const std::array<int, 4> containerIds = {111, 112, 113, 114};
-    x = 24;
+    card = SettingsStackCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
+    x = card.left + kSettingsCardPadding;
+    const int containerWidth = std::max(76, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 3 * 10) / 4));
     for (int id : containerIds) {
         HWND button = GetDlgItem(state->window, id);
         if (button) {
-            MoveWindow(button, x, 206, 96, 32, TRUE);
-            x += 104;
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, containerWidth, 32, TRUE);
+            x += containerWidth + 10;
         }
     }
 
     HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
-    HWND about = GetDlgItem(state->window, IdAbout);
+    HWND checkUpdates = GetDlgItem(state->window, IdCheckUpdates);
     HWND autoUpdate = GetDlgItem(state->window, IdAutoUpdate);
     HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
     HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
+    HWND transcriptionWhisper = GetDlgItem(state->window, IdTranscriptionWhisper);
+    HWND transcriptionVot = GetDlgItem(state->window, IdTranscriptionVot);
+    HWND whisperLanguage = GetDlgItem(state->window, IdWhisperLanguageEdit);
+    HWND chooseWhisper = GetDlgItem(state->window, IdChooseWhisperFolder);
+    HWND chooseVot = GetDlgItem(state->window, IdChooseVotFolder);
+    HWND subtitleOff = GetDlgItem(state->window, IdSubtitleModeOff);
+    HWND subtitleTrack = GetDlgItem(state->window, IdSubtitleModeTrack);
+    HWND subtitleBurn = GetDlgItem(state->window, IdSubtitleModeBurn);
+    HWND voiceLanguage = GetDlgItem(state->window, IdVoiceLanguageEdit);
+    HWND voiceOff = GetDlgItem(state->window, IdVoiceModeOff);
+    HWND voiceTrack = GetDlgItem(state->window, IdVoiceModeTrack);
+    HWND voiceMix = GetDlgItem(state->window, IdVoiceModeMix);
+    HWND transcriptionTools = GetDlgItem(state->window, IdTranscriptionOpenTools);
+    HWND translationTools = GetDlgItem(state->window, IdTranslationOpenTools);
+    HWND chooseWhisperDetails = GetDlgItem(state->window, IdWhisperDetails);
+    HWND chooseVotDetails = GetDlgItem(state->window, IdVotDetails);
+    HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
+    HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
     HWND cancel = GetDlgItem(state->window, IdCancel);
     HWND ok = GetDlgItem(state->window, IdOk);
+
+    card = SettingsStackCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
     if (autoUpdate) {
-        MoveWindow(autoUpdate, 24, 296, 190, 34, TRUE);
+        MoveWindow(autoUpdate, card.left + kSettingsCardPadding, card.top + 108, 210, 34, TRUE);
     }
+    const RECT parallelValue = SettingsParallelValueRect(state, width, height);
     if (parallelMinus) {
-        MoveWindow(parallelMinus, 414, 296, 34, 34, TRUE);
+        MoveWindow(parallelMinus, parallelValue.left - 46 - kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
     }
     if (parallelPlus) {
-        MoveWindow(parallelPlus, 520, 296, 34, 34, TRUE);
+        MoveWindow(parallelPlus, parallelValue.right + kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
     }
+
+    card = SettingsTranscriptionEngineCardRect(state, width, height);
+    const int twoButtonWidth = std::max(120, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 12) / 2));
+    if (transcriptionWhisper) {
+        MoveWindow(transcriptionWhisper, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, twoButtonWidth, 34, TRUE);
+    }
+    if (transcriptionVot) {
+        MoveWindow(transcriptionVot, card.left + kSettingsCardPadding + twoButtonWidth + 12, card.top + kSettingsCardControlTop, twoButtonWidth, 34, TRUE);
+    }
+    card = SettingsTranscriptionLanguageCardRect(state, width, height);
+    const int transcriptionModeTop = card.top + kSettingsCardControlTop;
+    if (whisperLanguage) {
+        MoveWindow(whisperLanguage, card.left + kSettingsCardPadding, transcriptionModeTop, 150, 34, TRUE);
+    }
+    if (subtitleOff) {
+        MoveWindow(subtitleOff, card.left + kSettingsCardPadding + 166, transcriptionModeTop, 86, 34, TRUE);
+    }
+    if (subtitleTrack) {
+        MoveWindow(subtitleTrack, card.left + kSettingsCardPadding + 264, transcriptionModeTop, 164, 34, TRUE);
+    }
+    if (subtitleBurn) {
+        MoveWindow(subtitleBurn, card.left + kSettingsCardPadding + 440, transcriptionModeTop, 142, 34, TRUE);
+    }
+    card = SettingsTranscriptionToolsCardRect(state, width, height);
+    if (transcriptionTools) {
+        MoveWindow(transcriptionTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
+    }
+
+    card = SettingsTranslationWorkflowCardRect(state, width, height);
+    const int translationModeTop = card.top + kSettingsCardControlTop;
+    if (voiceLanguage) {
+        MoveWindow(voiceLanguage, card.left + kSettingsCardPadding, translationModeTop, 150, 34, TRUE);
+    }
+    if (voiceOff) {
+        MoveWindow(voiceOff, card.left + kSettingsCardPadding + 166, translationModeTop, 86, 34, TRUE);
+    }
+    if (voiceTrack) {
+        MoveWindow(voiceTrack, card.left + kSettingsCardPadding + 264, translationModeTop, 142, 34, TRUE);
+    }
+    if (voiceMix) {
+        MoveWindow(voiceMix, card.left + kSettingsCardPadding + 418, translationModeTop, 118, 34, TRUE);
+    }
+    card = SettingsTranslationToolsCardRect(state, width, height);
+    if (translationTools) {
+        MoveWindow(translationTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
+    }
+
+    auto layoutToolCard = [&](int index, HWND action, HWND details) {
+        const RECT toolCard = SettingsToolCardRect(state, width, height, index);
+        const int actionWidth = index == 0 ? 0 : 142;
+        const int detailsWidth = 112;
+        const int y = toolCard.top + 18;
+        if (details) {
+            MoveWindow(details, toolCard.right - kSettingsCardPadding - detailsWidth, y, detailsWidth, 34, TRUE);
+        }
+        if (action) {
+            MoveWindow(
+                action,
+                toolCard.right - kSettingsCardPadding - detailsWidth - kDialogButtonGap - actionWidth,
+                y,
+                actionWidth,
+                34,
+                TRUE
+            );
+        }
+    };
+    layoutToolCard(0, nullptr, ytDlpDetails);
+    layoutToolCard(1, ffmpeg, ffmpegDetails);
+    layoutToolCard(2, chooseWhisper, chooseWhisperDetails);
+    layoutToolCard(3, chooseVot, chooseVotDetails);
+
+    card = SettingsStackCardRect(state, width, height, 0, kSettingsAboutCardHeight);
+    if (checkUpdates) {
+        MoveWindow(checkUpdates, card.left + kSettingsCardPadding, card.top + 112, 188, 34, TRUE);
+    }
+
     if (ffmpeg) {
-        MoveWindow(ffmpeg, 24, 416, 178, 34, TRUE);
+        SetWindowTextW(ffmpeg, ToolSetupButtonText().c_str());
+    }
+    if (chooseWhisper) {
+        SetWindowTextW(chooseWhisper, ToolSetupButtonText().c_str());
+    }
+    if (chooseVot) {
+        SetWindowTextW(chooseVot, ToolSetupButtonText().c_str());
     }
     const int panelRight = width - kDialogPanelInset;
-    const int panelBottom = height - kDialogPanelInset;
-    const int bottomButtonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
-    if (about) {
-        MoveWindow(about, 24, bottomButtonY, 178, kDialogButtonHeight, TRUE);
-    }
+    const int bottomButtonY = SettingsBottomButtonY(height);
     if (cancel) {
         MoveWindow(
             cancel,
-            panelRight - kDialogButtonInset - 112 - kDialogButtonGap - 112,
+            panelRight - kDialogButtonInset - kSettingsBottomButtonWidth - kDialogButtonGap - kSettingsBottomButtonWidth,
             bottomButtonY,
-            112,
+            kSettingsBottomButtonWidth,
             kDialogButtonHeight,
             TRUE
         );
     }
     if (ok) {
-        MoveWindow(ok, panelRight - kDialogButtonInset - 112, bottomButtonY, 112, kDialogButtonHeight, TRUE);
+        MoveWindow(ok, panelRight - kDialogButtonInset - kSettingsBottomButtonWidth, bottomButtonY, kSettingsBottomButtonWidth, kDialogButtonHeight, TRUE);
     }
+
+    SetControlsVisible(state->window, {
+        101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
+        IdAutoUpdate, IdParallelMinus, IdParallelPlus
+    }, state->settingsSection == SettingsSection::Downloads);
+    SetControlsVisible(state->window, {
+        IdTranscriptionWhisper, IdTranscriptionVot, IdWhisperLanguageEdit,
+        IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn, IdTranscriptionOpenTools
+    }, state->settingsSection == SettingsSection::Transcription);
+    SetControlsVisible(state->window, {
+        IdVoiceLanguageEdit, IdVoiceModeOff, IdVoiceModeTrack, IdVoiceModeMix, IdTranslationOpenTools
+    }, state->settingsSection == SettingsSection::Translation);
+    SetControlsVisible(state->window, {
+        IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
+        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
+    }, state->settingsSection == SettingsSection::Tools);
+    SetControlsVisible(state->window, {IdCheckUpdates}, state->settingsSection == SettingsSection::About);
 }
 
 void LayoutDialog(DialogState* state, int width, int height) {
@@ -724,6 +1335,7 @@ void LayoutDialog(DialogState* state, int width, int height) {
     case DialogType::Info:
     case DialogType::Error:
     case DialogType::Confirmation:
+    case DialogType::AffectedFiles:
     case DialogType::About:
         LayoutMessageDialog(state, width, height);
         break;
@@ -731,6 +1343,8 @@ void LayoutDialog(DialogState* state, int width, int height) {
         LayoutLogsDialog(state, width, height);
         break;
     case DialogType::Ffmpeg:
+    case DialogType::Whisper:
+    case DialogType::Vot:
         LayoutFfmpegDialog(state, width, height);
         break;
     case DialogType::Progress:
@@ -740,6 +1354,15 @@ void LayoutDialog(DialogState* state, int width, int height) {
         LayoutSettingsDialog(state, width, height);
         break;
     }
+}
+
+void RelayoutDialog(DialogState* state) {
+    if (!state || !state->window) {
+        return;
+    }
+    RECT client = {};
+    GetClientRect(state->window, &client);
+    LayoutDialog(state, client.right, client.bottom);
 }
 
 void DrawDialogBackground(HDC dc, const RECT& client) {
@@ -758,7 +1381,9 @@ void DrawMessageDialog(DialogState* state, HDC dc, const RECT& client) {
     RECT titleRect = {24, 28, client.right - 24, 56};
     DrawTextBlock(dc, state->title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    const std::wstring subtitle = state->type == DialogType::Error
+    const std::wstring subtitle = !state->subtitle.empty()
+        ? state->subtitle
+        : state->type == DialogType::Error
         ? L"Ошибка. Текст можно скопировать для диагностики."
         : (state->type == DialogType::Confirmation
             ? L"Доступно обновление приложения."
@@ -863,87 +1488,277 @@ void DrawLogsDialog(DialogState* state, HDC dc, const RECT& client) {
     DeleteObject(textFont);
 }
 
+void DrawRoundedPanel(HDC dc, const RECT& rect, Gdiplus::Color fill, Gdiplus::Color border, int radius) {
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    AddRoundedRect(path, rect, radius);
+    Gdiplus::SolidBrush fillBrush(fill);
+    Gdiplus::Pen borderPen(border, 1.0f);
+    graphics.FillPath(&fillBrush, &path);
+    graphics.DrawPath(&borderPen, &path);
+}
+
+void DrawSettingsCard(
+    HDC dc,
+    const RECT& rect,
+    const std::wstring& title,
+    const std::wstring& subtitle,
+    HFONT labelFont,
+    HFONT textFont,
+    int rightReserve = 18
+) {
+    DrawRoundedPanel(dc, rect, Gdiplus::Color(255, 35, 35, 38), Gdiplus::Color(255, 48, 48, 52), 8);
+    RECT titleRect = {rect.left + kSettingsCardPadding, rect.top + 14, rect.right - rightReserve, rect.top + 38};
+    DrawTextBlock(dc, title, titleRect, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    RECT subtitleRect = {rect.left + kSettingsCardPadding, rect.top + 40, rect.right - rightReserve, rect.top + 64};
+    DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void DrawToolStatusPill(HDC dc, const RECT& rect, const std::wstring& text, bool ok, HFONT smallFont) {
+    DrawRoundedPanel(
+        dc,
+        rect,
+        ok ? Gdiplus::Color(255, 28, 53, 39) : Gdiplus::Color(255, 56, 37, 41),
+        ok ? Gdiplus::Color(255, 70, 124, 91) : Gdiplus::Color(255, 122, 58, 66),
+        8
+    );
+    DrawTextBlock(
+        dc,
+        text,
+        rect,
+        ok ? RGB(171, 230, 193) : RGB(255, 190, 198),
+        smallFont,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+    );
+}
+
+void DrawUtilityStatusPath(
+    HDC dc,
+    const std::wstring& label,
+    const std::filesystem::path& path,
+    int left,
+    int top,
+    int right,
+    HFONT textFont
+) {
+    RECT labelRect = {left, top, right, top + 20};
+    DrawTextBlock(dc, label, labelRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    RECT pathRect = {left, top + 22, right, top + 44};
+    const std::wstring text = path.empty() ? L"-" : path.wstring();
+    DrawTextBlock(dc, text, pathRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void DrawUtilityStatusLine(
+    HDC dc,
+    const std::wstring& label,
+    const std::filesystem::path& path,
+    int left,
+    int top,
+    int right,
+    HFONT textFont
+) {
+    const std::wstring text = label + L" " + (path.empty() ? L"-" : path.wstring());
+    DrawTextBlock(
+        dc,
+        text,
+        {left, top, right, top + 20},
+        kMutedTextColor,
+        textFont,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+    );
+}
+
 void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawDialogBackground(dc, client);
 
-    HFONT titleFont = CreateUiFont(-18, FW_SEMIBOLD);
+    HFONT titleFont = CreateUiFont(-22, FW_SEMIBOLD);
     HFONT labelFont = CreateUiFont(-15, FW_SEMIBOLD);
     HFONT textFont = CreateUiFont(-14, FW_NORMAL);
+    HFONT smallFont = CreateUiFont(-12, FW_NORMAL);
 
-    RECT titleRect = {24, 28, client.right - 24, 58};
-    DrawTextBlock(dc, state->title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    RECT qualityLabel = {24, 84, client.right - 24, 110};
-    DrawTextBlock(dc, L"Качество по умолчанию", qualityLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    RECT containerLabel = {24, 172, client.right - 24, 198};
-    DrawTextBlock(dc, L"Контейнер", containerLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    RECT behaviorLabel = {24, 266, client.right - 24, 292};
-    DrawTextBlock(dc, L"Поведение", behaviorLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    DrawTextBlock(dc, L"Параллельные загрузки", {238, 296, 410, 330}, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    DrawTextBlock(
-        dc,
-        std::to_wstring(state->workingConfig.maxParallelDownloads),
-        kParallelValueRect,
-        kTextColor,
-        labelFont,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE
-    );
-
-    RECT ffmpegLabel = {24, 354, client.right - 24, 380};
-    DrawTextBlock(dc, L"FFmpeg", ffmpegLabel, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-    std::wstring ffmpegText = L"Не выбран";
-    if (state->paths) {
-        const FfmpegStatus status = FfmpegManager::Resolve(*state->paths, state->workingConfig);
-        if (status.available) {
-            ffmpegText = L"Найден: " + status.ffmpegExe.wstring();
-        }
-    } else if (!state->workingConfig.ffmpegPath.empty()) {
-        const FfmpegStatus status = FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath);
-        ffmpegText = status.available ? L"Найден: " + status.ffmpegExe.wstring() : L"Указанный путь недоступен";
+    const RECT sidebar = SettingsSidebarRect(state, client.right, client.bottom);
+    const RECT content = SettingsContentRect(state, client.right, client.bottom);
+    const bool collapsed = IsSettingsSidebarCollapsed(state, client.right);
+    DrawRoundedPanel(dc, sidebar, Gdiplus::Color(255, 25, 25, 28), Gdiplus::Color(255, 48, 48, 52), 8);
+    if (!collapsed) {
+        DrawTextBlock(
+            dc,
+            L"Настройки",
+            {sidebar.left + 16, sidebar.top + 18, sidebar.right - 54, sidebar.top + 52},
+            kTextColor,
+            labelFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE
+        );
     }
-    RECT ffmpegTextRect = {24, 380, client.right - 24, 406};
-    DrawTextBlock(dc, ffmpegText, ffmpegTextRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    std::wstring sectionTitle;
+    std::wstring sectionSubtitle;
+    switch (state->settingsSection) {
+    case SettingsSection::Transcription:
+        sectionTitle = L"Транскрибация";
+        sectionSubtitle = L"Движок, язык исходной речи и интеграция субтитров.";
+        break;
+    case SettingsSection::Translation:
+        sectionTitle = L"Перевод";
+        sectionSubtitle = L"Целевой язык озвучки и FFmpeg-интеграция перевода.";
+        break;
+    case SettingsSection::Tools:
+        sectionTitle = L"Инструменты";
+        sectionSubtitle = L"Статус yt-dlp, FFmpeg, Whisper.cpp и Voice Over Translation.";
+        break;
+    case SettingsSection::About:
+        sectionTitle = L"О программе";
+        sectionSubtitle = L"Версия приложения и обновления.";
+        break;
+    case SettingsSection::Downloads:
+    default:
+        sectionTitle = L"Загрузки";
+        sectionSubtitle = L"Качество, контейнер и поведение новых задач.";
+        break;
+    }
+    DrawTextBlock(dc, sectionTitle, {content.left, content.top + 2, content.right, content.top + 36}, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    DrawTextBlock(dc, sectionSubtitle, {content.left, content.top + 36, content.right, content.top + 64}, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    const bool ffmpegReady = IsFfmpegReady(state);
+    if (state->settingsSection == SettingsSection::Downloads) {
+        DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight), L"Качество", L"Качество по умолчанию для новых загрузок.", labelFont, textFont);
+        DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"Контейнер", L"Формат итогового файла без изменения схемы имен.", labelFont, textFont);
+        const RECT behaviorCard = SettingsStackCardRect(state, client.right, client.bottom, 2, kSettingsBehaviorCardHeight);
+        DrawSettingsCard(dc, behaviorCard, L"Поведение", L"Автопроверка обновлений и параллельные загрузки.", labelFont, textFont);
+        DrawTextBlock(
+            dc,
+            L"Параллельные загрузки",
+            {
+                behaviorCard.left + kSettingsCardPadding,
+                behaviorCard.top + kSettingsCardControlTop,
+                behaviorCard.right - 180,
+                behaviorCard.top + kSettingsCardControlTop + 34
+            },
+            kTextColor,
+            textFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+        );
+        DrawTextBlock(dc, std::to_wstring(state->workingConfig.maxParallelDownloads), SettingsParallelValueRect(state, client.right, client.bottom), kTextColor, labelFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (state->settingsSection == SettingsSection::Transcription) {
+        DrawSettingsCard(dc, SettingsTranscriptionEngineCardRect(state, client.right, client.bottom), L"Движок", L"Whisper.cpp или vot-helper.exe для создания TXT/SRT.", labelFont, textFont);
+        DrawSettingsCard(
+            dc,
+            SettingsTranscriptionLanguageCardRect(state, client.right, client.bottom),
+            L"Язык и субтитры",
+            ffmpegReady ? L"FFmpeg-режимы доступны." : L"FFmpeg-режимы видимы, но требуют установленный FFmpeg.",
+            labelFont,
+            textFont
+        );
+        DrawSettingsCard(dc, SettingsTranscriptionToolsCardRect(state, client.right, client.bottom), L"Инструменты", L"Пути и установка доступны в разделе Инструменты.", labelFont, textFont, 220);
+    } else if (state->settingsSection == SettingsSection::Translation) {
+        DrawSettingsCard(
+            dc,
+            SettingsTranslationWorkflowCardRect(state, client.right, client.bottom),
+            L"Язык и интеграция",
+            ffmpegReady ? L"MP3 создается всегда; FFmpeg может встроить или смешать озвучку." : L"MP3 создается всегда; режимы видео требуют FFmpeg.",
+            labelFont,
+            textFont
+        );
+        DrawSettingsCard(dc, SettingsTranslationToolsCardRect(state, client.right, client.bottom), L"Инструменты", L"Путь vot-helper.exe задается в разделе Инструменты.", labelFont, textFont, 220);
+    } else if (state->settingsSection == SettingsSection::Tools) {
+        const ToolInstallStatus ytDlpStatus = state->paths ? YtDlpManager(*state->paths).Status() : ToolInstallStatus{};
+        RECT toolCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
+        DrawSettingsCard(dc, toolCard, L"yt-dlp", ytDlpStatus.installed ? L"Основной загрузчик найден." : L"Основной загрузчик не найден.", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, ytDlpStatus.installed ? L"Готов" : L"Нет", ytDlpStatus.installed, smallFont);
+        DrawToolStatusPill(dc, {toolCard.left + 122, toolCard.top + 68, toolCard.left + 246, toolCard.top + 92}, ytDlpStatus.version.empty() ? L"Версия" : ytDlpStatus.version, ytDlpStatus.installed, smallFont);
+        if (state->ytDlpDetailsExpanded) {
+            DrawUtilityStatusLine(dc, L"Путь:", ytDlpStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
+        }
+
+        const FfmpegStatus ffmpegStatus = state->paths
+            ? FfmpegManager::Resolve(*state->paths, state->workingConfig)
+            : FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath);
+        toolCard = SettingsToolCardRect(state, client.right, client.bottom, 1);
+        DrawSettingsCard(dc, toolCard, L"FFmpeg", ffmpegStatus.available ? L"Готов для контейнеров, субтитров и аудиодорожек." : L"Не найден или путь недоступен.", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, ffmpegStatus.available ? L"Готов" : L"Нет", ffmpegStatus.available, smallFont);
+        if (state->ffmpegDetailsExpanded) {
+            DrawUtilityStatusLine(dc, ffmpegStatus.available ? L"Путь:" : L"Статус:", ffmpegStatus.ffmpegExe, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
+        }
+
+        const ToolInstallStatus whisperStatus = state->paths ? WhisperManager::Resolve(*state->paths, state->workingConfig) : ToolInstallStatus{};
+        std::filesystem::path modelPath = state->workingConfig.whisperModelPath;
+        if (modelPath.empty() && state->paths) {
+            modelPath = state->paths->localWhisperModelPath();
+        }
+        std::error_code modelEc;
+        const bool modelReady = !modelPath.empty() && std::filesystem::is_regular_file(modelPath, modelEc);
+        toolCard = SettingsToolCardRect(state, client.right, client.bottom, 2);
+        DrawSettingsCard(dc, toolCard, L"Whisper.cpp", whisperStatus.installed ? L"whisper-cli.exe найден." : L"Нужен для локальной транскрибации.", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, whisperStatus.installed ? L"Готов" : L"Нет", whisperStatus.installed, smallFont);
+        DrawToolStatusPill(dc, {toolCard.left + 122, toolCard.top + 68, toolCard.left + 232, toolCard.top + 92}, modelReady ? L"Модель" : L"Нет модели", modelReady, smallFont);
+        if (state->whisperDetailsExpanded) {
+            DrawUtilityStatusLine(dc, L"whisper-cli.exe:", whisperStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
+            DrawUtilityStatusLine(dc, L"Модель:", modelPath, toolCard.left + 18, toolCard.top + 120, toolCard.right - 18, textFont);
+        }
+
+        const VotExeStatus votStatus = state->paths
+            ? VotExeManager::Resolve(*state->paths, state->workingConfig)
+            : VotExeManager::ResolveUserPath(state->workingConfig.votExePath);
+        toolCard = SettingsToolCardRect(state, client.right, client.bottom, 3);
+        DrawSettingsCard(dc, toolCard, L"Voice Over Translation", votStatus.available ? L"vot-helper.exe найден." : (votStatus.message.empty() ? L"vot-helper.exe не найден." : votStatus.message), labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, votStatus.available ? L"Готов" : L"Нет", votStatus.available, smallFont);
+        DrawToolStatusPill(dc, {toolCard.left + 122, toolCard.top + 68, toolCard.left + 202, toolCard.top + 92}, L"EXE", votStatus.available, smallFont);
+        if (state->votDetailsExpanded) {
+            DrawUtilityStatusLine(dc, L"vot-helper.exe:", votStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
+        }
+    } else {
+        const RECT aboutCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
+        DrawSettingsCard(dc, aboutCard, L"YouTube Downloader", L"Портативный Win32-загрузчик с yt-dlp, FFmpeg, Whisper.cpp и VOT.", labelFont, textFont);
+        DrawTextBlock(
+            dc,
+            L"Версия: " YTD_APP_VERSION_WIDE,
+            {aboutCard.left + kSettingsCardPadding, aboutCard.top + 78, aboutCard.right - kSettingsCardPadding, aboutCard.top + 104},
+            kTextColor,
+            textFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE
+        );
+    }
 
     DeleteObject(titleFont);
     DeleteObject(labelFont);
     DeleteObject(textFont);
+    DeleteObject(smallFont);
 }
 
 void CreateMessageControls(DialogState* state) {
     state->scrollText = CreateScrollText(state->window, state->instance, state->message);
-    if (state->type == DialogType::Confirmation) {
-        HWND laterButton = CreateDarkButton(state->window, state->instance, L"Позже", IdCancel, false);
-        HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdOk, true);
-        AddDialogTooltip(state, laterButton, L"Закрывает предложение без установки обновления.");
-        AddDialogTooltip(state, installButton, L"Скачивает и устанавливает найденное обновление.");
+    if (state->type == DialogType::Confirmation || state->type == DialogType::AffectedFiles) {
+        const std::wstring cancelText = state->cancelButtonText.empty() ? L"Позже" : state->cancelButtonText;
+        const std::wstring primaryText = state->primaryButtonText.empty() ? L"Установить" : state->primaryButtonText;
+        HWND laterButton = CreateDarkButton(state->window, state->instance, cancelText.c_str(), IdCancel, false, false);
+        HWND primaryButton = CreateDarkButton(state->window, state->instance, primaryText.c_str(), IdOk, true, false);
+        AddDialogTooltip(state, laterButton, L"Закрывает окно без продолжения.");
+        AddDialogTooltip(state, primaryButton, L"Выполняет основное действие этого окна.");
         return;
     }
     if (state->type == DialogType::About) {
-        HWND updateButton = CreateDarkButton(state->window, state->instance, L"Проверить обновление", IdCheckUpdates, false);
+        HWND updateButton = CreateDarkButton(state->window, state->instance, L"Проверить обновление", IdCheckUpdates, false, false);
         AddDialogTooltip(state, updateButton, L"Проверяет наличие новой версии приложения.");
     }
-    HWND copyButton = CreateDarkButton(state->window, state->instance, L"Скопировать", IdCopy, false);
-    HWND okButton = CreateDarkButton(state->window, state->instance, L"OK", IdOk, true);
+    HWND copyButton = CreateDarkButton(state->window, state->instance, L"Скопировать", IdCopy, false, false);
+    HWND okButton = CreateDarkButton(state->window, state->instance, L"OK", IdOk, true, false);
     AddDialogTooltip(state, copyButton, L"Копирует текст этого окна в буфер обмена.");
     AddDialogTooltip(state, okButton, L"Закрывает окно.");
 }
 
 void CreateLogsControls(DialogState* state) {
     state->logView = CreateLogView(state->window, state->instance, state->message);
-    HWND copyButton = CreateDarkButton(state->window, state->instance, L"Скопировать всё", IdCopy, false);
-    HWND okButton = CreateDarkButton(state->window, state->instance, L"Закрыть", IdOk, true);
+    HWND copyButton = CreateDarkButton(state->window, state->instance, L"Скопировать всё", IdCopy, false, false);
+    HWND okButton = CreateDarkButton(state->window, state->instance, L"Закрыть", IdOk, true, false);
     AddDialogTooltip(state, copyButton, L"Копирует весь текущий лог в буфер обмена.");
     AddDialogTooltip(state, okButton, L"Закрывает окно логов.");
 }
 
 void CreateFfmpegControls(DialogState* state) {
-    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true);
-    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false);
-    HWND skipButton = CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false);
+    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true, false);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false, false);
+    HWND skipButton = CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false, false);
     AddDialogTooltip(state, installButton, L"Скачивает и настраивает локальный FFmpeg для объединения видео и аудио.");
     AddDialogTooltip(state, skipButton, L"Закрывает окно без настройки FFmpeg.");
     if (folderButton) {
@@ -953,6 +1768,26 @@ void CreateFfmpegControls(DialogState* state) {
             L"Выберите папку, где находится ffmpeg.exe, или папку выше, содержащую bin\\ffmpeg.exe, ffprobe.exe и ffplay.exe."
         );
     }
+}
+
+void CreateWhisperControls(DialogState* state) {
+    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true, false);
+    HWND modelButton = CreateDarkButton(state->window, state->instance, L"Скачать модель", IdWhisperDownloadModel, false, false);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false, false);
+    HWND skipButton = CreateDarkButton(state->window, state->instance, L"Закрыть", IdSkip, false, false);
+    AddDialogTooltip(state, installButton, L"Скачивает и настраивает whisper.cpp CPU.");
+    AddDialogTooltip(state, modelButton, L"Скачивает рекомендуемую модель Whisper.");
+    AddDialogTooltip(state, folderButton, L"Выберите папку, где находится whisper-cli.exe.");
+    AddDialogTooltip(state, skipButton, L"Закрывает окно без изменений.");
+}
+
+void CreateVotControls(DialogState* state) {
+    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true, false);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false, false);
+    HWND skipButton = CreateDarkButton(state->window, state->instance, L"Закрыть", IdSkip, false, false);
+    AddDialogTooltip(state, installButton, L"Скачивает и настраивает vot-helper.exe.");
+    AddDialogTooltip(state, folderButton, L"Выберите папку, где находится vot-helper.exe.");
+    AddDialogTooltip(state, skipButton, L"Закрывает окно без изменений.");
 }
 
 void StartFfmpegInstallWorker(DialogState* state) {
@@ -990,6 +1825,137 @@ void StartFfmpegInstallWorker(DialogState* state) {
             {
                 std::lock_guard lock(state->progressMutex);
                 state->progressError = L"Неизвестная ошибка установки FFmpeg";
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        }
+    });
+}
+
+void StartWhisperInstallWorker(DialogState* state) {
+    if (!state || !state->paths || !state->config || !state->cancelEvent) {
+        return;
+    }
+
+    HWND window = state->window;
+    const AppPaths paths = *state->paths;
+    AppConfig* config = state->config;
+    HANDLE cancelEvent = state->cancelEvent;
+
+    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
+        try {
+            const ToolInstallStatus status = WhisperManager::Install(
+                paths,
+                WhisperBackend::Cpu,
+                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
+                    {
+                        std::lock_guard lock(state->progressMutex);
+                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
+                    }
+                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                },
+                cancelEvent
+            );
+            config->whisperPath = status.executable;
+            config->whisperBackend = status.whisperBackend;
+            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+        } catch (const std::exception& ex) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        } catch (...) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = L"Неизвестная ошибка установки Whisper.cpp";
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        }
+    });
+}
+
+void StartWhisperModelDownloadWorker(DialogState* state) {
+    if (!state || !state->paths || !state->config || !state->cancelEvent) {
+        return;
+    }
+
+    HWND window = state->window;
+    const AppPaths paths = *state->paths;
+    AppConfig* config = state->config;
+    HANDLE cancelEvent = state->cancelEvent;
+
+    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
+        try {
+            const std::vector<WhisperModelInfo> catalog = WhisperManager::ModelCatalog();
+            const WhisperModelInfo* model = RecommendedWhisperModel(catalog);
+            if (!model) {
+                throw std::runtime_error("whisper model catalog is empty");
+            }
+            const std::filesystem::path modelPath = WhisperManager::DownloadModel(
+                paths,
+                *model,
+                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
+                    {
+                        std::lock_guard lock(state->progressMutex);
+                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
+                    }
+                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                },
+                cancelEvent
+            );
+            config->whisperModelPath = modelPath;
+            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+        } catch (const std::exception& ex) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        } catch (...) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = L"Неизвестная ошибка скачивания модели Whisper";
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        }
+    });
+}
+
+void StartVotInstallWorker(DialogState* state) {
+    if (!state || !state->paths || !state->config || !state->cancelEvent) {
+        return;
+    }
+
+    HWND window = state->window;
+    const AppPaths paths = *state->paths;
+    AppConfig* config = state->config;
+    HANDLE cancelEvent = state->cancelEvent;
+
+    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
+        try {
+            const VotExeStatus status = VotExeManager::Install(
+                paths,
+                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
+                    {
+                        std::lock_guard lock(state->progressMutex);
+                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
+                    }
+                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                },
+                cancelEvent
+            );
+            config->votExePath = status.executable;
+            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+        } catch (const std::exception& ex) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            }
+            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+        } catch (...) {
+            {
+                std::lock_guard lock(state->progressMutex);
+                state->progressError = L"Неизвестная ошибка установки VOT helper";
             }
             PostMessageW(window, kProgressDoneMessage, FALSE, 0);
         }
@@ -1042,16 +2008,29 @@ void StartAppUpdateWorker(DialogState* state) {
 }
 
 void CreateProgressControls(DialogState* state) {
-    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
+    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false, false);
     AddDialogTooltip(state, cancelButton, L"Отменяет текущую операцию.");
     if (state->progressMode == ProgressMode::AppUpdate) {
         StartAppUpdateWorker(state);
-    } else {
+    } else if (state->progressMode == ProgressMode::FfmpegInstall) {
         StartFfmpegInstallWorker(state);
+    } else if (state->progressMode == ProgressMode::WhisperInstall) {
+        StartWhisperInstallWorker(state);
+    } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
+        StartWhisperModelDownloadWorker(state);
+    } else if (state->progressMode == ProgressMode::VotInstall) {
+        StartVotInstallWorker(state);
     }
 }
 
 void CreateSettingsControls(DialogState* state) {
+    HWND collapseButton = CreateDarkButton(state->window, state->instance, L"<", IdSettingsToggleSidebar, false, false);
+    HWND downloadsNav = CreateDarkButton(state->window, state->instance, L"Загрузки", IdSettingsNavDownloads, true, false);
+    HWND transcriptionNav = CreateDarkButton(state->window, state->instance, L"Транскрибация", IdSettingsNavTranscription, false, false);
+    HWND translationNav = CreateDarkButton(state->window, state->instance, L"Перевод", IdSettingsNavTranslation, false, false);
+    HWND toolsNav = CreateDarkButton(state->window, state->instance, L"Инструменты", IdSettingsNavTools, false, false);
+    HWND aboutNav = CreateDarkButton(state->window, state->instance, L"О программе", IdSettingsNavAbout, false, false);
+
     const std::array<std::pair<int, const wchar_t*>, 6> qualityButtons = {{
         {101, L"Аудио"},
         {102, L"360p"},
@@ -1088,7 +2067,37 @@ void CreateSettingsControls(DialogState* state) {
         AddDialogTooltip(state, button, L"Выбирает контейнер итогового файла для новых задач.");
     }
 
-    HWND ffmpegButton = CreateDarkButton(state->window, state->instance, L"FFmpeg", IdFfmpeg, false);
+    HWND ffmpegButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdFfmpeg, false);
+    HWND transcriptionWhisperButton = CreateDarkButton(state->window, state->instance, L"Whisper", IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
+    HWND transcriptionVotButton = CreateDarkButton(state->window, state->instance, L"VOT", IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
+    HWND whisperLanguageEdit = CreateDarkButton(
+        state->window,
+        state->instance,
+        SettingsLanguageButtonText(state->workingConfig.whisperLanguage.empty() ? L"auto" : state->workingConfig.whisperLanguage).c_str(),
+        IdWhisperLanguageEdit,
+        false
+    );
+    HWND chooseWhisperButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdChooseWhisperFolder, false);
+    HWND chooseVotButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdChooseVotFolder, false);
+    HWND subtitleOffButton = CreateDarkButton(state->window, state->instance, L"Выкл", IdSubtitleModeOff, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::Off);
+    HWND subtitleTrackButton = CreateDarkButton(state->window, state->instance, SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::SubtitleTrack).c_str(), IdSubtitleModeTrack, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::SubtitleTrack);
+    HWND subtitleBurnButton = CreateDarkButton(state->window, state->instance, SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::BurnIn).c_str(), IdSubtitleModeBurn, state->workingConfig.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn);
+    HWND voiceLanguageEdit = CreateDarkButton(
+        state->window,
+        state->instance,
+        SettingsLanguageButtonText(state->workingConfig.voiceOverLanguage.empty() ? L"ru" : state->workingConfig.voiceOverLanguage).c_str(),
+        IdVoiceLanguageEdit,
+        false
+    );
+    HWND voiceOffButton = CreateDarkButton(state->window, state->instance, L"Выкл", IdVoiceModeOff, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off);
+    HWND voiceTrackButton = CreateDarkButton(state->window, state->instance, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack).c_str(), IdVoiceModeTrack, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack);
+    HWND voiceMixButton = CreateDarkButton(state->window, state->instance, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Mix).c_str(), IdVoiceModeMix, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Mix);
+    HWND transcriptionToolsButton = CreateDarkButton(state->window, state->instance, L"Открыть Инструменты", IdTranscriptionOpenTools, false);
+    HWND translationToolsButton = CreateDarkButton(state->window, state->instance, L"Открыть Инструменты", IdTranslationOpenTools, false);
+    HWND ytDlpDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdYtDlpDetails, false);
+    HWND ffmpegDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdFfmpegDetails, false);
+    HWND whisperDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdWhisperDetails, false);
+    HWND votDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdVotDetails, false);
     HWND autoUpdateButton = CreateDarkButton(
         state->window,
         state->instance,
@@ -1098,16 +2107,41 @@ void CreateSettingsControls(DialogState* state) {
     );
     HWND minusButton = CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
     HWND plusButton = CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
-    HWND aboutButton = CreateDarkButton(state->window, state->instance, L"О программе", IdAbout, false);
-    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false);
-    HWND saveButton = CreateDarkButton(state->window, state->instance, L"Сохранить", IdOk, true);
-    AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg.");
+    HWND checkUpdatesButton = CreateDarkButton(state->window, state->instance, L"Проверить обновления", IdCheckUpdates, false);
+    HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false, false);
+    HWND saveButton = CreateDarkButton(state->window, state->instance, L"Сохранить", IdOk, true, false);
+    AddDialogTooltip(state, collapseButton, L"Сворачивает или разворачивает боковую навигацию.");
+    AddDialogTooltip(state, downloadsNav, L"Открывает настройки загрузок.");
+    AddDialogTooltip(state, transcriptionNav, L"Открывает настройки транскрибации.");
+    AddDialogTooltip(state, translationNav, L"Открывает настройки перевода.");
+    AddDialogTooltip(state, toolsNav, L"Открывает статус и настройку инструментов.");
+    AddDialogTooltip(state, aboutNav, L"Открывает информацию о приложении.");
+    AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg и существующий поток установки.");
+    AddDialogTooltip(state, transcriptionWhisperButton, L"Использовать whisper-cli.exe для транскрибации.");
+    AddDialogTooltip(state, transcriptionVotButton, L"Использовать vot-helper.exe subtitles для получения SRT/TXT.");
+    AddDialogTooltip(state, whisperLanguageEdit, L"Язык исходной речи для Whisper/VOT.");
+    AddDialogTooltip(state, chooseWhisperButton, L"Открывает настройку Whisper.cpp, модели и выбора папки.");
+    AddDialogTooltip(state, chooseVotButton, L"Открывает настройку vot-helper.exe.");
+    AddDialogTooltip(state, subtitleOffButton, L"Сохранять TXT/SRT рядом с видео без изменения видеофайла.");
+    AddDialogTooltip(state, subtitleTrackButton, L"Добавлять SRT как отдельную дорожку субтитров через FFmpeg.");
+    AddDialogTooltip(state, subtitleBurnButton, L"Выжигать субтитры в изображение через FFmpeg.");
+    AddDialogTooltip(state, voiceLanguageEdit, L"Целевой язык перевода VOT.");
+    AddDialogTooltip(state, voiceOffButton, L"Сохранять перевод отдельным MP3 рядом с видео.");
+    AddDialogTooltip(state, voiceTrackButton, L"Добавлять перевод как отдельную аудиодорожку через FFmpeg.");
+    AddDialogTooltip(state, voiceMixButton, L"Смешивать перевод с оригинальной аудиодорожкой через FFmpeg.");
+    AddDialogTooltip(state, transcriptionToolsButton, L"Переходит к выбору и установке инструментов.");
+    AddDialogTooltip(state, translationToolsButton, L"Переходит к выбору и установке инструментов.");
+    AddDialogTooltip(state, ytDlpDetailsButton, L"Показывает или скрывает путь yt-dlp.");
+    AddDialogTooltip(state, ffmpegDetailsButton, L"Показывает или скрывает путь FFmpeg.");
+    AddDialogTooltip(state, whisperDetailsButton, L"Показывает или скрывает пути Whisper.cpp и модели.");
+    AddDialogTooltip(state, votDetailsButton, L"Показывает или скрывает путь vot-helper.exe.");
     AddDialogTooltip(state, autoUpdateButton, L"Включает или отключает автоматическую проверку обновлений приложения.");
     AddDialogTooltip(state, minusButton, L"Уменьшает количество параллельных загрузок.");
     AddDialogTooltip(state, plusButton, L"Увеличивает количество параллельных загрузок.");
-    AddDialogTooltip(state, aboutButton, L"Показывает информацию о приложении.");
+    AddDialogTooltip(state, checkUpdatesButton, L"Проверяет наличие новой версии приложения.");
     AddDialogTooltip(state, cancelButton, L"Закрывает настройки без сохранения изменений.");
     AddDialogTooltip(state, saveButton, L"Сохраняет выбранные настройки.");
+    RefreshSettingsButtons(state);
 }
 
 void RegisterDialogClasses(HINSTANCE instance) {
@@ -1157,6 +2191,64 @@ void RegisterDialogClasses(HINSTANCE instance) {
     logMenuClass.hbrBackground = nullptr;
     logMenuClass.lpszClassName = kLogCopyMenuClassName;
     RegisterClassExW(&logMenuClass);
+
+    WNDCLASSEXW comboMenuClass = {};
+    comboMenuClass.cbSize = sizeof(comboMenuClass);
+    comboMenuClass.lpfnWndProc = SettingsComboMenuProc;
+    comboMenuClass.hInstance = instance;
+    comboMenuClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    comboMenuClass.hbrBackground = nullptr;
+    comboMenuClass.lpszClassName = kSettingsComboMenuClassName;
+    RegisterClassExW(&comboMenuClass);
+}
+
+void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, bool whisperLanguage) {
+    if (!state || !state->window || !anchor) {
+        return;
+    }
+
+    auto* menuState = new SettingsComboMenuState{};
+    menuState->owner = state->window;
+    menuState->whisperLanguage = whisperLanguage;
+    menuState->values = whisperLanguage ? WhisperLanguageOptions() : VoiceLanguageOptions();
+
+    RECT anchorRect = {};
+    GetWindowRect(anchor, &anchorRect);
+    constexpr int itemHeight = 34;
+    const int menuWidth = std::max(150, static_cast<int>(anchorRect.right - anchorRect.left));
+    const int menuHeight = static_cast<int>(menuState->values.size()) * itemHeight + 8;
+
+    RECT workArea = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+    int x = anchorRect.left;
+    int y = anchorRect.bottom + 4;
+    if (x + menuWidth > workArea.right) {
+        x = workArea.right - menuWidth;
+    }
+    if (y + menuHeight > workArea.bottom) {
+        y = anchorRect.top - menuHeight - 4;
+    }
+
+    HWND menu = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        kSettingsComboMenuClassName,
+        L"",
+        WS_POPUP,
+        std::max(static_cast<int>(workArea.left), x),
+        std::max(static_cast<int>(workArea.top), y),
+        menuWidth,
+        menuHeight,
+        state->window,
+        nullptr,
+        state->instance,
+        menuState
+    );
+    if (!menu) {
+        delete menuState;
+        return;
+    }
+    ShowWindow(menu, SW_SHOW);
+    SetFocus(menu);
 }
 
 LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -1172,6 +2264,12 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 
     switch (message) {
     case WM_GETMINMAXINFO:
+        if (state && state->type == DialogType::Settings) {
+            auto* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lParam);
+            minMaxInfo->ptMinTrackSize.x = kSettingsMinWidth;
+            minMaxInfo->ptMinTrackSize.y = kSettingsMinHeight;
+            return 0;
+        }
         if (state && state->type == DialogType::Logs) {
             auto* minMaxInfo = reinterpret_cast<MINMAXINFO*>(lParam);
             minMaxInfo->ptMinTrackSize.x = 720;
@@ -1186,6 +2284,10 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 CreateSettingsControls(state);
             } else if (state->type == DialogType::Ffmpeg) {
                 CreateFfmpegControls(state);
+            } else if (state->type == DialogType::Whisper) {
+                CreateWhisperControls(state);
+            } else if (state->type == DialogType::Vot) {
+                CreateVotControls(state);
             } else if (state->type == DialogType::Progress) {
                 CreateProgressControls(state);
             } else if (state->type == DialogType::Logs) {
@@ -1217,7 +2319,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             PaintBuffered(window, [state](HDC dc, const RECT& client) {
                 if (state->type == DialogType::Settings) {
                     DrawSettingsDialog(state, dc, client);
-                } else if (state->type == DialogType::Ffmpeg) {
+                } else if (state->type == DialogType::Ffmpeg || state->type == DialogType::Whisper || state->type == DialogType::Vot) {
                     DrawFfmpegDialog(state, dc, client);
                 } else if (state->type == DialogType::Progress) {
                     DrawProgressDialog(state, dc, client);
@@ -1273,6 +2375,48 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 state->workingConfig.container = L"webm";
                 RefreshSettingsButtons(state);
                 return 0;
+            case IdSettingsNavDownloads:
+                state->settingsSection = SettingsSection::Downloads;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdSettingsNavTranscription:
+                state->settingsSection = SettingsSection::Transcription;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdSettingsNavTranslation:
+                state->settingsSection = SettingsSection::Translation;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdSettingsNavTools:
+            case IdTranscriptionOpenTools:
+            case IdTranslationOpenTools:
+                state->settingsSection = SettingsSection::Tools;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdSettingsNavAbout:
+                state->settingsSection = SettingsSection::About;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdSettingsToggleSidebar:
+                state->settingsSidebarCollapsed = !state->settingsSidebarCollapsed;
+                {
+                    RECT client = {};
+                    GetClientRect(window, &client);
+                    LayoutDialog(state, client.right, client.bottom);
+                }
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
             case IdAutoUpdate:
                 state->workingConfig.autoUpdateApp = !state->workingConfig.autoUpdateApp;
                 RefreshSettingsButtons(state);
@@ -1280,12 +2424,116 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdParallelMinus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 3, 10);
                 RefreshSettingsButtons(state);
-                InvalidateRect(state->window, &kParallelValueRect, FALSE);
+                InvalidateRect(state->window, nullptr, FALSE);
                 return 0;
             case IdParallelPlus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads + 1, 3, 10);
                 RefreshSettingsButtons(state);
-                InvalidateRect(state->window, &kParallelValueRect, FALSE);
+                InvalidateRect(state->window, nullptr, FALSE);
+                return 0;
+            case IdTranscriptionWhisper:
+                state->workingConfig.transcriptionEngine = TranscriptionEngine::Whisper;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdTranscriptionVot:
+                state->workingConfig.transcriptionEngine = TranscriptionEngine::Vot;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdWhisperLanguageEdit:
+                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdWhisperLanguageEdit), true);
+                return 0;
+            case IdVoiceLanguageEdit:
+                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), false);
+                return 0;
+            case IdVoiceModeOff:
+                state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdVoiceModeTrack:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
+                state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::AudioTrack;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdVoiceModeMix:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
+                state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Mix;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdSubtitleModeOff:
+                state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::Off;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdSubtitleModeTrack:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
+                state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::SubtitleTrack;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdSubtitleModeBurn:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
+                state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdChooseWhisperFolder:
+                if (state->type == DialogType::Settings) {
+                    if (state->paths && ShowWhisperDialog(window, state->instance, *state->paths, state->workingConfig)) {
+                        RefreshSettingsButtons(state);
+                        InvalidateRect(window, nullptr, FALSE);
+                        if (state->config) {
+                            *state->config = state->workingConfig;
+                        }
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                    }
+                    return 0;
+                }
+                return 0;
+            case IdChooseVotFolder:
+                if (state->type == DialogType::Settings) {
+                    if (state->paths && ShowVotDialog(window, state->instance, *state->paths, state->workingConfig)) {
+                        RefreshSettingsButtons(state);
+                        InvalidateRect(window, nullptr, FALSE);
+                        if (state->config) {
+                            *state->config = state->workingConfig;
+                        }
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                    }
+                    return 0;
+                }
+                return 0;
+            case IdYtDlpDetails:
+                state->ytDlpDetailsExpanded = !state->ytDlpDetailsExpanded;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdFfmpegDetails:
+                state->ffmpegDetailsExpanded = !state->ffmpegDetailsExpanded;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdWhisperDetails:
+                state->whisperDetailsExpanded = !state->whisperDetailsExpanded;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdVotDetails:
+                state->votDetailsExpanded = !state->votDetailsExpanded;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdCopy:
                 CopyTextToClipboard(window, state->message);
@@ -1330,12 +2578,61 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     }
                     return 0;
                 }
+                if (state->type == DialogType::Whisper && state->paths && state->config) {
+                    if (ShowWhisperInstallProgress(window, state->instance, *state->paths, *state->config)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
+                if (state->type == DialogType::Vot && state->paths && state->config) {
+                    if (ShowVotInstallProgress(window, state->instance, *state->paths, *state->config)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
                 DestroyWindow(window);
+                return 0;
+            case IdWhisperDownloadModel:
+                if (state->type == DialogType::Whisper && state->paths && state->config) {
+                    if (ShowWhisperModelDownloadProgress(window, state->instance, *state->paths, *state->config)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
                 return 0;
             case IdChooseFolder:
                 if (state->type == DialogType::Ffmpeg && state->config) {
                     const std::optional<std::filesystem::path> selected = PickFfmpegFolder(window);
                     if (selected && ApplySelectedFfmpegPath(window, state->instance, *state->config, *selected)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
+                if (state->type == DialogType::Whisper && state->config) {
+                    const std::optional<std::filesystem::path> selected = PickFolder(window, L"Выберите папку Whisper");
+                    if (selected && ApplySelectedWhisperPath(window, state->instance, *state->config, *selected)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
+                if (state->type == DialogType::Vot && state->config) {
+                    const std::optional<std::filesystem::path> selected = PickFolder(window, L"Выберите папку VOT helper");
+                    if (selected && ApplySelectedVotPath(window, state->instance, *state->config, *selected)) {
                         if (state->savedResult) {
                             *state->savedResult = true;
                         }
@@ -1361,11 +2658,17 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 return 0;
             case IdOk:
                 if (state->type == DialogType::Settings && state->config) {
+                    if (state->workingConfig.whisperLanguage.empty()) {
+                        state->workingConfig.whisperLanguage = L"auto";
+                    }
+                    if (state->workingConfig.voiceOverLanguage.empty()) {
+                        state->workingConfig.voiceOverLanguage = L"ru";
+                    }
                     *state->config = state->workingConfig;
                     if (state->savedResult) {
                         *state->savedResult = true;
                     }
-                } else if (state->type == DialogType::Confirmation && state->savedResult) {
+                } else if ((state->type == DialogType::Confirmation || state->type == DialogType::AffectedFiles) && state->savedResult) {
                     *state->savedResult = true;
                 }
                 DestroyWindow(window);
@@ -1399,9 +2702,17 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             state->progressDone = true;
             state->progressSuccess = wParam == TRUE;
             if (state->progressSuccess) {
-                state->message = state->progressMode == ProgressMode::AppUpdate
-                    ? L"Обновление скачано. Приложение будет закрыто и запущено заново."
-                    : L"FFmpeg установлен.";
+                if (state->progressMode == ProgressMode::AppUpdate) {
+                    state->message = L"Обновление скачано. Приложение будет закрыто и запущено заново.";
+                } else if (state->progressMode == ProgressMode::WhisperInstall) {
+                    state->message = L"Whisper.cpp установлен.";
+                } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
+                    state->message = L"Модель Whisper скачана.";
+                } else if (state->progressMode == ProgressMode::VotInstall) {
+                    state->message = L"VOT helper установлен.";
+                } else {
+                    state->message = L"FFmpeg установлен.";
+                }
                 if (state->savedResult) {
                     *state->savedResult = true;
                 }
@@ -1420,7 +2731,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     ? *error
                     : (state->progressMode == ProgressMode::AppUpdate
                         ? L"Не удалось обновить приложение."
-                        : L"Не удалось установить FFmpeg.");
+                        : (state->progressMode == ProgressMode::WhisperModelDownload
+                            ? L"Не удалось скачать модель Whisper."
+                            : (state->progressMode == ProgressMode::VotInstall
+                                ? L"Не удалось установить VOT helper."
+                                : (state->progressMode == ProgressMode::WhisperInstall
+                                    ? L"Не удалось установить Whisper.cpp."
+                                    : L"Не удалось установить FFmpeg."))));
             }
             SetDarkButtonState(window, IdCancel, state->progressSuccess, L"OK");
             InvalidateRect(window, nullptr, FALSE);
@@ -1485,7 +2802,7 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 1;
 
     case WM_MOUSEMOVE:
-        if (state && !state->hot) {
+        if (state && state->enabled && !state->hot) {
             state->hot = true;
             TRACKMOUSEEVENT track = {};
             track.cbSize = sizeof(track);
@@ -1505,7 +2822,7 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 0;
 
     case WM_LBUTTONDOWN:
-        if (state) {
+        if (state && state->enabled) {
             state->pressed = true;
             SetCapture(window);
             SetFocus(window);
@@ -1514,7 +2831,7 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 0;
 
     case WM_LBUTTONUP:
-        if (state) {
+        if (state && state->enabled) {
             if (GetCapture() == window) {
                 ReleaseCapture();
             }
@@ -1537,7 +2854,7 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
         return 0;
 
     case WM_KEYDOWN:
-        if (state && (wParam == VK_SPACE || wParam == VK_RETURN)) {
+        if (state && state->enabled && (wParam == VK_SPACE || wParam == VK_RETURN)) {
             SendMessageW(
                 GetParent(window),
                 WM_COMMAND,
@@ -1552,7 +2869,17 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
         {
             PaintBuffered(window, [state](HDC dc, const RECT& client) {
                 if (state) {
-                    UiRenderer::DrawButton(dc, client, state->text.c_str(), state->primary, state->pressed, state->hot, true);
+                    UiRenderer::DrawButton(
+                        dc,
+                        client,
+                        state->text.c_str(),
+                        state->primary,
+                        state->pressed,
+                        state->hot,
+                        true,
+                        state->enabled,
+                        state->onCard
+                    );
                 }
             });
         }
@@ -1947,6 +3274,120 @@ LRESULT CALLBACK LogCopyMenuProc(HWND window, UINT message, WPARAM wParam, LPARA
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
+void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, int index) {
+    if (!menuState || index < 0 || index >= static_cast<int>(menuState->values.size())) {
+        return;
+    }
+    DialogState* ownerState = reinterpret_cast<DialogState*>(GetWindowLongPtrW(menuState->owner, GWLP_USERDATA));
+    if (!ownerState) {
+        return;
+    }
+
+    const std::wstring value = menuState->values[static_cast<size_t>(index)];
+    if (menuState->whisperLanguage) {
+        ownerState->workingConfig.whisperLanguage = value;
+    } else {
+        ownerState->workingConfig.voiceOverLanguage = value;
+    }
+    RefreshSettingsButtons(ownerState);
+    InvalidateRect(ownerState->window, nullptr, FALSE);
+    DestroyWindow(menu);
+}
+
+LRESULT CALLBACK SettingsComboMenuProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    SettingsComboMenuState* state = reinterpret_cast<SettingsComboMenuState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (message == WM_NCCREATE) {
+        const CREATESTRUCTW* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        state = static_cast<SettingsComboMenuState*>(create->lpCreateParams);
+        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(state));
+        return TRUE;
+    }
+
+    constexpr int itemTop = 4;
+    constexpr int itemHeight = 34;
+    switch (message) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_MOUSEMOVE:
+        if (state) {
+            const int index = (GET_Y_LPARAM(lParam) - itemTop) / itemHeight;
+            const int hot = (index >= 0 && index < static_cast<int>(state->values.size())) ? index : -1;
+            if (hot != state->hotIndex) {
+                state->hotIndex = hot;
+                TRACKMOUSEEVENT track = {};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = window;
+                TrackMouseEvent(&track);
+                InvalidateRect(window, nullptr, FALSE);
+            }
+        }
+        return 0;
+
+    case WM_MOUSELEAVE:
+        if (state && state->hotIndex != -1) {
+            state->hotIndex = -1;
+            InvalidateRect(window, nullptr, FALSE);
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (state) {
+            const int index = (GET_Y_LPARAM(lParam) - itemTop) / itemHeight;
+            ApplySettingsComboSelection(state, window, index);
+        }
+        return 0;
+
+    case WM_KEYDOWN:
+        if (state) {
+            if (wParam == VK_ESCAPE) {
+                DestroyWindow(window);
+                return 0;
+            }
+            if (wParam == VK_DOWN) {
+                state->hotIndex = std::min(static_cast<int>(state->values.size()) - 1, state->hotIndex + 1);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == VK_UP) {
+                state->hotIndex = std::max(0, state->hotIndex == -1 ? 0 : state->hotIndex - 1);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            }
+            if (wParam == VK_RETURN || wParam == VK_SPACE) {
+                ApplySettingsComboSelection(state, window, state->hotIndex == -1 ? 0 : state->hotIndex);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_KILLFOCUS:
+        DestroyWindow(window);
+        return 0;
+
+    case WM_PAINT:
+        PaintBuffered(window, [state](HDC dc, const RECT& client) {
+            std::vector<UiRenderer::PopupMenuItem> items;
+            if (state) {
+                items.reserve(state->values.size());
+                for (size_t index = 0; index < state->values.size(); ++index) {
+                    items.push_back({static_cast<UINT>(index + 1), state->values[index], false});
+                }
+            }
+            UiRenderer::DrawPopupMenu(dc, client, items, state && state->hotIndex >= 0 ? static_cast<UINT>(state->hotIndex + 1) : 0);
+        });
+        return 0;
+
+    case WM_NCDESTROY:
+        delete state;
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+        return 0;
+    }
+
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
 LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     LogViewState* state = reinterpret_cast<LogViewState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
@@ -2205,6 +3646,48 @@ void ShowErrorDialog(HWND owner, HINSTANCE instance, const std::wstring& title, 
     ShowModal(state, 620, 420);
 }
 
+bool ShowToolReadinessDialog(HWND owner, HINSTANCE instance, ToolReadinessIssue issue) {
+    const ToolReadinessDialogContent content = BuildToolReadinessDialogContent(issue);
+    auto* state = new DialogState{};
+    state->type = DialogType::Confirmation;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = content.title;
+    state->subtitle = L"Не хватает инструмента для выбранного действия.";
+    state->message = content.message;
+    state->primaryButtonText = content.openToolsText;
+    state->cancelButtonText = content.cancelText;
+    bool openTools = false;
+    state->savedResult = &openTools;
+    ShowModal(state, 620, 420);
+    return openTools;
+}
+
+bool ShowAffectedFilesOverwriteDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const std::wstring& title,
+    const std::vector<std::filesystem::path>& affectedFiles
+) {
+    if (affectedFiles.empty()) {
+        return true;
+    }
+
+    auto* state = new DialogState{};
+    state->type = DialogType::AffectedFiles;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = title;
+    state->subtitle = L"Подтвердите перезапись перед запуском операции.";
+    state->message = BuildAffectedFilesMessage(affectedFiles);
+    state->primaryButtonText = L"Перезаписать";
+    state->cancelButtonText = L"Отмена";
+    bool confirmed = false;
+    state->savedResult = &confirmed;
+    ShowModal(state, 720, 460);
+    return confirmed;
+}
+
 void ShowLogsDialog(HWND owner, HINSTANCE instance, const std::wstring& logText) {
     auto* state = new DialogState{};
     state->type = DialogType::Logs;
@@ -2215,7 +3698,13 @@ void ShowLogsDialog(HWND owner, HINSTANCE instance, const std::wstring& logText)
     ShowModal(state, 860, 560);
 }
 
-bool ShowSettingsDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+bool ShowSettingsDialog(
+    HWND owner,
+    HINSTANCE instance,
+    const AppPaths& paths,
+    AppConfig& config,
+    SettingsInitialSection initialSection
+) {
     auto* state = new DialogState{};
     state->type = DialogType::Settings;
     state->instance = instance;
@@ -2224,9 +3713,10 @@ bool ShowSettingsDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, A
     state->paths = paths.root().empty() ? nullptr : &paths;
     state->config = &config;
     state->workingConfig = config;
+    state->settingsSection = ToSettingsSection(initialSection);
     bool saved = false;
     state->savedResult = &saved;
-    ShowModal(state, 620, 580);
+    ShowModal(state, kSettingsDialogWidth, kSettingsDialogHeight);
     return saved;
 }
 
@@ -2260,12 +3750,99 @@ bool ShowFfmpegDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, App
     return saved;
 }
 
+bool ShowWhisperDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Whisper;
+    state->instance = instance;
+    state->owner = owner;
+    state->paths = paths.root().empty() ? nullptr : &paths;
+    state->config = &config;
+    const ToolInstallStatus status = state->paths ? WhisperManager::Resolve(*state->paths, config) : ToolInstallStatus{};
+    const std::filesystem::path modelPath = ResolveDialogWhisperModelPath(state);
+    const bool modelReady = IsRegularFile(modelPath);
+    state->title = WhisperDialogTitle(status, modelReady);
+    state->message = WhisperDialogMessage(status, modelPath, modelReady);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 680, 390);
+    return saved;
+}
+
+bool ShowVotDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Vot;
+    state->instance = instance;
+    state->owner = owner;
+    state->paths = paths.root().empty() ? nullptr : &paths;
+    state->config = &config;
+    const VotExeStatus status = state->paths
+        ? VotExeManager::Resolve(*state->paths, config)
+        : VotExeManager::ResolveUserPath(config.votExePath);
+    state->title = VotDialogTitle(status);
+    state->message = VotDialogMessage(status);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 620, 370);
+    return saved;
+}
+
 bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
     auto* state = new DialogState{};
     state->type = DialogType::Progress;
     state->instance = instance;
     state->owner = owner;
     state->title = L"Установка FFmpeg";
+    state->message = L"Подготовка...";
+    state->paths = &paths;
+    state->config = &config;
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
+    return saved;
+}
+
+bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::WhisperInstall;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = L"Установка Whisper.cpp";
+    state->message = L"Подготовка...";
+    state->paths = &paths;
+    state->config = &config;
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
+    return saved;
+}
+
+bool ShowWhisperModelDownloadProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::WhisperModelDownload;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = L"Скачивание модели Whisper";
+    state->message = L"Подготовка...";
+    state->paths = &paths;
+    state->config = &config;
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
+    return saved;
+}
+
+bool ShowVotInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::VotInstall;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = L"Установка VOT helper";
     state->message = L"Подготовка...";
     state->paths = &paths;
     state->config = &config;

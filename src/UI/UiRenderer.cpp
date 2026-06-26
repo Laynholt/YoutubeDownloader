@@ -123,13 +123,14 @@ void UiRenderer::DrawButton(
     bool pressed,
     bool hot,
     bool onPanel,
-    bool enabled
+    bool enabled,
+    bool onCard
 ) {
     Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
     graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
 
-    SolidBrush clearBrush(onPanel ? kPanel : kBg);
+    SolidBrush clearBrush(onCard ? kPanel2 : (onPanel ? kPanel : kBg));
     graphics.FillRectangle(
         &clearBrush,
         static_cast<INT>(rect.left),
@@ -146,9 +147,9 @@ void UiRenderer::DrawButton(
         ? Color(255, 36, 36, 39)
         : primary
         ? (pressed ? kAccentPressed : (hot ? Color(255, 242, 88, 101) : kAccent))
-        : (pressed ? Color(255, 30, 30, 33) : (hot ? Color(255, 42, 42, 46) : kPanel2));
+        : (pressed ? Color(255, 33, 33, 37) : (hot ? Color(255, 50, 50, 55) : Color(255, 42, 42, 46)));
     SolidBrush fill(fillColor);
-    Pen border((enabled && primary) ? fillColor : kBorder, 1.0f);
+    Pen border((enabled && primary) ? fillColor : Color(255, 58, 58, 64), 1.0f);
     graphics.FillPath(&fill, &path);
     graphics.DrawPath(&border, &path);
 

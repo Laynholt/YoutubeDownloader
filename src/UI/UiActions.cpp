@@ -1,6 +1,7 @@
 #include "UiActions.h"
 
 #include <cstring>
+#include <system_error>
 
 namespace {
 
@@ -22,6 +23,135 @@ DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoadin
         return DownloadAttemptAction::ShowPreviewLoading;
     }
     return DownloadAttemptAction::Enqueue;
+}
+
+std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input) {
+    if (input.postProcessingBusy) {
+        return {
+            {QueueTaskAction::CancelPostProcessing, L"Отменить"}
+        };
+    }
+
+    if (input.completed) {
+        std::vector<QueueTaskActionItem> actions;
+        if (input.hasOutputFile && input.hasSourceUrl) {
+            actions.push_back({QueueTaskAction::Transcribe, L"Транскрибировать"});
+            actions.push_back({QueueTaskAction::Translate, L"Перевести"});
+        }
+        actions.push_back({QueueTaskAction::Clear, L"Очистить"});
+        return actions;
+    }
+
+    if (input.failedOrCanceled) {
+        return {
+            {QueueTaskAction::Retry, L"Повторить"},
+            {QueueTaskAction::Clear, L"Очистить"}
+        };
+    }
+
+    return {};
+}
+
+ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue issue) {
+    ToolReadinessDialogContent content;
+    content.title = L"Инструмент не готов";
+    content.openToolsText = L"Открыть Инструменты";
+    content.cancelText = L"Отмена";
+
+    switch (issue) {
+    case ToolReadinessIssue::MissingFfmpegForWhisper:
+        content.message =
+            L"Для транскрибации через Whisper требуется FFmpeg: приложению нужно извлечь аудиодорожку перед запуском whisper-cli.exe.\n\n"
+            L"Откройте раздел Инструменты, чтобы установить FFmpeg или выбрать папку с ffmpeg.exe.";
+        break;
+    case ToolReadinessIssue::MissingWhisperExe:
+        content.message =
+            L"Не найден whisper-cli.exe для локальной транскрибации.\n\n"
+            L"Откройте раздел Инструменты, чтобы выбрать папку Whisper.cpp или установить инструмент.";
+        break;
+    case ToolReadinessIssue::MissingWhisperModel:
+        content.message =
+            L"Не найдена выбранная модель Whisper. Без модели whisper-cli.exe не сможет распознать аудио.\n\n"
+            L"Откройте раздел Инструменты, чтобы скачать или выбрать модель Whisper.";
+        break;
+    case ToolReadinessIssue::MissingVotExe:
+        content.message =
+            L"Не найден vot-helper.exe для Voice Over Translation.\n\n"
+            L"Откройте раздел Инструменты, чтобы выбрать папку VOT или установить инструмент.";
+        break;
+    }
+
+    return content;
+}
+
+std::wstring VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode mode) {
+    switch (mode) {
+    case VoiceOverFfmpegMode::AudioTrack:
+        return L"Аудиодорожка";
+    case VoiceOverFfmpegMode::Mix:
+        return L"Смешать";
+    case VoiceOverFfmpegMode::Off:
+    default:
+        return L"Выкл";
+    }
+}
+
+std::wstring SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode mode) {
+    switch (mode) {
+    case SubtitleFfmpegMode::SubtitleTrack:
+        return L"Дорожка субтитров";
+    case SubtitleFfmpegMode::BurnIn:
+        return L"Вшить в видео";
+    case SubtitleFfmpegMode::Off:
+    default:
+        return L"Выкл";
+    }
+}
+
+std::wstring OpenDownloadFolderButtonText() {
+    return L"Открыть папку";
+}
+
+std::wstring TranslationSettingsCollapsedIcon() {
+    return L"🔊";
+}
+
+std::wstring ToolSetupButtonText() {
+    return L"Настроить";
+}
+
+std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
+    const TranscriptionPaths& paths,
+    SubtitleFfmpegMode subtitleMode
+) {
+    std::vector<std::filesystem::path> affected;
+    std::error_code ec;
+    if (!paths.finalTextPath.empty() && std::filesystem::exists(paths.finalTextPath, ec)) {
+        affected.push_back(paths.finalTextPath);
+    }
+    ec.clear();
+    if (!paths.finalSrtPath.empty() && std::filesystem::exists(paths.finalSrtPath, ec)) {
+        affected.push_back(paths.finalSrtPath);
+    }
+    if (subtitleMode != SubtitleFfmpegMode::Off && !paths.finalVideoPath.empty()) {
+        affected.push_back(paths.finalVideoPath);
+    }
+    return affected;
+}
+
+std::vector<std::filesystem::path> BuildVoiceOverAffectedFiles(
+    const VoiceOverTranslationPaths& paths,
+    VoiceOverFfmpegMode ffmpegMode
+) {
+    std::vector<std::filesystem::path> affected;
+    std::error_code ec;
+    if (!paths.finalAudioPath.empty() && std::filesystem::exists(paths.finalAudioPath, ec)) {
+        affected.push_back(paths.finalAudioPath);
+    }
+    if (ffmpegMode != VoiceOverFfmpegMode::Off && !paths.finalVideoPath.empty()) {
+        affected.push_back(paths.finalVideoPath);
+    }
+    return affected;
 }
 
 std::vector<EditContextMenuItem> BuildEditContextMenuItems(

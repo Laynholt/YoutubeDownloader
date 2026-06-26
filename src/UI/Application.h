@@ -8,6 +8,7 @@
 
 #include "AppPaths.h"
 #include "Config.h"
+#include "DialogWindows.h"
 #include "DownloadQueue.h"
 #include "Logger.h"
 #include "ToolManagers.h"
@@ -15,6 +16,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -53,6 +55,33 @@ private:
         std::wstring error;
     };
 
+    struct PostProcessingProgressResult {
+        int taskId = 0;
+        int action = 0;
+        double percent = 0.0;
+        bool indeterminate = false;
+        std::wstring status;
+    };
+
+    struct PostProcessingCompleteResult {
+        int taskId = 0;
+        int action = 0;
+        bool success = false;
+        bool canceled = false;
+        std::wstring status;
+        std::wstring error;
+    };
+
+    struct PendingPostProcessingOperation {
+        int taskId = 0;
+        int action = 0;
+        DownloadTaskSnapshot task;
+        std::filesystem::path mediaPath;
+        AppPaths paths;
+        AppConfig config;
+        FfmpegStatus ffmpeg;
+    };
+
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK ButtonWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT HandleMessage(UINT message, WPARAM wParam, LPARAM lParam);
@@ -85,6 +114,12 @@ private:
     void StopPreviewLoadingText();
     void UpdatePreviewLoadingText();
     void EnqueueCurrentUrl();
+    bool ShowAndSaveSettings(SettingsInitialSection initialSection = SettingsInitialSection::Downloads);
+    void StartPostProcessing(int taskId, int action);
+    void StartPostProcessingWorker(PendingPostProcessingOperation operation);
+    void StartNextQueuedPostProcessing();
+    bool HasPostProcessingOperationForTask(int taskId) const;
+    bool CancelPostProcessing(int taskId);
     void RefreshQueueText();
     std::wstring GetWindowTextString(HWND control) const;
 
@@ -99,6 +134,7 @@ private:
     HWND m_downloadButton = nullptr;
     HWND m_clearButton = nullptr;
     HWND m_clearFinishedButton = nullptr;
+    HWND m_openFolderButton = nullptr;
     HWND m_logsButton = nullptr;
     HWND m_settingsButton = nullptr;
     HWND m_statusLabel = nullptr;
@@ -123,10 +159,13 @@ private:
     std::jthread m_toolCheckWorker;
     std::jthread m_appUpdateWorker;
     std::jthread m_previewWorker;
+    std::jthread m_postProcessingWorker;
     std::mutex m_asyncResultMutex;
     std::optional<ToolCheckResult> m_toolCheckResult;
     std::optional<AppUpdateCheckResult> m_appUpdateCheckResult;
     std::optional<PreviewFetchResult> m_previewFetchResult;
+    std::optional<PostProcessingProgressResult> m_postProcessingProgressResult;
+    std::optional<PostProcessingCompleteResult> m_postProcessingCompleteResult;
     std::mutex m_previewMutex;
     VideoPreview m_preview;
     std::atomic<unsigned long> m_previewRequestId = 0;
@@ -143,4 +182,11 @@ private:
     int m_hotQueueTaskId = 0;
     int m_hotQueueAction = 0;
     int m_queueScrollOffset = 0;
+    int m_postProcessingTaskId = 0;
+    int m_postProcessingAction = 0;
+    std::deque<PendingPostProcessingOperation> m_postProcessingQueue;
+    double m_postProcessingPercent = 0.0;
+    bool m_postProcessingIndeterminate = false;
+    std::wstring m_postProcessingStatus;
+    DWORD m_postProcessingStartedTick = 0;
 };

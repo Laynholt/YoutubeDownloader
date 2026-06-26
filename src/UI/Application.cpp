@@ -6,12 +6,15 @@
 #include "DownloadQueueStore.h"
 #include "KeyboardShortcuts.h"
 #include "resource.h"
+#include "TranscriptionClient.h"
 #include "UiActions.h"
 #include "UiRenderer.h"
+#include "VoiceOverTranslationClient.h"
 
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 
@@ -19,10 +22,12 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <functional>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "comctl32.lib")
@@ -44,6 +49,8 @@ constexpr COLORREF kMutedTextColor = RGB(172, 172, 178);
 constexpr UINT kMsgToolCheckComplete = WM_APP + 1;
 constexpr UINT kMsgPreviewComplete = WM_APP + 2;
 constexpr UINT kMsgAppUpdateCheckComplete = WM_APP + 3;
+constexpr UINT kMsgPostProcessingProgress = WM_APP + 4;
+constexpr UINT kMsgPostProcessingComplete = WM_APP + 5;
 constexpr UINT_PTR kQueueRefreshTimer = 1;
 constexpr UINT_PTR kStatusRestoreTimer = 2;
 constexpr UINT_PTR kPreviewLoadingTimer = 3;
@@ -54,6 +61,8 @@ constexpr int kQueueRowGap = 10;
 constexpr int kQueueActionCancel = 1;
 constexpr int kQueueActionRetry = 2;
 constexpr int kQueueActionDelete = 3;
+constexpr int kQueueActionTranscribe = 4;
+constexpr int kQueueActionTranslate = 5;
 
 enum ControlId {
     IdUrlEdit = 1001,
@@ -63,7 +72,8 @@ enum ControlId {
     IdClearButton = 1005,
     IdSettingsButton = 1006,
     IdClearFinishedButton = 1007,
-    IdLogsButton = 1008
+    IdLogsButton = 1008,
+    IdOpenFolderButton = 1009
 };
 
 struct ButtonState {
@@ -92,6 +102,12 @@ struct EditContextMenuState {
 struct EditSubclassState {
     HWND owner = nullptr;
     HINSTANCE instance = nullptr;
+};
+
+struct QueueActionRect {
+    int action = 0;
+    std::wstring text;
+    RECT rect = {};
 };
 
 class UniqueHandle {
@@ -179,6 +195,96 @@ bool IsRunningTaskState(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
            state == DownloadTaskState::Downloading;
+}
+
+bool IsMediaFilePath(const std::filesystem::path& path) {
+    std::wstring extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return extension == L".mp4" ||
+           extension == L".mkv" ||
+           extension == L".webm" ||
+           extension == L".mov" ||
+           extension == L".avi" ||
+           extension == L".m4v" ||
+           extension == L".mp3" ||
+           extension == L".m4a" ||
+           extension == L".opus" ||
+           extension == L".wav";
+}
+
+std::filesystem::path FirstExistingMediaOutput(const DownloadTaskSnapshot& task) {
+    std::error_code ec;
+    for (const std::filesystem::path& path : task.outputFiles) {
+        if (IsMediaFilePath(path) && std::filesystem::is_regular_file(path, ec)) {
+            return path;
+        }
+        ec.clear();
+    }
+    return {};
+}
+
+QueueTaskActionInput BuildQueueActionInputForTask(
+    const DownloadTaskSnapshot& task,
+    bool postProcessingBusy
+) {
+    QueueTaskActionInput input;
+    input.completed = task.state == DownloadTaskState::Completed;
+    input.failedOrCanceled = task.state == DownloadTaskState::Failed ||
+        task.state == DownloadTaskState::Canceled;
+    input.hasOutputFile = !FirstExistingMediaOutput(task).empty();
+    input.hasSourceUrl = !task.request.url.empty();
+    input.postProcessingBusy = postProcessingBusy;
+    return input;
+}
+
+int QueueActionId(QueueTaskAction action) {
+    switch (action) {
+    case QueueTaskAction::Transcribe:
+        return kQueueActionTranscribe;
+    case QueueTaskAction::Translate:
+        return kQueueActionTranslate;
+    case QueueTaskAction::Retry:
+        return kQueueActionRetry;
+    case QueueTaskAction::Clear:
+        return kQueueActionDelete;
+    case QueueTaskAction::CancelPostProcessing:
+        return kQueueActionCancel;
+    case QueueTaskAction::None:
+        return 0;
+    }
+    return 0;
+}
+
+std::vector<QueueActionRect> BuildQueueActionRects(
+    const RECT& row,
+    const std::vector<QueueTaskActionItem>& actions
+) {
+    constexpr int buttonHeight = 26;
+    constexpr int gap = 8;
+    int right = row.right - 12;
+    std::vector<QueueActionRect> rects;
+    rects.reserve(actions.size());
+    for (const QueueTaskActionItem& item : actions) {
+        const int width = item.action == QueueTaskAction::Transcribe ? 132 : 96;
+        RECT rect = {right - width, row.top + 12, right, row.top + 12 + buttonHeight};
+        rects.push_back({QueueActionId(item.action), item.text, rect});
+        right = rect.left - gap;
+    }
+    std::reverse(rects.begin(), rects.end());
+    return rects;
+}
+
+RECT QueueActionTextBounds(const RECT& row, const std::vector<QueueActionRect>& actions) {
+    if (actions.empty()) {
+        return {row.right - 12, row.top + 12, row.right - 12, row.top + 38};
+    }
+    int left = actions.front().rect.left;
+    for (const QueueActionRect& action : actions) {
+        left = std::min(left, static_cast<int>(action.rect.left));
+    }
+    return {left, row.top + 12, row.right - 12, row.top + 38};
 }
 
 void AddRoundedRect(Gdiplus::GraphicsPath& path, const RECT& rect, int radius) {
@@ -949,6 +1055,8 @@ void Application::Shutdown() {
     StopAndJoin(m_previewWorker);
     StopAndJoin(m_toolCheckWorker);
     StopAndJoin(m_appUpdateWorker);
+    m_postProcessingQueue.clear();
+    StopAndJoin(m_postProcessingWorker);
     if (m_downloadQueue) {
         SaveDownloadQueue(true);
         m_downloadQueue->Shutdown();
@@ -1273,6 +1381,15 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         }
         if (LOWORD(wParam) == IdClearFinishedButton) {
             if (m_downloadQueue) {
+                if (m_postProcessingTaskId != 0 || !m_postProcessingQueue.empty()) {
+                    ShowInfoDialog(
+                        m_window,
+                        m_instance,
+                        L"Обработка ещё выполняется",
+                        L"Дождитесь завершения или отмените транскрибацию/перевод перед очисткой завершённых задач."
+                    );
+                    return 0;
+                }
                 const size_t removed = m_downloadQueue->ClearFinished();
                 if (m_logger) {
                     m_logger->Info(L"Finished tasks cleared: count=" + std::to_wstring(removed));
@@ -1282,26 +1399,33 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
             }
             return 0;
         }
+        if (LOWORD(wParam) == IdOpenFolderButton) {
+            std::filesystem::path folder = GetWindowTextString(m_folderEdit);
+            if (folder.empty()) {
+                folder = m_config.downloadDir;
+            }
+            if (folder.empty()) {
+                ShowErrorDialog(m_window, m_instance, L"Папка не выбрана", L"Укажите папку загрузок.");
+                return 0;
+            }
+            std::error_code ec;
+            if (!std::filesystem::exists(folder, ec)) {
+                std::filesystem::create_directories(folder, ec);
+            }
+            if (ec || !std::filesystem::is_directory(folder, ec)) {
+                ShowErrorDialog(m_window, m_instance, L"Папка недоступна", L"Не удалось открыть или создать папку загрузок.");
+                return 0;
+            }
+            ShellExecuteW(m_window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        }
         if (LOWORD(wParam) == IdLogsButton) {
             const std::wstring logText = m_logger ? m_logger->ReadAll() : std::wstring{};
             ShowLogsDialog(m_window, m_instance, logText);
             return 0;
         }
         if (LOWORD(wParam) == IdSettingsButton) {
-            if (m_paths && ShowSettingsDialog(m_window, m_instance, *m_paths, m_config)) {
-                ConfigStore::Save(*m_paths, m_config);
-                m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
-                if (m_downloadQueue) {
-                    m_downloadQueue->SetMaxParallelDownloads(m_config.maxParallelDownloads);
-                }
-                if (m_logger) {
-                    m_logger->Info(
-                        L"Settings saved: max_parallel_downloads=" +
-                        std::to_wstring(m_config.maxParallelDownloads)
-                    );
-                }
-                SetTransientStatus(L"Настройки сохранены");
-            }
+            ShowAndSaveSettings();
             return 0;
         }
         break;
@@ -1309,6 +1433,12 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == kQueueRefreshTimer) {
             RefreshQueueText();
+            if (m_postProcessingTaskId != 0 || !m_postProcessingQueue.empty()) {
+                RECT client = {};
+                GetClientRect(m_window, &client);
+                RECT queueRect = QueuePanelRectForClient(client);
+                InvalidateRect(m_window, &queueRect, FALSE);
+            }
             return 0;
         }
         if (wParam == kStatusRestoreTimer) {
@@ -1378,6 +1508,78 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 } else {
                     m_logger->Error(L"Application update check failed: " + result.error);
                 }
+            }
+        }
+        return 0;
+
+    case kMsgPostProcessingProgress:
+        {
+            PostProcessingProgressResult progress;
+            {
+                std::lock_guard lock(m_asyncResultMutex);
+                if (!m_postProcessingProgressResult) {
+                    return 0;
+                }
+                progress = std::move(*m_postProcessingProgressResult);
+                m_postProcessingProgressResult.reset();
+            }
+            if (progress.taskId == m_postProcessingTaskId && progress.action == m_postProcessingAction) {
+                m_postProcessingPercent = progress.percent;
+                m_postProcessingIndeterminate = progress.indeterminate;
+                m_postProcessingStatus = progress.status;
+                RECT client = {};
+                GetClientRect(m_window, &client);
+                RECT queueRect = QueuePanelRectForClient(client);
+                InvalidateRect(m_window, &queueRect, FALSE);
+            }
+        }
+        return 0;
+
+    case kMsgPostProcessingComplete:
+        {
+            PostProcessingCompleteResult result;
+            {
+                std::lock_guard lock(m_asyncResultMutex);
+                if (!m_postProcessingCompleteResult) {
+                    return 0;
+                }
+                result = std::move(*m_postProcessingCompleteResult);
+                m_postProcessingCompleteResult.reset();
+            }
+            if (result.taskId == m_postProcessingTaskId && result.action == m_postProcessingAction) {
+                m_postProcessingTaskId = 0;
+                m_postProcessingAction = 0;
+                m_postProcessingPercent = 0.0;
+                m_postProcessingIndeterminate = false;
+                m_postProcessingStatus.clear();
+                m_postProcessingStartedTick = 0;
+                StopAndJoin(m_postProcessingWorker);
+                if (result.success) {
+                    SetTransientStatus(result.status);
+                    if (m_logger) {
+                        m_logger->Info(L"Post-processing completed: task=" + std::to_wstring(result.taskId));
+                    }
+                } else if (!result.canceled) {
+                    ShowErrorDialog(
+                        m_window,
+                        m_instance,
+                        result.status.empty() ? L"Операция не выполнена" : result.status,
+                        result.error.empty() ? L"Неизвестная ошибка" : result.error
+                    );
+                    if (m_logger) {
+                        m_logger->Error(
+                            L"Post-processing failed: task=" +
+                            std::to_wstring(result.taskId) +
+                            L" error=" +
+                            result.error
+                        );
+                    }
+                }
+                RECT client = {};
+                GetClientRect(m_window, &client);
+                RECT queueRect = QueuePanelRectForClient(client);
+                InvalidateRect(m_window, &queueRect, FALSE);
+                StartNextQueuedPostProcessing();
             }
         }
         return 0;
@@ -1526,6 +1728,7 @@ void Application::CreateControls() {
 
     m_downloadButton = CreateButton(L"Скачать", IdDownloadButton, true, false);
     m_clearButton = CreateButton(L"Очистить очередь", IdClearButton, false, false);
+    m_openFolderButton = CreateButton(OpenDownloadFolderButtonText().c_str(), IdOpenFolderButton, false, false);
     m_logsButton = CreateButton(L"Логи", IdLogsButton, false, false);
     m_clearFinishedButton = CreateButton(L"X", IdClearFinishedButton, false, false);
     m_settingsButton = CreateButton(L"Настройки", IdSettingsButton, false, false);
@@ -1541,6 +1744,7 @@ void Application::CreateControls() {
     AddTooltip(m_tooltip, m_window, m_chooseFolderButton, L"Выберите папку для сохранения загрузок.");
     AddTooltip(m_tooltip, m_window, m_downloadButton, L"Добавляет ссылку в очередь загрузок.");
     AddTooltip(m_tooltip, m_window, m_clearButton, L"Удаляет из очереди задачи, которые ещё не начали загружаться. Активные загрузки не останавливаются.");
+    AddTooltip(m_tooltip, m_window, m_openFolderButton, L"Открывает текущую папку загрузок.");
     AddTooltip(m_tooltip, m_window, m_logsButton, L"Открывает текущий файл логов.");
     AddTooltip(m_tooltip, m_window, m_clearFinishedButton, L"Очищает из списка завершённые и ошибочные задачи. Файлы на диске не удаляются.");
     AddTooltip(m_tooltip, m_window, m_settingsButton, L"Открывает настройки качества, контейнера, FFmpeg и поведения приложения.");
@@ -1608,7 +1812,11 @@ void Application::LayoutControls(int width, int height) {
 
     MoveWindow(m_queueLabel, margin, 298, 220, 22, TRUE);
     const int clearFinishedLeft = width - margin - 34;
-    MoveWindow(m_logsButton, buttonX, 292, std::max(76, clearFinishedLeft - 8 - buttonX), 30, TRUE);
+    const int logsWidth = 76;
+    const int folderButtonWidth = 132;
+    const int logsLeft = clearFinishedLeft - 8 - logsWidth;
+    MoveWindow(m_openFolderButton, logsLeft - 8 - folderButtonWidth, 292, folderButtonWidth, 30, TRUE);
+    MoveWindow(m_logsButton, logsLeft, 292, logsWidth, 30, TRUE);
     MoveWindow(m_clearFinishedButton, width - margin - 34, 292, 34, 30, TRUE);
     MoveWindow(m_queuePlaceholder, margin + 24, 360, width - (margin * 2) - 48, 28, TRUE);
     InvalidateRect(m_window, nullptr, TRUE);
@@ -1683,25 +1891,48 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         }
 
         const int textLeft = thumb.right + 14;
-        const int buttonRight = row.right - 12;
-        const int buttonWidth = 96;
-        const int buttonHeight = 26;
-        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        const int textRight = IsRunningTaskState(task.state)
-            ? cancelButton.left - 12
-            : ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) ? retryButton.left - 12 : deleteButton.left - 12);
+        const bool postProcessingActive = m_postProcessingTaskId == task.id;
+        const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
+        std::vector<QueueTaskActionItem> actionItems;
+        if (IsRunningTaskState(task.state)) {
+            actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+        } else {
+            actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(task, postProcessingBusy));
+            for (QueueTaskActionItem& item : actionItems) {
+                if (item.action == QueueTaskAction::Retry) {
+                    item.text = L"Возобновить";
+                } else if (item.action == QueueTaskAction::Clear && task.state == DownloadTaskState::Completed) {
+                    item.text = L"Закрыть";
+                } else if (item.action == QueueTaskAction::Clear) {
+                    item.text = L"Удалить";
+                }
+            }
+        }
+        std::vector<QueueActionRect> actionRects = BuildQueueActionRects(row, actionItems);
+        for (QueueActionRect& action : actionRects) {
+            if (IsRunningTaskState(task.state)) {
+                action.action = kQueueActionCancel;
+            }
+        }
+        const RECT actionBounds = QueueActionTextBounds(row, actionRects);
+        const int textRight = actionRects.empty() ? row.right - 14 : actionBounds.left - 12;
 
         RECT titleRect = {textLeft, row.top + 9, textRight, row.top + 31};
         const std::wstring title = task.title.empty() ? task.request.url : task.title;
         DrawTextBlock(dc, title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         std::wstring status = TaskStateText(task.state);
-        if (!task.statusText.empty() && task.statusText != status) {
+        if (postProcessingActive) {
+            status = m_postProcessingStatus.empty() ? L"Выполнение..." : m_postProcessingStatus;
+            const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
+            status += L" · " + FormatDuration(elapsedMs / 1000);
+        } else if (postProcessingBusy) {
+            status = L"Ожидает обработки...";
+        }
+        if (!postProcessingBusy && !task.statusText.empty() && task.statusText != status) {
             status += L" · " + task.statusText;
         }
-        if (!task.errorText.empty()) {
+        if (!postProcessingBusy && !task.errorText.empty()) {
             status += L" · " + task.errorText;
         }
         RECT statusRect = {textLeft, row.top + 34, textRight, row.top + 52};
@@ -1715,7 +1946,13 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
 
         RECT progressBack = {textLeft, row.bottom - 13, row.right - 84, row.bottom - 5};
         double percent = task.percent;
-        if (task.state == DownloadTaskState::Completed) {
+        if (postProcessingActive) {
+            percent = m_postProcessingIndeterminate
+                ? static_cast<double>((GetTickCount() / 35) % 100)
+                : m_postProcessingPercent;
+        } else if (postProcessingBusy) {
+            percent = static_cast<double>((GetTickCount() / 35) % 100);
+        } else if (task.state == DownloadTaskState::Completed) {
             percent = 100.0;
         }
         percent = std::clamp(percent, 0.0, 100.0);
@@ -1731,36 +1968,15 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
             DT_RIGHT | DT_VCENTER | DT_SINGLELINE
         );
 
-        if (IsRunningTaskState(task.state)) {
+        for (const QueueActionRect& action : actionRects) {
             DrawSmallActionButton(
                 dc,
-                cancelButton,
-                L"Отменить",
-                false,
-                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionCancel
-            );
-        } else if (task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) {
-            DrawSmallActionButton(
-                dc,
-                retryButton,
-                L"Возобновить",
-                true,
-                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionRetry
-            );
-            DrawSmallActionButton(
-                dc,
-                deleteButton,
-                L"Удалить",
-                false,
-                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
-            );
-        } else if (task.state == DownloadTaskState::Completed) {
-            DrawSmallActionButton(
-                dc,
-                deleteButton,
-                L"Закрыть",
-                false,
-                m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionDelete
+                action.rect,
+                action.text,
+                action.action == kQueueActionRetry ||
+                    action.action == kQueueActionTranscribe ||
+                    action.action == kQueueActionTranslate,
+                m_hotQueueTaskId == task.id && m_hotQueueAction == action.action
             );
         }
 
@@ -1835,27 +2051,43 @@ bool Application::HandleQueueClick(POINT point) {
             continue;
         }
 
-        const int buttonRight = row.right - 12;
-        constexpr int buttonWidth = 96;
-        constexpr int buttonHeight = 26;
-        RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-        RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-        RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-
         const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
+        const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
+        std::vector<QueueTaskActionItem> actionItems;
+        if (IsRunningTaskState(task.state)) {
+            actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+        } else {
+            actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(
+                task,
+                postProcessingBusy
+            ));
+        }
+        std::vector<QueueActionRect> actionRects = BuildQueueActionRects(row, actionItems);
+        for (QueueActionRect& action : actionRects) {
+            if (IsRunningTaskState(task.state)) {
+                action.action = kQueueActionCancel;
+            }
+        }
+
         bool handled = false;
         bool removedRow = false;
-        if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
-            handled = m_downloadQueue->Cancel(task.id);
-        } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
-                   PtInRect(&retryButton, point)) {
-            handled = m_downloadQueue->Retry(task.id);
-        } else if ((task.state == DownloadTaskState::Canceled ||
-                    task.state == DownloadTaskState::Failed ||
-                    task.state == DownloadTaskState::Completed) &&
-                    PtInRect(&deleteButton, point)) {
-            handled = m_downloadQueue->DeleteFiles(task.id);
-            removedRow = handled;
+        for (const QueueActionRect& action : actionRects) {
+            if (!PtInRect(&action.rect, point)) {
+                continue;
+            }
+
+            if (action.action == kQueueActionCancel) {
+                handled = postProcessingBusy ? CancelPostProcessing(task.id) : m_downloadQueue->Cancel(task.id);
+            } else if (action.action == kQueueActionRetry) {
+                handled = m_downloadQueue->Retry(task.id);
+            } else if (action.action == kQueueActionDelete) {
+                handled = m_downloadQueue->DeleteFiles(task.id);
+                removedRow = handled;
+            } else if (action.action == kQueueActionTranscribe || action.action == kQueueActionTranslate) {
+                StartPostProcessing(task.id, action.action);
+                handled = true;
+            }
+            break;
         }
 
         if (handled) {
@@ -1982,27 +2214,29 @@ bool Application::UpdateQueueHover(POINT point) {
                 continue;
             }
 
-            const int buttonRight = row.right - 12;
-            constexpr int buttonWidth = 96;
-            constexpr int buttonHeight = 26;
-            RECT cancelButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-            RECT retryButton = {buttonRight - (buttonWidth * 2) - 8, row.top + 12, buttonRight - buttonWidth - 8, row.top + 12 + buttonHeight};
-            RECT deleteButton = {buttonRight - buttonWidth, row.top + 12, buttonRight, row.top + 12 + buttonHeight};
-
             const DownloadTaskSnapshot& task = tasks[static_cast<size_t>(taskIndex)];
-            if (IsRunningTaskState(task.state) && PtInRect(&cancelButton, point)) {
-                hotTaskId = task.id;
-                hotAction = kQueueActionCancel;
-            } else if ((task.state == DownloadTaskState::Canceled || task.state == DownloadTaskState::Failed) &&
-                       PtInRect(&retryButton, point)) {
-                hotTaskId = task.id;
-                hotAction = kQueueActionRetry;
-            } else if ((task.state == DownloadTaskState::Canceled ||
-                        task.state == DownloadTaskState::Failed ||
-                        task.state == DownloadTaskState::Completed) &&
-                       PtInRect(&deleteButton, point)) {
-                hotTaskId = task.id;
-                hotAction = kQueueActionDelete;
+            const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
+            std::vector<QueueTaskActionItem> actionItems;
+            if (IsRunningTaskState(task.state)) {
+                actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+            } else {
+                actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(
+                    task,
+                    postProcessingBusy
+                ));
+            }
+            std::vector<QueueActionRect> actionRects = BuildQueueActionRects(row, actionItems);
+            for (QueueActionRect& action : actionRects) {
+                if (IsRunningTaskState(task.state)) {
+                    action.action = kQueueActionCancel;
+                }
+            }
+            for (const QueueActionRect& action : actionRects) {
+                if (PtInRect(&action.rect, point)) {
+                    hotTaskId = task.id;
+                    hotAction = action.action;
+                    break;
+                }
             }
             break;
         }
@@ -2470,6 +2704,371 @@ void Application::EnqueueCurrentUrl() {
         m_downloadQueue->Enqueue(makeRequest(url), preview.title.empty() ? url : preview.title, preview.cachedThumbnailPath);
     }
     RefreshQueueText();
+}
+
+bool Application::ShowAndSaveSettings(SettingsInitialSection initialSection) {
+    if (!m_paths || !ShowSettingsDialog(m_window, m_instance, *m_paths, m_config, initialSection)) {
+        return false;
+    }
+
+    ConfigStore::Save(*m_paths, m_config);
+    m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
+    if (m_downloadQueue) {
+        m_downloadQueue->SetMaxParallelDownloads(m_config.maxParallelDownloads);
+    }
+    if (m_logger) {
+        m_logger->Info(
+            L"Settings saved: max_parallel_downloads=" +
+            std::to_wstring(m_config.maxParallelDownloads)
+        );
+    }
+    SetTransientStatus(L"Настройки сохранены");
+    return true;
+}
+
+void Application::StartPostProcessing(int taskId, int action) {
+    if (!m_paths || !m_downloadQueue) {
+        return;
+    }
+    if (HasPostProcessingOperationForTask(taskId)) {
+        ShowInfoDialog(
+            m_window,
+            m_instance,
+            L"Операция уже добавлена",
+            L"Для этой задачи уже выполняется или ожидает транскрибация/перевод."
+        );
+        return;
+    }
+
+    const DownloadTaskSnapshot task = m_downloadQueue->GetTask(taskId);
+    if (task.state != DownloadTaskState::Completed) {
+        return;
+    }
+
+    const std::filesystem::path mediaPath = FirstExistingMediaOutput(task);
+    if (mediaPath.empty()) {
+        ShowErrorDialog(m_window, m_instance, L"Файл не найден", L"Не удалось найти скачанный файл для этой задачи.");
+        return;
+    }
+    if (task.request.url.empty()) {
+        ShowErrorDialog(m_window, m_instance, L"Нет ссылки", L"Для этой задачи недоступна исходная ссылка.");
+        return;
+    }
+
+    AppConfig config = m_config;
+    const AppPaths paths = *m_paths;
+    const FfmpegStatus ffmpeg = FfmpegManager::Resolve(paths, config);
+    std::error_code ec;
+    if (action == kQueueActionTranscribe) {
+        const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(mediaPath, paths.transcriptionTempDir(), 0);
+        const std::vector<std::filesystem::path> affectedFiles = BuildTranscriptionAffectedFiles(
+            transcriptPaths,
+            config.subtitleFfmpegMode
+        );
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись транскрибации", affectedFiles)) {
+            return;
+        }
+        if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
+            if (!ffmpeg.available) {
+                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingFfmpegForWhisper)) {
+                    ShowAndSaveSettings(SettingsInitialSection::Tools);
+                }
+                return;
+            }
+            const ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
+            const std::filesystem::path modelPath = config.whisperModelPath.empty()
+                ? paths.localWhisperModelPath()
+                : config.whisperModelPath;
+            if (!whisper.installed) {
+                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingWhisperExe)) {
+                    ShowAndSaveSettings(SettingsInitialSection::Tools);
+                }
+                return;
+            }
+            if (!std::filesystem::is_regular_file(modelPath, ec)) {
+                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingWhisperModel)) {
+                    ShowAndSaveSettings(SettingsInitialSection::Tools);
+                }
+                return;
+            }
+        } else {
+            const VotExeStatus vot = VotExeManager::Resolve(paths, config);
+            if (!vot.available) {
+                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingVotExe)) {
+                    ShowAndSaveSettings(SettingsInitialSection::Tools);
+                }
+                return;
+            }
+            if (config.subtitleFfmpegMode != SubtitleFfmpegMode::Off && !ffmpeg.available) {
+                config.subtitleFfmpegMode = SubtitleFfmpegMode::Off;
+                SetTransientStatus(L"FFmpeg не найден: субтитры будут сохранены отдельными файлами");
+            }
+        }
+    } else if (action == kQueueActionTranslate) {
+        const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(mediaPath, paths.voiceOverTempDir(), config.voiceOverLanguage);
+        const std::vector<std::filesystem::path> affectedFiles = BuildVoiceOverAffectedFiles(
+            voicePaths,
+            config.voiceOverFfmpegMode
+        );
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись перевода", affectedFiles)) {
+            return;
+        }
+        const VotExeStatus vot = VotExeManager::Resolve(paths, config);
+        if (!vot.available) {
+            if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingVotExe)) {
+                ShowAndSaveSettings(SettingsInitialSection::Tools);
+            }
+            return;
+        }
+        if (config.voiceOverFfmpegMode != VoiceOverFfmpegMode::Off && !ffmpeg.available) {
+            config.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
+            SetTransientStatus(L"FFmpeg не найден: перевод будет сохранён отдельным MP3");
+        }
+    } else {
+        return;
+    }
+
+    PendingPostProcessingOperation operation{
+        taskId,
+        action,
+        task,
+        mediaPath,
+        paths,
+        config,
+        ffmpeg
+    };
+
+    if (m_postProcessingTaskId != 0) {
+        m_postProcessingQueue.push_back(std::move(operation));
+        ClearQueueHover();
+        SetTransientStatus(L"Операция добавлена в очередь обработки");
+        RECT client = {};
+        GetClientRect(m_window, &client);
+        RECT queueRect = QueuePanelRectForClient(client);
+        InvalidateRect(m_window, &queueRect, FALSE);
+        return;
+    }
+
+    StartPostProcessingWorker(std::move(operation));
+}
+
+void Application::StartPostProcessingWorker(PendingPostProcessingOperation operation) {
+    StopAndJoin(m_postProcessingWorker);
+    m_postProcessingTaskId = operation.taskId;
+    m_postProcessingAction = operation.action;
+    m_postProcessingPercent = 0.0;
+    m_postProcessingIndeterminate = operation.action == kQueueActionTranslate;
+    m_postProcessingStatus = operation.action == kQueueActionTranscribe ? L"Транскрибация..." : L"Перевод...";
+    m_postProcessingStartedTick = GetTickCount();
+    ClearQueueHover();
+
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    RECT queueRect = QueuePanelRectForClient(client);
+    InvalidateRect(m_window, &queueRect, FALSE);
+
+    HWND window = m_window;
+    m_postProcessingWorker = std::jthread([this, window, operation = std::move(operation)](std::stop_token stopToken) {
+        const DownloadTaskSnapshot task = operation.task;
+        const std::filesystem::path mediaPath = operation.mediaPath;
+        const AppPaths paths = operation.paths;
+        const AppConfig config = operation.config;
+        const FfmpegStatus ffmpeg = operation.ffmpeg;
+        const int action = operation.action;
+        PostProcessingCompleteResult complete;
+        complete.taskId = task.id;
+        complete.action = action;
+        UniqueHandle cancelEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+
+        auto requireRegularFile = [](const std::filesystem::path& path, const char* message) {
+            std::error_code ec;
+            if (path.empty() || !std::filesystem::is_regular_file(path, ec)) {
+                throw std::runtime_error(message);
+            }
+        };
+
+        auto publishProgress = [&](double percent, const std::wstring& status) {
+            PostProcessingProgressResult progress;
+            progress.taskId = task.id;
+            progress.action = action;
+            progress.percent = percent;
+            progress.indeterminate = action == kQueueActionTranslate && percent < 70.0;
+            progress.status = status;
+            {
+                std::lock_guard lock(m_asyncResultMutex);
+                m_postProcessingProgressResult = std::move(progress);
+            }
+            PostMessageW(window, kMsgPostProcessingProgress, 0, 0);
+        };
+
+        try {
+            if (!cancelEvent.get()) {
+                throw std::runtime_error("failed to create post-processing cancellation event");
+            }
+            std::stop_callback stopCallback(stopToken, [handle = cancelEvent.get()]() {
+                SetEvent(handle);
+            });
+
+            requireRegularFile(mediaPath, "media file is no longer available");
+            if (action == kQueueActionTranscribe) {
+                const ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
+                const VotExeStatus vot = VotExeManager::Resolve(paths, config);
+                if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
+                    requireRegularFile(ffmpeg.ffmpegExe, "FFmpeg is no longer available");
+                    requireRegularFile(whisper.executable, "whisper-cli.exe is no longer available");
+                    requireRegularFile(
+                        config.whisperModelPath.empty() ? paths.localWhisperModelPath() : config.whisperModelPath,
+                        "Whisper model is no longer available"
+                    );
+                } else {
+                    requireRegularFile(vot.executable, "vot-helper.exe is no longer available");
+                    if (config.subtitleFfmpegMode != SubtitleFfmpegMode::Off) {
+                        requireRegularFile(ffmpeg.ffmpegExe, "FFmpeg is no longer available");
+                    }
+                }
+                TranscriptionRequest request;
+                request.engine = config.transcriptionEngine;
+                request.mediaPath = mediaPath;
+                request.tempDirectory = paths.transcriptionTempDir();
+                request.ffmpegExePath = ffmpeg.ffmpegExe;
+                request.whisperExePath = whisper.executable;
+                request.votExePath = vot.executable;
+                request.youtubeUrl = task.request.url;
+                request.whisperModelPath = config.whisperModelPath.empty()
+                    ? paths.localWhisperModelPath()
+                    : config.whisperModelPath;
+                request.language = config.whisperLanguage;
+                request.votTargetLanguage = config.voiceOverLanguage;
+                request.subtitleMode = config.subtitleFfmpegMode;
+
+                TranscriptionCallbacks callbacks;
+                callbacks.onProgress = [&](double percent, const std::wstring& status) {
+                    publishProgress(percent, status);
+                };
+                const TranscriptionResult result = TranscriptionClient::Transcribe(request, callbacks, cancelEvent.get());
+                complete.success = result.success;
+                complete.canceled = result.canceled;
+                complete.error = result.errorText;
+                complete.status = result.success ? L"Транскрибация завершена" : L"Транскрибация не выполнена";
+            } else {
+                const VotExeStatus vot = VotExeManager::Resolve(paths, config);
+                requireRegularFile(vot.executable, "vot-helper.exe is no longer available");
+                if (config.voiceOverFfmpegMode != VoiceOverFfmpegMode::Off) {
+                    requireRegularFile(ffmpeg.ffmpegExe, "FFmpeg is no longer available");
+                }
+                VoiceOverTranslationRequest request;
+                request.mediaPath = mediaPath;
+                request.tempDirectory = paths.voiceOverTempDir();
+                request.ffmpegExePath = ffmpeg.ffmpegExe;
+                request.votExePath = vot.executable;
+                request.youtubeUrl = task.request.url;
+                request.targetLanguage = config.voiceOverLanguage;
+                request.ffmpegMode = config.voiceOverFfmpegMode;
+
+                VoiceOverTranslationCallbacks callbacks;
+                callbacks.onProgress = [&](double percent, const std::wstring& status) {
+                    publishProgress(percent, status);
+                };
+                const VoiceOverTranslationResult result = VoiceOverTranslationClient::Translate(request, callbacks, cancelEvent.get());
+                complete.success = result.success;
+                complete.canceled = result.canceled;
+                complete.error = result.errorText;
+                complete.status = result.success ? L"Перевод завершён" : L"Перевод не выполнен";
+            }
+        } catch (const std::exception& ex) {
+            complete.success = false;
+            complete.error = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            complete.status = action == kQueueActionTranscribe ? L"Транскрибация не выполнена" : L"Перевод не выполнен";
+        } catch (...) {
+            complete.success = false;
+            complete.error = L"Неизвестная ошибка";
+            complete.status = action == kQueueActionTranscribe ? L"Транскрибация не выполнена" : L"Перевод не выполнен";
+        }
+
+        if (stopToken.stop_requested()) {
+            return;
+        }
+        {
+            std::lock_guard lock(m_asyncResultMutex);
+            m_postProcessingCompleteResult = std::move(complete);
+        }
+        PostMessageW(window, kMsgPostProcessingComplete, 0, 0);
+    });
+}
+
+void Application::StartNextQueuedPostProcessing() {
+    if (m_postProcessingTaskId != 0 || m_postProcessingQueue.empty()) {
+        return;
+    }
+
+    PendingPostProcessingOperation operation = std::move(m_postProcessingQueue.front());
+    m_postProcessingQueue.pop_front();
+    StartPostProcessingWorker(std::move(operation));
+}
+
+bool Application::HasPostProcessingOperationForTask(int taskId) const {
+    if (taskId <= 0) {
+        return false;
+    }
+    if (m_postProcessingTaskId == taskId) {
+        return true;
+    }
+    return std::any_of(
+        m_postProcessingQueue.begin(),
+        m_postProcessingQueue.end(),
+        [taskId](const PendingPostProcessingOperation& operation) {
+            return operation.taskId == taskId;
+        }
+    );
+}
+
+bool Application::CancelPostProcessing(int taskId) {
+    if (taskId <= 0) {
+        return false;
+    }
+
+    const auto queued = std::find_if(
+        m_postProcessingQueue.begin(),
+        m_postProcessingQueue.end(),
+        [taskId](const PendingPostProcessingOperation& operation) {
+            return operation.taskId == taskId;
+        }
+    );
+    if (queued != m_postProcessingQueue.end()) {
+        m_postProcessingQueue.erase(queued);
+        ClearQueueHover();
+        SetTransientStatus(L"Операция удалена из очереди обработки");
+        RECT client = {};
+        GetClientRect(m_window, &client);
+        RECT queueRect = QueuePanelRectForClient(client);
+        InvalidateRect(m_window, &queueRect, FALSE);
+        return true;
+    }
+
+    if (m_postProcessingTaskId != taskId) {
+        return false;
+    }
+
+    StopAndJoin(m_postProcessingWorker);
+    {
+        std::lock_guard lock(m_asyncResultMutex);
+        m_postProcessingProgressResult.reset();
+        m_postProcessingCompleteResult.reset();
+    }
+    m_postProcessingTaskId = 0;
+    m_postProcessingAction = 0;
+    m_postProcessingPercent = 0.0;
+    m_postProcessingIndeterminate = false;
+    m_postProcessingStatus.clear();
+    m_postProcessingStartedTick = 0;
+    ClearQueueHover();
+    SetTransientStatus(L"Операция отменена");
+    RECT client = {};
+    GetClientRect(m_window, &client);
+    RECT queueRect = QueuePanelRectForClient(client);
+    InvalidateRect(m_window, &queueRect, FALSE);
+    StartNextQueuedPostProcessing();
+    return true;
 }
 
 void Application::RefreshQueueText() {

@@ -9,12 +9,19 @@
 
 #include <nlohmann/json.hpp>
 
+#include <bcrypt.h>
+
+#include <array>
 #include <cwctype>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <sstream>
 #include <system_error>
+#include <utility>
 #include <windows.h>
+
+#pragma comment(lib, "bcrypt.lib")
 
 namespace {
 
@@ -32,7 +39,9 @@ std::wstring AsciiToWide(const std::string& value) {
 }
 
 std::wstring NormalizeVersion(std::wstring version) {
-    if (!version.empty() && (version.front() == L'v' || version.front() == L'V')) {
+    if (version.size() >= 2 &&
+        (version.front() == L'v' || version.front() == L'V') &&
+        iswdigit(version[1])) {
         version.erase(version.begin());
     }
     return version;
@@ -121,6 +130,33 @@ void CopyIfExists(const std::filesystem::path& source, const std::filesystem::pa
     }
 }
 
+void CopyRegularFilesFromDir(const std::filesystem::path& sourceDir, const std::filesystem::path& targetDir) {
+    std::error_code ec;
+    std::filesystem::create_directories(targetDir, ec);
+    if (ec) {
+        throw std::runtime_error("failed to create tool directory");
+    }
+
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+
+        std::filesystem::copy_file(
+            entry.path(),
+            targetDir / entry.path().filename(),
+            std::filesystem::copy_options::overwrite_existing,
+            ec
+        );
+        if (ec) {
+            throw std::runtime_error("failed to copy tool files");
+        }
+    }
+}
+
 std::wstring QuotePowerShellLiteral(const std::filesystem::path& path) {
     std::wstring value = path.wstring();
     std::wstring escaped;
@@ -181,6 +217,76 @@ std::filesystem::path CurrentExecutablePath() {
     }
     buffer.resize(size);
     return std::filesystem::path(buffer);
+}
+
+std::wstring FileSha256Hex(const std::filesystem::path& path) {
+    BCRYPT_ALG_HANDLE algorithm = nullptr;
+    BCRYPT_HASH_HANDLE hash = nullptr;
+
+    if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) != 0) {
+        throw std::runtime_error("failed to open SHA-256 provider");
+    }
+
+    DWORD objectLength = 0;
+    DWORD written = 0;
+    if (BCryptGetProperty(
+            algorithm,
+            BCRYPT_OBJECT_LENGTH,
+            reinterpret_cast<PUCHAR>(&objectLength),
+            sizeof(objectLength),
+            &written,
+            0) != 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("failed to query SHA-256 object length");
+    }
+
+    std::vector<unsigned char> hashObject(objectLength);
+    if (BCryptCreateHash(algorithm, &hash, hashObject.data(), objectLength, nullptr, 0, 0) != 0) {
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("failed to create SHA-256 hash");
+    }
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        BCryptDestroyHash(hash);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("failed to open file for SHA-256");
+    }
+
+    std::array<char, 65536> buffer = {};
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize read = in.gcount();
+        if (read <= 0) {
+            continue;
+        }
+        if (BCryptHashData(
+                hash,
+                reinterpret_cast<PUCHAR>(buffer.data()),
+                static_cast<ULONG>(read),
+                0) != 0) {
+            BCryptDestroyHash(hash);
+            BCryptCloseAlgorithmProvider(algorithm, 0);
+            throw std::runtime_error("failed to update SHA-256 hash");
+        }
+    }
+
+    std::array<unsigned char, 32> digest = {};
+    if (BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) != 0) {
+        BCryptDestroyHash(hash);
+        BCryptCloseAlgorithmProvider(algorithm, 0);
+        throw std::runtime_error("failed to finish SHA-256 hash");
+    }
+
+    BCryptDestroyHash(hash);
+    BCryptCloseAlgorithmProvider(algorithm, 0);
+
+    std::wostringstream out;
+    out << std::hex << std::setfill(L'0');
+    for (unsigned char byte : digest) {
+        out << std::setw(2) << static_cast<unsigned int>(byte);
+    }
+    return out.str();
 }
 
 std::wstring BuildUpdateScript(const std::filesystem::path& sourceExe, const std::filesystem::path& targetExe) {
@@ -435,6 +541,516 @@ FfmpegStatus FfmpegManager::InstallEssentials(
         throw std::runtime_error("installed FFmpeg could not be resolved");
     }
     status.source = FfmpegSource::LocalTools;
+    return status;
+}
+
+const char* WhisperManager::WindowsCpuAssetName() {
+    return "whisper-bin-x64.zip";
+}
+
+const char* WhisperManager::WindowsCudaAssetName() {
+    return "whisper-cublas-12.4.0-bin-x64.zip";
+}
+
+const char* WhisperManager::BackendAssetName(WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? WindowsCudaAssetName() : WindowsCpuAssetName();
+}
+
+std::vector<WhisperModelInfo> WhisperManager::ModelCatalog() {
+    constexpr std::uint64_t mib = 1024ull * 1024ull;
+    constexpr const wchar_t* baseUrl = L"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
+
+    auto model = [baseUrl](
+        std::wstring id,
+        std::wstring name,
+        std::wstring fileName,
+        std::uint64_t sizeBytes,
+        std::wstring tags,
+        std::wstring description,
+        bool recommended = false,
+        bool bestQuality = false
+    ) {
+        WhisperModelInfo info;
+        info.id = std::move(id);
+        info.name = std::move(name);
+        info.fileName = fileName;
+        info.downloadUrl = std::wstring(baseUrl) + fileName;
+        info.tags = std::move(tags);
+        info.description = std::move(description);
+        info.sizeBytes = sizeBytes;
+        info.recommended = recommended;
+        info.bestQuality = bestQuality;
+        return info;
+    };
+
+    return {
+        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"very fast / low quality / 75 MiB", L"Minimal model for weak PCs and quick drafts."),
+        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"fast / basic quality / 142 MiB", L"Small default-style model when speed matters most."),
+        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"balanced / better than base / 466 MiB", L"Good compromise for short videos."),
+        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"higher quality / slower / 1.5 GiB", L"Noticeably better than small, but slower."),
+        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"recommended / fast / high quality / 1.5 GiB", L"Practical default: close to large quality and faster.", true, false),
+        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"best quality / slower / 2.9 GiB", L"Best recognition quality, but the heaviest common model.", false, true),
+        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"smaller / faster / lower quality", L"Compressed small model for speed and disk savings."),
+        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"smaller / faster medium / lower quality", L"Compressed medium when small quality is not enough."),
+        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"compact / fast / good quality", L"Compressed turbo with modest quality loss."),
+        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"compact large / high quality / slower", L"Compressed large-v3 without the full 2.9 GiB."),
+        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"balanced compression / better than q5", L"Compressed turbo with less loss than q5.")
+    };
+}
+
+std::filesystem::path WhisperManager::ModelPath(const AppPaths& paths, const WhisperModelInfo& model) {
+    return paths.localWhisperModelsDir() / model.fileName;
+}
+
+std::filesystem::path WhisperManager::BackendInstallDir(const AppPaths& paths, WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? paths.localWhisperCudaDir() : paths.localWhisperCpuDir();
+}
+
+std::filesystem::path WhisperManager::BackendExecutablePath(const AppPaths& paths, WhisperBackend backend) {
+    return backend == WhisperBackend::Cuda ? paths.localWhisperCudaExePath() : paths.localWhisperCpuExePath();
+}
+
+std::filesystem::path WhisperManager::FindExecutableDir(const std::filesystem::path& extractedRoot) {
+    std::error_code ec;
+    if (!std::filesystem::is_directory(extractedRoot, ec)) {
+        return {};
+    }
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(extractedRoot, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        if (entry.path().filename() == L"whisper-cli.exe") {
+            return entry.path().parent_path();
+        }
+    }
+    return {};
+}
+
+ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperBackend backend) {
+    ToolInstallStatus status;
+    status.whisperBackend = backend;
+    status.executable = BackendExecutablePath(paths, backend);
+    status.installed = IsExecutableFile(status.executable);
+    return status;
+}
+
+ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig& config) {
+    if (!config.whisperPath.empty() && IsExecutableFile(config.whisperPath)) {
+        ToolInstallStatus status;
+        status.installed = true;
+        status.executable = config.whisperPath;
+        status.whisperBackend = WhisperBackend::Custom;
+        return status;
+    }
+
+    if (config.whisperBackend == WhisperBackend::Cpu || config.whisperBackend == WhisperBackend::Cuda) {
+        ToolInstallStatus status = ResolveBackend(paths, config.whisperBackend);
+        if (status.installed) {
+            return status;
+        }
+        const WhisperBackend fallbackBackend =
+            config.whisperBackend == WhisperBackend::Cuda ? WhisperBackend::Cpu : WhisperBackend::Cuda;
+        return ResolveBackend(paths, fallbackBackend);
+    }
+
+    ToolInstallStatus status = ResolveBackend(paths, WhisperBackend::Cpu);
+    if (status.installed) {
+        return status;
+    }
+    status = ResolveBackend(paths, WhisperBackend::Cuda);
+    if (status.installed) {
+        return status;
+    }
+
+    return {};
+}
+
+ReleaseAssetInfo WhisperManager::CheckLatestRelease(WhisperBackend backend, HANDLE cancelEvent) {
+    const WhisperBackend releaseBackend = backend == WhisperBackend::Cuda ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, BackendAssetName(releaseBackend));
+}
+
+ToolInstallStatus WhisperManager::Install(
+    const AppPaths& paths,
+    WhisperBackend backend,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    const WhisperBackend installBackend = backend == WhisperBackend::Cuda ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+    const ReleaseAssetInfo release = CheckLatestRelease(installBackend, cancelEvent);
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("whisper.cpp release asset was not found");
+    }
+
+    const std::wstring archiveName = AsciiToWide(BackendAssetName(installBackend));
+    const std::wstring backendSuffix = installBackend == WhisperBackend::Cuda ? L"cuda" : L"cpu";
+    const std::filesystem::path archiveTmp = paths.stuffDir() / (archiveName + L".tmp");
+    const std::filesystem::path archive = paths.stuffDir() / archiveName;
+    const std::filesystem::path extractDir = paths.stuffDir() / (L"whisper_" + backendSuffix + L"_extract");
+
+    std::error_code ec;
+    std::filesystem::create_directories(paths.stuffDir(), ec);
+    std::filesystem::remove(archiveTmp, ec);
+    std::filesystem::remove(archive, ec);
+    std::filesystem::remove_all(extractDir, ec);
+
+    if (onProgress) {
+        onProgress(0, 0, L"Скачивание whisper.cpp...");
+    }
+    WinHttpClient::DownloadFile(
+        release.downloadUrl,
+        archiveTmp,
+        [onProgress](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, L"Скачивание whisper.cpp...");
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    std::filesystem::rename(archiveTmp, archive, ec);
+    if (ec) {
+        throw std::runtime_error("failed to finalize whisper.cpp archive");
+    }
+
+    std::filesystem::create_directories(extractDir, ec);
+    if (onProgress) {
+        onProgress(0, 0, L"Распаковка whisper.cpp...");
+    }
+
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (!std::filesystem::is_regular_file(options.executable, ec)) {
+        options.executable = L"powershell.exe";
+    }
+    options.arguments = {
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
+            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
+    };
+    options.timeoutMs = 120000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult extract = ProcessRunner::Run(options);
+    if (extract.canceled) {
+        throw std::runtime_error("operation canceled");
+    }
+    if (extract.exitCode != 0) {
+        throw std::runtime_error("failed to extract whisper.cpp archive");
+    }
+
+    const std::filesystem::path executableDir = FindExecutableDir(extractDir);
+    if (executableDir.empty()) {
+        throw std::runtime_error("whisper-cli.exe was not found in extracted archive");
+    }
+
+    if (onProgress) {
+        onProgress(0, 0, L"Установка whisper.cpp...");
+    }
+
+    const std::filesystem::path installDir = BackendInstallDir(paths, installBackend);
+    std::filesystem::create_directories(installDir, ec);
+    CopyRegularFilesFromDir(executableDir, installDir);
+
+    std::filesystem::remove(archive, ec);
+    ec.clear();
+    std::filesystem::remove_all(extractDir, ec);
+
+    ToolInstallStatus status = ResolveBackend(paths, installBackend);
+    if (!status.installed) {
+        throw std::runtime_error("installed whisper.cpp could not be resolved");
+    }
+    return status;
+}
+
+ToolInstallStatus WhisperManager::Install(
+    const AppPaths& paths,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    return Install(paths, WhisperBackend::Cpu, onProgress, cancelEvent);
+}
+
+std::filesystem::path WhisperManager::DownloadModel(
+    const AppPaths& paths,
+    const WhisperModelInfo& model,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    if (model.downloadUrl.empty() || model.fileName.empty()) {
+        throw std::runtime_error("whisper model metadata is incomplete");
+    }
+
+    const std::filesystem::path target = ModelPath(paths, model);
+    const std::filesystem::path tmp = target.wstring() + L".tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(paths.localWhisperModelsDir(), ec);
+    std::filesystem::remove(tmp, ec);
+
+    const std::wstring statusText = L"Скачивание модели " + model.name + L"...";
+    if (onProgress) {
+        onProgress(0, model.sizeBytes, statusText);
+    }
+    WinHttpClient::DownloadFile(
+        model.downloadUrl,
+        tmp,
+        [onProgress, statusText](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, statusText);
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    std::filesystem::rename(tmp, target, ec);
+    if (ec) {
+        std::filesystem::remove(target, ec);
+        ec.clear();
+        std::filesystem::rename(tmp, target, ec);
+    }
+    if (ec) {
+        throw std::runtime_error("failed to finalize whisper model");
+    }
+    return target;
+}
+
+const char* VotExeManager::WindowsZipAssetName() {
+    return "vot-helper-windows-x64.zip";
+}
+
+const char* VotExeManager::Sha256SumsAssetName() {
+    return "SHA256SUMS.txt";
+}
+
+ReleaseAssetInfo VotExeManager::CheckLatestRelease(HANDLE cancelEvent) {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/Laynholt/vot_exe/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, WindowsZipAssetName());
+}
+
+ReleaseAssetInfo VotExeManager::CheckLatestSha256Sums(HANDLE cancelEvent) {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/Laynholt/vot_exe/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, Sha256SumsAssetName());
+}
+
+VotExeStatus VotExeManager::Resolve(const AppPaths& paths, const AppConfig& config) {
+    VotExeStatus status = ResolveUserPath(config.votExePath);
+    if (status.available) {
+        return status;
+    }
+
+    status = ResolveUserPath(paths.localVotExePath());
+    if (status.available) {
+        return status;
+    }
+
+    status.message = L"VOT helper не найден";
+    return status;
+}
+
+VotExeStatus VotExeManager::ResolveUserPath(const std::filesystem::path& path) {
+    VotExeStatus status;
+    status.executable = FindExecutable(path);
+    status.available = !status.executable.empty();
+    status.message = status.available ? L"VOT helper найден" : L"В выбранном пути не найден vot-helper.exe";
+    return status;
+}
+
+std::filesystem::path VotExeManager::FindExecutable(const std::filesystem::path& root) {
+    if (root.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(root, ec) && root.filename() == L"vot-helper.exe") {
+        return root;
+    }
+
+    if (!std::filesystem::is_directory(root, ec)) {
+        return {};
+    }
+
+    const std::filesystem::path direct = root / L"vot-helper.exe";
+    if (IsExecutableFile(direct)) {
+        return direct;
+    }
+
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            continue;
+        }
+        if (entry.path().filename() == L"vot-helper.exe") {
+            return entry.path();
+        }
+    }
+
+    return {};
+}
+
+std::wstring VotExeManager::Sha256ForFile(const std::string& sumsText, const std::string& fileName) {
+    std::istringstream input(sumsText);
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        std::string hash;
+        std::string name;
+        if (!(row >> hash >> name)) {
+            continue;
+        }
+        if (!name.empty() && name.front() == '*') {
+            name.erase(name.begin());
+        }
+        if (name == fileName && hash.size() == 64) {
+            return AsciiToWide(hash);
+        }
+    }
+    return {};
+}
+
+VotExeStatus VotExeManager::Install(
+    const AppPaths& paths,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    const ReleaseAssetInfo release = CheckLatestRelease(cancelEvent);
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("VOT helper release asset was not found");
+    }
+
+    const ReleaseAssetInfo sumsAsset = CheckLatestSha256Sums(cancelEvent);
+    if (!sumsAsset.found || sumsAsset.downloadUrl.empty()) {
+        throw std::runtime_error("VOT helper checksum asset was not found");
+    }
+
+    const std::string sumsText = WinHttpClient::GetString(sumsAsset.downloadUrl, cancelEvent);
+    const std::wstring expectedSha256 = Sha256ForFile(sumsText, WindowsZipAssetName());
+    if (expectedSha256.empty()) {
+        throw std::runtime_error("VOT helper checksum was not found");
+    }
+
+    const std::filesystem::path archiveTmp = paths.stuffDir() / L"vot-helper-windows-x64.zip.tmp";
+    const std::filesystem::path archive = paths.stuffDir() / L"vot-helper-windows-x64.zip";
+    const std::filesystem::path extractDir = paths.stuffDir() / L"vot_helper_extract";
+
+    std::error_code ec;
+    std::filesystem::create_directories(paths.stuffDir(), ec);
+    std::filesystem::remove(archiveTmp, ec);
+    std::filesystem::remove(archive, ec);
+    std::filesystem::remove_all(extractDir, ec);
+
+    if (onProgress) {
+        onProgress(0, 0, L"Скачивание VOT helper...");
+    }
+    WinHttpClient::DownloadFile(
+        release.downloadUrl,
+        archiveTmp,
+        [onProgress](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, L"Скачивание VOT helper...");
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    const std::wstring actualSha256 = FileSha256Hex(archiveTmp);
+    if (actualSha256 != expectedSha256) {
+        std::filesystem::remove(archiveTmp, ec);
+        throw std::runtime_error("VOT helper checksum validation failed");
+    }
+
+    std::filesystem::rename(archiveTmp, archive, ec);
+    if (ec) {
+        throw std::runtime_error("failed to finalize VOT helper archive");
+    }
+
+    std::filesystem::create_directories(extractDir, ec);
+    if (onProgress) {
+        onProgress(0, 0, L"Распаковка VOT helper...");
+    }
+
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (!std::filesystem::is_regular_file(options.executable, ec)) {
+        options.executable = L"powershell.exe";
+    }
+    options.arguments = {
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
+            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
+    };
+    options.timeoutMs = 120000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult extract = ProcessRunner::Run(options);
+    if (extract.canceled) {
+        throw std::runtime_error("operation canceled");
+    }
+    if (extract.exitCode != 0) {
+        throw std::runtime_error("failed to extract VOT helper archive");
+    }
+
+    const std::filesystem::path executable = FindExecutable(extractDir);
+    if (executable.empty()) {
+        throw std::runtime_error("vot-helper.exe was not found in extracted archive");
+    }
+
+    if (onProgress) {
+        onProgress(0, 0, L"Установка VOT helper...");
+    }
+
+    std::filesystem::create_directories(paths.localVotDir(), ec);
+    std::filesystem::copy_file(
+        executable,
+        paths.localVotExePath(),
+        std::filesystem::copy_options::overwrite_existing,
+        ec
+    );
+    if (ec) {
+        throw std::runtime_error("failed to copy VOT helper executable");
+    }
+
+    std::filesystem::remove(archive, ec);
+    ec.clear();
+    std::filesystem::remove_all(extractDir, ec);
+
+    VotExeStatus status = ResolveUserPath(paths.localVotExePath());
+    if (!status.available) {
+        throw std::runtime_error("installed VOT helper could not be resolved");
+    }
     return status;
 }
 

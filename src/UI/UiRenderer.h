@@ -31,7 +31,8 @@ public:
         bool pressed,
         bool hot,
         bool onPanel,
-        bool enabled = true
+        bool enabled = true,
+        bool onCard = false
     );
     static void DrawPopupMenu(HDC dc, const RECT& rect, const std::vector<PopupMenuItem>& items, UINT hoveredItemId);
 };

@@ -14,46 +14,6 @@
 
 namespace {
 
-std::filesystem::path ExtractQuotedPath(const std::wstring& line) {
-    const size_t firstQuote = line.find(L'"');
-    if (firstQuote == std::wstring::npos) {
-        return {};
-    }
-    const size_t lastQuote = line.find_last_of(L'"');
-    if (lastQuote == firstQuote || lastQuote == std::wstring::npos) {
-        return {};
-    }
-    return std::filesystem::path(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
-}
-
-std::filesystem::path ExtractKnownOutputPath(const std::wstring& line) {
-    constexpr const wchar_t* kDestination = L"[download] Destination:";
-    constexpr const wchar_t* kMerging = L"[Merger] Merging formats into";
-
-    std::wstring normalized = line;
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
-    }
-    if (!normalized.empty() && normalized.front() == L'\r') {
-        normalized.erase(normalized.begin());
-    }
-    while (!normalized.empty() && iswspace(normalized.front())) {
-        normalized.erase(normalized.begin());
-    }
-
-    if (normalized.starts_with(kDestination)) {
-        std::wstring value = normalized.substr(std::wcslen(kDestination));
-        while (!value.empty() && iswspace(value.front())) {
-            value.erase(value.begin());
-        }
-        return std::filesystem::path(value);
-    }
-    if (normalized.starts_with(kMerging)) {
-        return ExtractQuotedPath(normalized);
-    }
-    return {};
-}
-
 void AddUniquePath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
     if (path.empty()) {
         return;
@@ -713,7 +673,7 @@ void DownloadQueue::RecordTaskOutput(int id, const std::wstring& line) {
         return;
     }
     const size_t before = it->second.snapshot.outputFiles.size();
-    AddUniquePath(it->second.snapshot.outputFiles, ExtractKnownOutputPath(line));
+    AddUniquePath(it->second.snapshot.outputFiles, ExtractYtDlpOutputPath(line));
     if (it->second.snapshot.outputFiles.size() != before) {
         ++m_revision;
     }

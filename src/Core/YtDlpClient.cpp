@@ -7,17 +7,20 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cwchar>
 #include <cwctype>
 #include <map>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <system_error>
 
 namespace {
 
 constexpr const wchar_t* kOutputTemplate = L"%(title).200s [%(id)s].%(ext)s";
 constexpr const wchar_t* kProgressPrefix = L"__YTDLP_PROGRESS__";
+constexpr const wchar_t* kOutputPathPrefix = L"__YTDLP_OUTPUT__:";
 
 std::optional<int> HeightFromQuality(const std::wstring& quality) {
     if (quality.size() < 2 || quality.back() != L'p') {
@@ -86,6 +89,18 @@ std::map<std::wstring, std::wstring> ParseKeyValues(const std::wstring& payload)
     return values;
 }
 
+std::filesystem::path ExtractQuotedPath(const std::wstring& line) {
+    const size_t firstQuote = line.find(L'"');
+    if (firstQuote == std::wstring::npos) {
+        return {};
+    }
+    const size_t lastQuote = line.find_last_of(L'"');
+    if (lastQuote == firstQuote || lastQuote == std::wstring::npos) {
+        return {};
+    }
+    return std::filesystem::path(line.substr(firstQuote + 1, lastQuote - firstQuote - 1));
+}
+
 std::wstring MediaKindFor(const std::wstring& part, const std::wstring& vcodec, const std::wstring& acodec) {
     if (part == L"video" || part == L"audio") {
         return part;
@@ -151,6 +166,51 @@ std::wstring LowerCopy(std::wstring value) {
         return static_cast<wchar_t>(std::towlower(ch));
     });
     return value;
+}
+
+bool IsLikelyMediaFile(const std::filesystem::path& path) {
+    const std::wstring extension = LowerCopy(path.extension().wstring());
+    static constexpr std::array<std::wstring_view, 18> kMediaExtensions = {
+        L".mp4",
+        L".mkv",
+        L".webm",
+        L".mov",
+        L".avi",
+        L".m4v",
+        L".mpg",
+        L".mpeg",
+        L".ts",
+        L".mp3",
+        L".m4a",
+        L".opus",
+        L".ogg",
+        L".wav",
+        L".flac",
+        L".aac",
+        L".wma",
+        L".weba"
+    };
+    return std::find(kMediaExtensions.begin(), kMediaExtensions.end(), extension) != kMediaExtensions.end();
+}
+
+std::wstring PathKey(const std::filesystem::path& path) {
+    std::error_code ec;
+    std::filesystem::path absolutePath = std::filesystem::absolute(path, ec);
+    if (ec) {
+        absolutePath = path;
+    }
+    return LowerCopy(absolutePath.lexically_normal().wstring());
+}
+
+const OutputDirectoryFile* FindSnapshotEntry(
+    const std::vector<OutputDirectoryFile>& snapshot,
+    const std::filesystem::path& path
+) {
+    const std::wstring key = PathKey(path);
+    const auto it = std::find_if(snapshot.begin(), snapshot.end(), [&key](const OutputDirectoryFile& file) {
+        return PathKey(file.path) == key;
+    });
+    return it == snapshot.end() ? nullptr : &(*it);
 }
 
 bool LooksGdiFriendlyImageUrl(const std::wstring& url) {
@@ -291,14 +351,148 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     return args;
 }
 
+std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line) {
+    constexpr const wchar_t* kDestination = L"[download] Destination:";
+    constexpr const wchar_t* kMerging = L"[Merger] Merging formats into";
+    constexpr const wchar_t* kDownloadPrefix = L"[download] ";
+    constexpr const wchar_t* kAlreadyDownloaded = L" has already been downloaded";
+
+    std::wstring normalized = line;
+    while (!normalized.empty() && iswspace(normalized.front())) {
+        normalized.erase(normalized.begin());
+    }
+    if (!normalized.empty() && normalized.front() == L'\r') {
+        normalized.erase(normalized.begin());
+    }
+    while (!normalized.empty() && iswspace(normalized.front())) {
+        normalized.erase(normalized.begin());
+    }
+
+    if (normalized.starts_with(kOutputPathPrefix)) {
+        return std::filesystem::path(normalized.substr(std::wcslen(kOutputPathPrefix)));
+    }
+    if (normalized.starts_with(kDestination)) {
+        std::wstring value = normalized.substr(std::wcslen(kDestination));
+        while (!value.empty() && iswspace(value.front())) {
+            value.erase(value.begin());
+        }
+        return std::filesystem::path(value);
+    }
+    if (normalized.starts_with(kMerging)) {
+        return ExtractQuotedPath(normalized);
+    }
+    if (normalized.starts_with(kDownloadPrefix)) {
+        const size_t alreadyDownloaded = normalized.find(kAlreadyDownloaded, std::wcslen(kDownloadPrefix));
+        if (alreadyDownloaded != std::wstring::npos) {
+            return std::filesystem::path(normalized.substr(
+                std::wcslen(kDownloadPrefix),
+                alreadyDownloaded - std::wcslen(kDownloadPrefix)
+            ));
+        }
+    }
+    return {};
+}
+
+std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory) {
+    std::vector<OutputDirectoryFile> files;
+    std::error_code ec;
+    if (directory.empty() || !std::filesystem::is_directory(directory, ec)) {
+        return files;
+    }
+
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(directory, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec)) {
+            ec.clear();
+            continue;
+        }
+
+        OutputDirectoryFile file;
+        file.path = entry.path();
+        file.lastWriteTime = entry.last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            file.lastWriteTime = {};
+        }
+        file.size = entry.file_size(ec);
+        if (ec) {
+            ec.clear();
+            file.size = 0;
+        }
+        files.push_back(std::move(file));
+    }
+    return files;
+}
+
+std::filesystem::path FindDownloadedMediaFile(
+    const std::vector<std::filesystem::path>& reportedOutputFiles,
+    const std::filesystem::path& outputDirectory,
+    const std::vector<OutputDirectoryFile>& beforeDownload
+) {
+    std::error_code ec;
+    for (auto it = reportedOutputFiles.rbegin(); it != reportedOutputFiles.rend(); ++it) {
+        if (IsLikelyMediaFile(*it) && std::filesystem::is_regular_file(*it, ec)) {
+            return *it;
+        }
+        ec.clear();
+    }
+
+    if (outputDirectory.empty() || !std::filesystem::is_directory(outputDirectory, ec)) {
+        return {};
+    }
+
+    std::filesystem::path bestPath;
+    std::filesystem::file_time_type bestWriteTime = {};
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(outputDirectory, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || !IsLikelyMediaFile(entry.path())) {
+            ec.clear();
+            continue;
+        }
+
+        const std::filesystem::file_time_type lastWriteTime = entry.last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        const std::uintmax_t size = entry.file_size(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+
+        const OutputDirectoryFile* before = FindSnapshotEntry(beforeDownload, entry.path());
+        const bool isNewOrChanged =
+            before == nullptr ||
+            before->lastWriteTime != lastWriteTime ||
+            before->size != size;
+        if (!isNewOrChanged) {
+            continue;
+        }
+        if (bestPath.empty() || lastWriteTime > bestWriteTime) {
+            bestPath = entry.path();
+            bestWriteTime = lastWriteTime;
+        }
+    }
+    return bestPath;
+}
+
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     YtDlpProgress progress;
-    if (!line.starts_with(kProgressPrefix)) {
+    std::wstring normalized = line;
+    while (!normalized.empty() && iswspace(normalized.front())) {
+        normalized.erase(normalized.begin());
+    }
+    if (!normalized.starts_with(kProgressPrefix)) {
         return progress;
     }
 
     progress.recognized = true;
-    std::wstring payload = line.substr(std::wcslen(kProgressPrefix));
+    std::wstring payload = normalized.substr(std::wcslen(kProgressPrefix));
     if (!payload.empty() && payload.front() == L' ') {
         payload.erase(payload.begin());
     }
@@ -331,6 +525,13 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     progress.resolution = ResolutionForHeight(get(L"height"));
     progress.stage = StageFor(progress.rawStatus, progress.mediaKind);
     return progress;
+}
+
+YtDlpProcessLine ParseYtDlpProcessLine(const std::wstring& line) {
+    YtDlpProcessLine parsed;
+    parsed.outputPath = ExtractYtDlpOutputPath(line);
+    parsed.progress = ParseYtDlpProgressLine(line);
+    return parsed;
 }
 
 VideoPreview ParseVideoPreviewJson(const std::string& jsonText) {
