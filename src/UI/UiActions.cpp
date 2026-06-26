@@ -22,8 +22,13 @@ std::wstring Lowercase(std::wstring value) {
     return value;
 }
 
-bool IsTranscriptTextPath(const std::filesystem::path& path) {
-    return Lowercase(path.extension().wstring()) == L".txt";
+bool IsTranscriptArtifactPath(const std::filesystem::path& path) {
+    const std::wstring extension = Lowercase(path.extension().wstring());
+    return extension == L".txt" || extension == L".srt" || extension == L".vtt";
+}
+
+bool IsVotSubtitlesPath(const std::filesystem::path& path) {
+    return Lowercase(path.filename().wstring()).find(L".vot-subtitles.") != std::wstring::npos;
 }
 
 bool IsVoiceOverVideoPathForLanguage(const std::filesystem::path& path, const std::wstring& language) {
@@ -118,16 +123,57 @@ WhisperUtilityStatusText BuildWhisperUtilityStatusText(
     return text;
 }
 
-std::filesystem::path FindTranscriptTextPath(const std::vector<std::filesystem::path>& outputFiles) {
+std::vector<std::filesystem::path> FindTranscriptFilePaths(const std::vector<std::filesystem::path>& outputFiles) {
+    std::vector<std::filesystem::path> result;
     std::error_code ec;
-    for (auto it = outputFiles.rbegin(); it != outputFiles.rend(); ++it) {
-        if (!IsTranscriptTextPath(*it)) {
+    for (const std::filesystem::path& path : outputFiles) {
+        if (!IsTranscriptArtifactPath(path)) {
             continue;
         }
-        if (std::filesystem::is_regular_file(*it, ec)) {
-            return *it;
+        if (std::find(result.begin(), result.end(), path) != result.end()) {
+            continue;
+        }
+        if (std::filesystem::is_regular_file(path, ec)) {
+            result.push_back(path);
         }
         ec.clear();
+    }
+    return result;
+}
+
+bool HasWhisperTranscriptFilePath(const std::vector<std::filesystem::path>& outputFiles) {
+    const std::vector<std::filesystem::path> files = FindTranscriptFilePaths(outputFiles);
+    return std::any_of(files.begin(), files.end(), [](const std::filesystem::path& path) {
+        return !IsVotSubtitlesPath(path);
+    });
+}
+
+bool ShouldOfferVotSubtitlesAction(const std::vector<std::filesystem::path>& outputFiles) {
+    return FindTranscriptFilePaths(outputFiles).empty();
+}
+
+std::wstring TranscriptMenuFileLabel(const std::filesystem::path& path) {
+    const std::wstring extension = Lowercase(path.extension().wstring());
+    std::wstring label = path.filename().wstring();
+    if (extension == L".txt") {
+        label = L"TXT";
+    } else if (extension == L".srt") {
+        label = L"SRT";
+    } else if (extension == L".vtt") {
+        label = L"VTT";
+    }
+    return IsVotSubtitlesPath(path) ? L"VOT " + label : label;
+}
+
+std::filesystem::path FindTranscriptTextPath(const std::vector<std::filesystem::path>& outputFiles) {
+    const std::vector<std::filesystem::path> files = FindTranscriptFilePaths(outputFiles);
+    for (auto it = files.rbegin(); it != files.rend(); ++it) {
+        if (Lowercase(it->extension().wstring()) == L".txt") {
+            return *it;
+        }
+    }
+    if (!files.empty()) {
+        return files.back();
     }
     return {};
 }

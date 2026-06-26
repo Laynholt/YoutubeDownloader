@@ -16,6 +16,9 @@ public:
     std::filesystem::path ytDlpDir() const;
     std::filesystem::path ytDlpExePath() const;
     std::filesystem::path ytDlpVersionPath() const;
+    std::filesystem::path localVotDir() const;
+    std::filesystem::path localVotExePath() const;
+    std::filesystem::path localVotVersionPath() const;
     std::filesystem::path localFfmpegBinDir() const;
     std::filesystem::path localFfmpegExePath() const;
     std::filesystem::path localFfprobeExePath() const;

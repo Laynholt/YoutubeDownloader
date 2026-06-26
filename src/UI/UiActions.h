@@ -44,6 +44,10 @@ WhisperUtilityStatusText BuildWhisperUtilityStatusText(
     bool modelAvailable,
     const std::filesystem::path& modelPath
 );
+std::vector<std::filesystem::path> FindTranscriptFilePaths(const std::vector<std::filesystem::path>& outputFiles);
+bool HasWhisperTranscriptFilePath(const std::vector<std::filesystem::path>& outputFiles);
+bool ShouldOfferVotSubtitlesAction(const std::vector<std::filesystem::path>& outputFiles);
+std::wstring TranscriptMenuFileLabel(const std::filesystem::path& path);
 std::filesystem::path FindTranscriptTextPath(const std::vector<std::filesystem::path>& outputFiles);
 std::filesystem::path FindVoiceOverVideoPath(
     const std::vector<std::filesystem::path>& outputFiles,

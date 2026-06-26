@@ -66,8 +66,10 @@ constexpr int kQueueTranscriptButtonWidth = 132;
 constexpr int kQueueVoiceOverButtonWidth = 104;
 constexpr int kQueueButtonHeight = 26;
 constexpr int kQueueButtonGap = 8;
-constexpr int kTranscriptMenuOpenFile = 1;
-constexpr int kTranscriptMenuRevealInExplorer = 2;
+constexpr int kTranscriptMenuStartWhisper = 3;
+constexpr int kTranscriptMenuExportVotSubtitles = 4;
+constexpr int kTranscriptMenuOpenFileBase = 1000;
+constexpr int kTranscriptMenuRevealFileBase = 2000;
 constexpr int kVoiceOverMenuOpenVideo = 1;
 constexpr int kVoiceOverMenuRevealInExplorer = 2;
 constexpr int kVoiceOverMenuRebuild = 3;
@@ -415,6 +417,42 @@ DownloadTaskResult TranslateDownloadedMediaVoiceOver(
     return DownloadTaskResult{true, L"", outputFiles, L"Готово · перевод сохранен"};
 }
 
+DownloadTaskResult ExportVotSubtitles(
+    const DownloadTaskCallbacks& callbacks,
+    const VotSubtitlesRequest& request,
+    std::vector<std::filesystem::path> outputFiles,
+    HANDLE cancelEvent
+) {
+    AddUniqueOutputPath(outputFiles, request.mediaPath);
+
+    if (callbacks.onPostProcessing) {
+        callbacks.onPostProcessing(0.0, L"Preparing VOT subtitles");
+    }
+
+    const VotSubtitlesResult subtitlesResult = VotSubtitlesClient::Export(
+        request,
+        VoiceOverTranslationCallbacks{
+            {},
+            [callbacks](double percent, const std::wstring& status) {
+                if (callbacks.onPostProcessing) {
+                    callbacks.onPostProcessing(percent, status);
+                }
+            }
+        },
+        cancelEvent
+    );
+
+    if (subtitlesResult.canceled) {
+        return DownloadTaskResult{false, L"Canceled", outputFiles, L"Ready - VOT subtitles canceled"};
+    }
+    if (!subtitlesResult.success) {
+        return DownloadTaskResult{true, L"", outputFiles, L"Ready - VOT subtitles failed: " + subtitlesResult.errorText};
+    }
+
+    AddUniqueOutputPath(outputFiles, subtitlesResult.subtitlesPath);
+    return DownloadTaskResult{true, L"", outputFiles, L"Ready - VOT subtitles saved"};
+}
+
 std::filesystem::path ResolveWhisperExePath(const AppPaths& paths, const AppConfig& config) {
     const ToolInstallStatus status = WhisperManager::Resolve(paths, config);
     if (status.installed) {
@@ -427,8 +465,8 @@ std::filesystem::path ResolveWhisperModelPath(const AppPaths& paths, const AppCo
     return config.whisperModelPath.empty() ? paths.localWhisperModelPath() : config.whisperModelPath;
 }
 
-std::filesystem::path ResolveVotCliPath(const AppConfig& config) {
-    const VotCliStatus status = VotCliManager::Resolve(config);
+std::filesystem::path ResolveVotCliPath(const AppPaths& paths, const AppConfig& config) {
+    const VotCliStatus status = VotCliManager::Resolve(paths, config);
     return status.available ? status.executable : config.votCliPath;
 }
 
@@ -532,14 +570,20 @@ bool TaskHasDownloadedMediaPath(const DownloadTaskSnapshot& task) {
 
 bool TaskCanStartTranscription(const DownloadTaskSnapshot& task) {
     return task.state == DownloadTaskState::Completed &&
-           !TaskHasTranscriptTextPath(task) &&
+           !HasWhisperTranscriptFilePath(task.outputFiles) &&
+           TaskHasDownloadedMediaPath(task);
+}
+
+bool TaskCanStartVotSubtitles(const DownloadTaskSnapshot& task) {
+    return task.state == DownloadTaskState::Completed &&
+           !task.request.url.empty() &&
            TaskHasDownloadedMediaPath(task);
 }
 
 RECT QueueVoiceOverButtonRect(const RECT& row, const DownloadTaskSnapshot& task) {
     const bool showsTranscript =
         task.state == DownloadTaskState::Completed &&
-        (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task));
+        (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task) || TaskCanStartVotSubtitles(task));
     const RECT anchor = showsTranscript ? QueueTranscriptButtonRect(row) : QueueRightButtonRect(row);
     return {
         anchor.left - kQueueButtonGap - kQueueVoiceOverButtonWidth,
@@ -561,7 +605,7 @@ int QueueTextRight(const RECT& row, const DownloadTaskSnapshot& task) {
         return QueueVoiceOverButtonRect(row, task).left - 12;
     }
     if (task.state == DownloadTaskState::Completed &&
-        (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task))) {
+        (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task) || TaskCanStartVotSubtitles(task))) {
         return QueueTranscriptButtonRect(row).left - 12;
     }
     return QueueRightButtonRect(row).left - 12;
@@ -1953,6 +1997,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         const int textRight = QueueTextRight(row, task);
         const bool hasTranscript = TaskHasTranscriptTextPath(task);
         const bool canStartTranscription = TaskCanStartTranscription(task);
+        const bool canStartVotSubtitles = TaskCanStartVotSubtitles(task);
         const bool hasVoiceOver = TaskHasVoiceOverVideoPath(task);
         const bool canStartVoiceOver = TaskCanStartVoiceOverTranslation(task);
 
@@ -2043,7 +2088,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
                     true,
                     m_hotQueueTaskId == task.id && m_hotQueueAction == kQueueActionTranscript
                 );
-            } else if (canStartTranscription) {
+            } else if (canStartTranscription || canStartVotSubtitles) {
                 DrawSmallActionButton(
                     dc,
                     transcriptButton,
@@ -2092,8 +2137,44 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
 }
 
 bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const RECT& buttonRect) {
-    const std::filesystem::path transcriptPath = FindTranscriptTextPath(task.outputFiles);
-    if (transcriptPath.empty()) {
+    const std::vector<std::filesystem::path> transcriptFiles = FindTranscriptFilePaths(task.outputFiles);
+    const bool canStartWhisper = TaskCanStartTranscription(task);
+    const bool canExportVot = ShouldOfferVotSubtitlesAction(task.outputFiles) && TaskCanStartVotSubtitles(task);
+    if (transcriptFiles.empty() && (canStartWhisper || canExportVot)) {
+        HMENU startMenu = CreatePopupMenu();
+        if (!startMenu) {
+            SetTransientStatus(L"Could not open transcript menu");
+            return true;
+        }
+        if (canStartWhisper) {
+            AppendMenuW(startMenu, MF_STRING, kTranscriptMenuStartWhisper, L"Whisper TXT/SRT");
+        }
+        if (canExportVot) {
+            AppendMenuW(startMenu, MF_STRING, kTranscriptMenuExportVotSubtitles, L"VOT SRT");
+        }
+
+        POINT startAnchor = {buttonRect.left, buttonRect.bottom};
+        ClientToScreen(m_window, &startAnchor);
+        const int startSelected = TrackPopupMenu(
+            startMenu,
+            TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
+            startAnchor.x,
+            startAnchor.y,
+            0,
+            m_window,
+            nullptr
+        );
+        DestroyMenu(startMenu);
+
+        if (startSelected == kTranscriptMenuStartWhisper) {
+            return StartTaskTranscription(task);
+        }
+        if (startSelected == kTranscriptMenuExportVotSubtitles) {
+            return StartTaskVotSubtitles(task);
+        }
+        return true;
+    }
+    if (transcriptFiles.empty()) {
         SetTransientStatus(L"Файл расшифровки не найден");
         return true;
     }
@@ -2103,8 +2184,26 @@ bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const 
         SetTransientStatus(L"Не удалось открыть меню расшифровки");
         return true;
     }
-    AppendMenuW(menu, MF_STRING, kTranscriptMenuOpenFile, L"Открыть TXT");
-    AppendMenuW(menu, MF_STRING, kTranscriptMenuRevealInExplorer, L"Показать в Проводнике");
+    for (size_t index = 0; index < transcriptFiles.size(); ++index) {
+        const std::wstring label = L"Открыть " + TranscriptMenuFileLabel(transcriptFiles[index]);
+        AppendMenuW(menu, MF_STRING, kTranscriptMenuOpenFileBase + static_cast<UINT>(index), label.c_str());
+    }
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    for (size_t index = 0; index < transcriptFiles.size(); ++index) {
+        const std::wstring label = L"Показать " + TranscriptMenuFileLabel(transcriptFiles[index]);
+        AppendMenuW(menu, MF_STRING, kTranscriptMenuRevealFileBase + static_cast<UINT>(index), label.c_str());
+    }
+
+    if (canStartWhisper || canExportVot) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    if (canStartWhisper) {
+        AppendMenuW(menu, MF_STRING, kTranscriptMenuStartWhisper, L"Whisper TXT/SRT");
+    }
+    if (canExportVot) {
+        AppendMenuW(menu, MF_STRING, kTranscriptMenuExportVotSubtitles, L"VOT SRT");
+    }
 
     POINT anchor = {buttonRect.left, buttonRect.bottom};
     ClientToScreen(m_window, &anchor);
@@ -2119,7 +2218,15 @@ bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const 
     );
     DestroyMenu(menu);
 
-    if (selected == kTranscriptMenuOpenFile) {
+    if (selected == kTranscriptMenuStartWhisper) {
+        return StartTaskTranscription(task);
+    }
+    if (selected == kTranscriptMenuExportVotSubtitles) {
+        return StartTaskVotSubtitles(task);
+    }
+    if (selected >= kTranscriptMenuOpenFileBase &&
+        selected < kTranscriptMenuOpenFileBase + static_cast<int>(transcriptFiles.size())) {
+        const std::filesystem::path& transcriptPath = transcriptFiles[static_cast<size_t>(selected - kTranscriptMenuOpenFileBase)];
         const std::wstring path = transcriptPath.wstring();
         const std::wstring directory = transcriptPath.parent_path().wstring();
         HINSTANCE result = ShellExecuteW(m_window, L"open", path.c_str(), nullptr, directory.c_str(), SW_SHOWNORMAL);
@@ -2128,7 +2235,9 @@ bool Application::ShowTranscriptActions(const DownloadTaskSnapshot& task, const 
         } else {
             SetTransientStatus(L"Открыта расшифровка: " + transcriptPath.filename().wstring());
         }
-    } else if (selected == kTranscriptMenuRevealInExplorer) {
+    } else if (selected >= kTranscriptMenuRevealFileBase &&
+               selected < kTranscriptMenuRevealFileBase + static_cast<int>(transcriptFiles.size())) {
+        const std::filesystem::path& transcriptPath = transcriptFiles[static_cast<size_t>(selected - kTranscriptMenuRevealFileBase)];
         const std::wstring arguments = L"/select,\"" + transcriptPath.wstring() + L"\"";
         HINSTANCE result = ShellExecuteW(m_window, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(result) <= 32) {
@@ -2248,6 +2357,71 @@ bool Application::StartTaskTranscription(const DownloadTaskSnapshot& task) {
     return true;
 }
 
+bool Application::StartTaskVotSubtitles(const DownloadTaskSnapshot& task) {
+    if (!m_downloadQueue || !m_paths) {
+        return false;
+    }
+
+    const std::filesystem::path mediaPath =
+        FindDownloadedMediaFile(task.outputFiles, task.request.outputDirectory, {});
+    if (mediaPath.empty()) {
+        SetTransientStatus(L"Media file for VOT subtitles was not found");
+        return true;
+    }
+
+    const VotCliStatus votCli = VotCliManager::Resolve(*m_paths, m_config);
+    if (!votCli.available) {
+        SetTransientStatus(votCli.message.empty() ? L"VOT helper was not found" : votCli.message);
+        return true;
+    }
+
+    VotSubtitlesRequest request;
+    request.mediaPath = mediaPath;
+    request.votCliPath = votCli.executable;
+    request.youtubeUrl = task.request.url;
+    request.language = m_config.voiceOverLanguage.empty() ? L"ru" : m_config.voiceOverLanguage;
+    request.format = L"srt";
+
+    const bool started = m_downloadQueue->StartPostProcessing(
+        task.id,
+        [request](
+            const DownloadTaskSnapshot& currentTask,
+            std::stop_token stopToken,
+            const DownloadTaskCallbacks& callbacks
+        ) {
+            HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!cancelEvent) {
+                return DownloadTaskResult{true, L"", currentTask.outputFiles, L"Ready - VOT subtitles failed: could not create cancel event"};
+            }
+
+            DownloadTaskResult result;
+            try {
+                std::stop_callback stopCallback(stopToken, [cancelEvent]() {
+                    SetEvent(cancelEvent);
+                });
+                result = ExportVotSubtitles(callbacks, request, currentTask.outputFiles, cancelEvent);
+            } catch (const std::exception& ex) {
+                result = DownloadTaskResult{
+                    true,
+                    L"",
+                    currentTask.outputFiles,
+                    L"Ready - VOT subtitles failed: " + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+                };
+            } catch (...) {
+                result = DownloadTaskResult{true, L"", currentTask.outputFiles, L"Ready - VOT subtitles failed: unknown error"};
+            }
+            CloseHandle(cancelEvent);
+            return result;
+        },
+        L"Preparing VOT subtitles"
+    );
+
+    if (!started) {
+        SetTransientStatus(L"Could not start VOT subtitles");
+    }
+    return true;
+}
+
 bool Application::StartTaskVoiceOverTranslation(const DownloadTaskSnapshot& task) {
     if (!m_downloadQueue || !m_paths) {
         return false;
@@ -2265,9 +2439,9 @@ bool Application::StartTaskVoiceOverTranslation(const DownloadTaskSnapshot& task
         return true;
     }
 
-    const VotCliStatus votCli = VotCliManager::Resolve(m_config);
+    const VotCliStatus votCli = VotCliManager::Resolve(*m_paths, m_config);
     if (!votCli.available) {
-        SetTransientStatus(votCli.message.empty() ? L"vot-cli не найден" : votCli.message);
+        SetTransientStatus(votCli.message.empty() ? L"VOT helper не найден" : votCli.message);
         return true;
     }
 
@@ -2391,8 +2565,8 @@ bool Application::HandleQueueClick(POINT point) {
                    PtInRect(&transcriptButton, point)) {
             if (TaskHasTranscriptTextPath(task)) {
                 handled = ShowTranscriptActions(task, transcriptButton);
-            } else if (TaskCanStartTranscription(task)) {
-                handled = StartTaskTranscription(task);
+            } else if (TaskCanStartTranscription(task) || TaskCanStartVotSubtitles(task)) {
+                handled = ShowTranscriptActions(task, transcriptButton);
             }
         } else if ((task.state == DownloadTaskState::Canceled ||
                     task.state == DownloadTaskState::Failed ||
@@ -2545,7 +2719,7 @@ bool Application::UpdateQueueHover(POINT point) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionVoiceOver;
             } else if (task.state == DownloadTaskState::Completed &&
-                       (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task)) &&
+                       (TaskHasTranscriptTextPath(task) || TaskCanStartTranscription(task) || TaskCanStartVotSubtitles(task)) &&
                        PtInRect(&transcriptButton, point)) {
                 hotTaskId = task.id;
                 hotAction = kQueueActionTranscript;
@@ -2901,6 +3075,14 @@ void Application::StartToolCheck() {
                     throw;
                 }
             }
+            try {
+                const ToolInstallStatus votStatus = VotCliManager::Status(paths);
+                const ReleaseAssetInfo votRelease = VotCliManager::CheckLatestRelease(cancelEvent.get());
+                if (ShouldInstallVotUpdate(votStatus, votRelease)) {
+                    VotCliManager::InstallOrUpdate(paths, votRelease, {}, cancelEvent.get());
+                }
+            } catch (...) {
+            }
             result.ready = result.status.installed;
             result.message = result.ready
                 ? L"yt-dlp готов" + (result.status.version.empty() ? L"" : L" (" + result.status.version + L")")
@@ -3088,7 +3270,7 @@ void Application::EnqueueCurrentUrl() {
         request.quality = m_config.quality;
         request.container = m_config.container;
         request.whisperLanguage = m_config.whisperLanguage;
-        request.votCliPath = ResolveVotCliPath(m_config);
+        request.votCliPath = m_paths ? ResolveVotCliPath(*m_paths, m_config) : m_config.votCliPath;
         request.voiceOverLanguage = m_config.voiceOverLanguage.empty() ? L"ru" : m_config.voiceOverLanguage;
         request.voiceOverMode = m_config.voiceOverMode == L"mixed" ? L"mixed" : L"separate";
         request.originalVolumePercent = std::clamp(m_config.originalVolumePercent, 0, 100);

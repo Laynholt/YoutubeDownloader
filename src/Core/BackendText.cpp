@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -125,6 +126,36 @@ std::string PathToUtf8(const std::filesystem::path& path) {
 
 std::filesystem::path PathFromUtf8(const std::string& value) {
     return std::filesystem::path(Utf8ToWide(value));
+}
+
+std::wstring TrimWhitespace(const std::wstring& text) {
+    size_t begin = 0;
+    while (begin < text.size() && std::iswspace(text[begin])) {
+        ++begin;
+    }
+
+    size_t end = text.size();
+    while (end > begin && std::iswspace(text[end - 1])) {
+        --end;
+    }
+    return text.substr(begin, end - begin);
+}
+
+std::wstring LastNonEmptyLine(const std::wstring& text) {
+    size_t end = text.size();
+    while (end > 0) {
+        const size_t newline = text.rfind(L'\n', end - 1);
+        const size_t begin = newline == std::wstring::npos ? 0 : newline + 1;
+        const std::wstring line = TrimWhitespace(text.substr(begin, end - begin));
+        if (!line.empty()) {
+            return line;
+        }
+        if (newline == std::wstring::npos) {
+            break;
+        }
+        end = newline;
+    }
+    return {};
 }
 
 std::wstring FormatBytes(std::uint64_t bytes) {

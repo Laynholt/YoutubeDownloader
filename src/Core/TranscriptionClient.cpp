@@ -1,5 +1,7 @@
 #include "TranscriptionClient.h"
 
+#include "BackendText.h"
+#include "FileOperations.h"
 #include "ProcessRunner.h"
 
 #include <algorithm>
@@ -20,37 +22,6 @@ std::filesystem::path PathWithExtension(std::filesystem::path base, const wchar_
     return base;
 }
 
-std::wstring TrimWhitespace(const std::wstring& text) {
-    size_t begin = 0;
-    while (begin < text.size() && std::iswspace(text[begin])) {
-        ++begin;
-    }
-
-    size_t end = text.size();
-    while (end > begin && std::iswspace(text[end - 1])) {
-        --end;
-    }
-
-    return text.substr(begin, end - begin);
-}
-
-std::wstring LastNonEmptyLine(const std::wstring& text) {
-    size_t end = text.size();
-    while (end > 0) {
-        const size_t newline = text.rfind(L'\n', end - 1);
-        const size_t begin = newline == std::wstring::npos ? 0 : newline + 1;
-        const std::wstring line = TrimWhitespace(text.substr(begin, end - begin));
-        if (!line.empty()) {
-            return line;
-        }
-        if (newline == std::wstring::npos) {
-            break;
-        }
-        end = newline;
-    }
-    return {};
-}
-
 std::wstring ProcessErrorText(const ProcessRunResult& result, const std::wstring& fallback) {
     return BuildProcessErrorSummary(result.stderrText, result.stdoutText, fallback);
 }
@@ -59,29 +30,6 @@ TranscriptionResult Failed(std::wstring errorText) {
     TranscriptionResult result;
     result.errorText = std::move(errorText);
     return result;
-}
-
-bool MoveTranscriptFile(const std::filesystem::path& source, const std::filesystem::path& destination) {
-    if (!IsRegularFile(source)) {
-        return false;
-    }
-
-    std::error_code ec;
-    std::filesystem::remove(destination, ec);
-    ec.clear();
-    std::filesystem::rename(source, destination, ec);
-    if (!ec && IsRegularFile(destination)) {
-        return true;
-    }
-
-    ec.clear();
-    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec || !IsRegularFile(destination)) {
-        return false;
-    }
-    ec.clear();
-    std::filesystem::remove(source, ec);
-    return true;
 }
 
 void EmitTranscriptionProgress(
@@ -290,8 +238,8 @@ TranscriptionResult TranscriptionClient::Transcribe(
         return Failed(L"Whisper завершился с ошибкой: " + ProcessErrorText(recognized, L"неизвестная ошибка"));
     }
 
-    const bool textMoved = MoveTranscriptFile(paths.tempTextPath, paths.finalTextPath);
-    const bool srtMoved = MoveTranscriptFile(paths.tempSrtPath, paths.finalSrtPath);
+    const bool textMoved = MoveFileReplacing(paths.tempTextPath, paths.finalTextPath);
+    const bool srtMoved = MoveFileReplacing(paths.tempSrtPath, paths.finalSrtPath);
     if (!textMoved && !srtMoved) {
         return Failed(L"Whisper не создал файл расшифровки");
     }

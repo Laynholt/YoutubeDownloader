@@ -44,6 +44,18 @@ std::filesystem::path AppPaths::ytDlpVersionPath() const {
     return ytDlpDir() / L"version.txt";
 }
 
+std::filesystem::path AppPaths::localVotDir() const {
+    return toolsDir() / L"vot";
+}
+
+std::filesystem::path AppPaths::localVotExePath() const {
+    return localVotDir() / L"vot-helper.exe";
+}
+
+std::filesystem::path AppPaths::localVotVersionPath() const {
+    return localVotDir() / L"version.txt";
+}
+
 std::filesystem::path AppPaths::localFfmpegBinDir() const {
     return toolsDir() / L"ffmpeg" / L"bin";
 }

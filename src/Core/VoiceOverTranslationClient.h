@@ -35,6 +35,30 @@ struct VoiceOverTranslationResult {
     std::wstring errorText;
 };
 
+struct VotHelperResult {
+    bool parsed = false;
+    bool ok = false;
+    std::wstring operation;
+    std::wstring state;
+    std::filesystem::path outputPath;
+    std::wstring errorText;
+};
+
+struct VotSubtitlesRequest {
+    std::filesystem::path mediaPath;
+    std::filesystem::path votCliPath;
+    std::wstring youtubeUrl;
+    std::wstring language = L"ru";
+    std::wstring format = L"srt";
+};
+
+struct VotSubtitlesResult {
+    bool success = false;
+    bool canceled = false;
+    std::filesystem::path subtitlesPath;
+    std::wstring errorText;
+};
+
 struct VoiceOverTranslationPaths {
     std::filesystem::path tempAudioPath;
     std::filesystem::path finalAudioPath;
@@ -56,6 +80,16 @@ std::vector<std::wstring> BuildVotCliArguments(
     const VoiceOverTranslationRequest& request,
     const std::filesystem::path& outputAudioPath
 );
+std::filesystem::path BuildVotSubtitlesPath(
+    const std::filesystem::path& mediaPath,
+    const std::wstring& language,
+    const std::wstring& format = L"srt"
+);
+std::vector<std::wstring> BuildVotSubtitlesArguments(
+    const VotSubtitlesRequest& request,
+    const std::filesystem::path& outputPath
+);
+VotHelperResult ParseVotHelperResult(const std::wstring& stdoutText);
 VoiceOverProcessInvocation BuildVotCliInvocation(
     const VoiceOverTranslationRequest& request,
     const std::filesystem::path& outputAudioPath
@@ -77,6 +111,15 @@ class VoiceOverTranslationClient {
 public:
     static VoiceOverTranslationResult Translate(
         const VoiceOverTranslationRequest& request,
+        const VoiceOverTranslationCallbacks& callbacks = {},
+        HANDLE cancelEvent = nullptr
+    );
+};
+
+class VotSubtitlesClient {
+public:
+    static VotSubtitlesResult Export(
+        const VotSubtitlesRequest& request,
         const VoiceOverTranslationCallbacks& callbacks = {},
         HANDLE cancelEvent = nullptr
     );

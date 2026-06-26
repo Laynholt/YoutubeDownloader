@@ -70,6 +70,7 @@ private:
     bool ShowTranscriptActions(const DownloadTaskSnapshot& task, const RECT& buttonRect);
     bool ShowVoiceOverActions(const DownloadTaskSnapshot& task, const RECT& buttonRect);
     bool StartTaskTranscription(const DownloadTaskSnapshot& task);
+    bool StartTaskVotSubtitles(const DownloadTaskSnapshot& task);
     bool HandleQueueContextMenu(POINT point);
     bool StartTaskVoiceOverTranslation(const DownloadTaskSnapshot& task);
     bool UpdateQueueHover(POINT point);

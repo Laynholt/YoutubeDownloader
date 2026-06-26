@@ -33,7 +33,9 @@ std::wstring AsciiToWide(const std::string& value) {
 }
 
 std::wstring NormalizeVersion(std::wstring version) {
-    if (!version.empty() && (version.front() == L'v' || version.front() == L'V')) {
+    if (version.size() > 1 &&
+        (version.front() == L'v' || version.front() == L'V') &&
+        std::iswdigit(version[1])) {
         version.erase(version.begin());
     }
     return version;
@@ -72,44 +74,6 @@ std::filesystem::path SearchPathExe(const wchar_t* exeName) {
     }
     buffer.resize(written);
     return std::filesystem::path(buffer);
-}
-
-std::filesystem::path CmdExePath() {
-    wchar_t* comspec = nullptr;
-    size_t comspecLength = 0;
-    if (_wdupenv_s(&comspec, &comspecLength, L"COMSPEC") == 0 && comspec && comspecLength > 0) {
-        std::filesystem::path result = comspec;
-        free(comspec);
-        return result;
-    }
-    free(comspec);
-
-    std::filesystem::path systemCmd = L"C:\\Windows\\System32\\cmd.exe";
-    std::error_code ec;
-    if (std::filesystem::is_regular_file(systemCmd, ec)) {
-        return systemCmd;
-    }
-    return L"cmd.exe";
-}
-
-std::wstring LowerPathExtension(const std::filesystem::path& path) {
-    std::wstring extension = path.extension().wstring();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
-        return static_cast<wchar_t>(std::towlower(ch));
-    });
-    return extension;
-}
-
-std::filesystem::path SearchNpmExecutable() {
-    std::filesystem::path npm = SearchPathExe(L"npm.cmd");
-    if (IsExecutableFile(npm)) {
-        return npm;
-    }
-    npm = SearchPathExe(L"npm.exe");
-    if (IsExecutableFile(npm)) {
-        return npm;
-    }
-    return {};
 }
 
 std::wstring ReadTextFile(const std::filesystem::path& path) {
@@ -315,6 +279,58 @@ void LaunchDetachedPowerShellScript(const std::filesystem::path& scriptPath) {
     CloseHandle(process.hProcess);
 }
 
+void InstallGitHubReleaseExecutable(
+    const ReleaseAssetInfo& release,
+    const std::filesystem::path& target,
+    const std::filesystem::path& versionPath,
+    const std::wstring& downloadStatus,
+    const std::wstring& installStatus,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent,
+    const std::function<bool(const std::filesystem::path&)>& validate = {}
+) {
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("release asset was not found");
+    }
+
+    const std::filesystem::path tmpPath = target.wstring() + L".new";
+    std::error_code ec;
+    std::filesystem::remove(tmpPath, ec);
+
+    if (onProgress) {
+        onProgress(0, 0, downloadStatus);
+    }
+    WinHttpClient::DownloadFile(
+        release.downloadUrl,
+        tmpPath,
+        [onProgress, downloadStatus](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, downloadStatus);
+            }
+        },
+        cancelEvent
+    );
+
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+
+    const std::uint64_t downloadedSize = static_cast<std::uint64_t>(std::filesystem::file_size(tmpPath, ec));
+    if (ec) {
+        throw std::runtime_error("failed to inspect downloaded executable");
+    }
+    if (validate && !validate(tmpPath)) {
+        std::filesystem::remove(tmpPath, ec);
+        throw std::runtime_error("downloaded executable failed validation");
+    }
+
+    if (onProgress) {
+        onProgress(downloadedSize, downloadedSize, installStatus);
+    }
+    CommitDownloadedFile(tmpPath, target, downloadedSize, downloadedSize);
+    WriteTextFile(versionPath, release.version);
+}
+
 } // namespace
 
 ReleaseAssetInfo ParseGitHubReleaseAsset(const std::string& releaseJson, const std::string& assetName) {
@@ -349,27 +365,6 @@ ReleaseAssetInfo ParseGitHubReleaseAsset(const std::string& releaseJson, const s
     }
 
     return info;
-}
-
-ToolProcessInvocation BuildVotCliInstallInvocation(const std::filesystem::path& npmExecutable) {
-    ToolProcessInvocation invocation;
-    const std::vector<std::wstring> npmArguments = {L"install", L"-g", L"vot-cli"};
-    const std::wstring extension = LowerPathExtension(npmExecutable);
-    if (extension == L".cmd" || extension == L".bat") {
-        invocation.executable = CmdExePath();
-        invocation.arguments = {
-            L"/d",
-            L"/c",
-            L"call",
-            npmExecutable.wstring()
-        };
-        invocation.arguments.insert(invocation.arguments.end(), npmArguments.begin(), npmArguments.end());
-        return invocation;
-    }
-
-    invocation.executable = npmExecutable;
-    invocation.arguments = npmArguments;
-    return invocation;
 }
 
 FfmpegStatus FfmpegManager::Resolve(const AppPaths& paths, const AppConfig& config) {
@@ -845,7 +840,19 @@ std::filesystem::path WhisperManager::DownloadModel(
     return target;
 }
 
-VotCliStatus VotCliManager::Resolve(const AppConfig& config) {
+const char* VotCliManager::WindowsAssetName() {
+    return "vot-helper.exe";
+}
+
+ToolInstallStatus VotCliManager::Status(const AppPaths& paths) {
+    ToolInstallStatus status;
+    status.executable = paths.localVotExePath();
+    status.version = ReadTextFile(paths.localVotVersionPath());
+    status.installed = IsExecutableFile(status.executable);
+    return status;
+}
+
+VotCliStatus VotCliManager::Resolve(const AppPaths& paths, const AppConfig& config) {
     if (!config.votCliPath.empty()) {
         VotCliStatus configured = ResolveUserPath(config.votCliPath);
         if (configured.available || !configured.executable.empty()) {
@@ -853,109 +860,95 @@ VotCliStatus VotCliManager::Resolve(const AppConfig& config) {
         }
     }
 
-    VotCliStatus status;
-    status.nodeExecutable = SearchPathExe(L"node.exe");
-    status.nodeAvailable = IsExecutableFile(status.nodeExecutable);
-    status.executable = SearchPathExe(L"vot-cli.cmd");
-    if (status.executable.empty()) {
-        status.executable = SearchPathExe(L"vot-cli.exe");
-    }
-
-    if (!IsExecutableFile(status.executable)) {
-        status.message = L"vot-cli не найден";
-        return status;
-    }
-    if (!status.nodeAvailable) {
-        status.message = L"node.exe не найден";
+    const ToolInstallStatus local = Status(paths);
+    if (local.installed) {
+        VotCliStatus status;
+        status.available = true;
+        status.executable = local.executable;
+        status.version = local.version;
+        status.message = L"VOT helper найден";
         return status;
     }
 
-    status.available = true;
-    status.message = L"vot-cli найден";
-    return status;
+    VotCliStatus pathStatus;
+    pathStatus.executable = SearchPathExe(L"vot-helper.exe");
+    if (IsExecutableFile(pathStatus.executable)) {
+        pathStatus.available = true;
+        pathStatus.message = L"VOT helper найден";
+        return pathStatus;
+    }
+
+    pathStatus.message = L"VOT helper не найден";
+    return pathStatus;
 }
 
 VotCliStatus VotCliManager::ResolveUserPath(const std::filesystem::path& path) {
     VotCliStatus status;
-    status.nodeExecutable = SearchPathExe(L"node.exe");
-    status.nodeAvailable = IsExecutableFile(status.nodeExecutable);
 
     if (path.empty()) {
-        status.message = L"Путь vot-cli не задан";
+        status.message = L"Путь VOT helper не задан";
         return status;
     }
 
     std::error_code ec;
-    if (std::filesystem::is_regular_file(path, ec)) {
+    if (std::filesystem::is_regular_file(path, ec) && path.filename() == L"vot-helper.exe") {
         status.executable = path;
     } else if (std::filesystem::is_directory(path, ec)) {
-        const std::filesystem::path cmd = path / L"vot-cli.cmd";
-        const std::filesystem::path exe = path / L"vot-cli.exe";
-        if (IsExecutableFile(cmd)) {
-            status.executable = cmd;
-        } else if (IsExecutableFile(exe)) {
-            status.executable = exe;
+        const std::filesystem::path helper = path / L"vot-helper.exe";
+        if (IsExecutableFile(helper)) {
+            status.executable = helper;
         }
     }
 
     if (!IsExecutableFile(status.executable)) {
-        status.message = L"В выбранном пути не найден vot-cli.cmd";
-        return status;
-    }
-    if (!status.nodeAvailable) {
-        status.message = L"node.exe не найден";
+        status.message = L"В выбранном пути не найден vot-helper.exe";
         return status;
     }
 
     status.available = true;
-    status.message = L"vot-cli найден";
+    status.message = L"VOT helper найден";
     return status;
 }
 
-VotCliStatus VotCliManager::InstallGlobal(
+ReleaseAssetInfo VotCliManager::CheckLatestRelease(HANDLE cancelEvent) {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/Laynholt/vot_exe/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, WindowsAssetName());
+}
+
+ToolInstallStatus VotCliManager::InstallOrUpdate(
+    const AppPaths& paths,
     const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
     HANDLE cancelEvent
 ) {
-    const std::filesystem::path npm = SearchNpmExecutable();
-    if (!IsExecutableFile(npm)) {
-        throw std::runtime_error("npm was not found");
+    const ReleaseAssetInfo release = CheckLatestRelease(cancelEvent);
+    return InstallOrUpdate(paths, release, onProgress, cancelEvent);
+}
+
+ToolInstallStatus VotCliManager::InstallOrUpdate(
+    const AppPaths& paths,
+    const ReleaseAssetInfo& release,
+    const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
+    HANDLE cancelEvent
+) {
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("VOT helper release asset was not found");
     }
 
-    if (onProgress) {
-        onProgress(0, 0, L"Установка vot-cli через npm...");
-    }
-
-    ProcessRunOptions options;
-    const ToolProcessInvocation invocation = BuildVotCliInstallInvocation(npm);
-    options.executable = invocation.executable;
-    options.arguments = invocation.arguments;
-    options.timeoutMs = INFINITE;
-    options.cancelEvent = cancelEvent;
-    const auto handleLine = [onProgress](const std::wstring& line) {
-        if (onProgress && !line.empty()) {
-            onProgress(0, 0, line);
-        }
-    };
-    options.onStdoutLine = handleLine;
-    options.onStderrLine = handleLine;
-
-    const ProcessRunResult result = ProcessRunner::Run(options);
-    if (result.canceled) {
-        throw std::runtime_error("operation canceled");
-    }
-    if (result.exitCode != 0) {
-        const std::wstring message = result.stderrText.empty() ? result.stdoutText : result.stderrText;
-        const std::string utf8Message = WideToUtf8(message.empty() ? L"npm install -g vot-cli failed" : message);
-        throw std::runtime_error(utf8Message);
-    }
-
-    if (onProgress) {
-        onProgress(0, 0, L"Проверка vot-cli...");
-    }
-
-    VotCliStatus status = Resolve(AppConfig{});
-    if (!status.available) {
-        throw std::runtime_error("vot-cli was installed, but it is not visible in PATH");
+    InstallGitHubReleaseExecutable(
+        release,
+        paths.localVotExePath(),
+        paths.localVotVersionPath(),
+        L"Downloading VOT helper...",
+        L"Installing VOT helper...",
+        onProgress,
+        cancelEvent
+    );
+    ToolInstallStatus status = Status(paths);
+    if (!status.installed) {
+        throw std::runtime_error("installed VOT helper could not be resolved");
     }
     return status;
 }
@@ -972,6 +965,10 @@ bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAss
         return true;
     }
     return CompareVersions(current.version, latest.version) < 0;
+}
+
+bool ShouldInstallVotUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest) {
+    return ShouldInstallYtDlpUpdate(current, latest);
 }
 
 bool ValidateYtDlpExecutableVersion(const std::filesystem::path& executable, const std::wstring& expectedVersion) {
@@ -1045,22 +1042,18 @@ ToolInstallStatus YtDlpManager::InstallOrUpdate(const ReleaseAssetInfo& release,
         throw std::runtime_error("yt-dlp release asset was not found");
     }
 
-    const std::filesystem::path tmpPath = m_paths.ytDlpExePath().wstring() + L".new";
-    std::error_code ec;
-    std::filesystem::remove(tmpPath, ec);
-
-    WinHttpClient::DownloadFile(release.downloadUrl, tmpPath, {}, cancelEvent);
-
-    const std::uint64_t downloadedSize = static_cast<std::uint64_t>(std::filesystem::file_size(tmpPath, ec));
-    if (ec) {
-        throw std::runtime_error("failed to inspect downloaded yt-dlp executable");
-    }
-    if (!ValidateYtDlpExecutableVersion(tmpPath, release.version)) {
-        std::filesystem::remove(tmpPath, ec);
-        throw std::runtime_error("downloaded yt-dlp executable failed version validation");
-    }
-    CommitDownloadedFile(tmpPath, m_paths.ytDlpExePath(), downloadedSize, downloadedSize);
-    WriteTextFile(m_paths.ytDlpVersionPath(), release.version);
+    InstallGitHubReleaseExecutable(
+        release,
+        m_paths.ytDlpExePath(),
+        m_paths.ytDlpVersionPath(),
+        L"Downloading yt-dlp...",
+        L"Installing yt-dlp...",
+        {},
+        cancelEvent,
+        [&release](const std::filesystem::path& executable) {
+            return ValidateYtDlpExecutableVersion(executable, release.version);
+        }
+    );
     return Status();
 }
 

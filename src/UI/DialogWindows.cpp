@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -23,6 +24,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
@@ -30,6 +32,7 @@ bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& 
 bool ShowWhisperModelDownloadProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config, const WhisperModelInfo& model);
 bool ShowWhisperDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowVotCliDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowYtDlpInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths);
 bool ShowVotCliInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowWhisperModelsDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowAppUpdateProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, const ReleaseAssetInfo& release);
@@ -95,6 +98,7 @@ enum class DialogType {
 
 enum class ProgressMode {
     FfmpegInstall,
+    YtDlpInstall,
     WhisperInstall,
     WhisperModelDownload,
     VotCliInstall,
@@ -139,6 +143,8 @@ enum DialogCommand {
     IdFfmpegDetails = 139,
     IdWhisperDetails = 140,
     IdVotCliDetails = 141,
+    IdYtDlp = 142,
+    IdYtDlpDetails = 143,
     IdWhisperModelBase = 2000
 };
 
@@ -215,6 +221,7 @@ struct DialogState {
     ReleaseAssetInfo release;
     WhisperModelInfo whisperModel;
     WhisperBackend whisperBackend = WhisperBackend::Cpu;
+    bool ytDlpDetailsExpanded = false;
     bool ffmpegDetailsExpanded = false;
     bool whisperDetailsExpanded = false;
     bool votCliDetailsExpanded = false;
@@ -285,12 +292,15 @@ RECT SettingsCardRect(const DialogState* state, int width, int height, int index
 
 int SettingsToolCardHeight(const DialogState* state, int index) {
     if (index == 0) {
-        return state && state->ffmpegDetailsExpanded ? 156 : 96;
+        return state && state->ytDlpDetailsExpanded ? 132 : 104;
     }
     if (index == 1) {
+        return state && state->ffmpegDetailsExpanded ? 156 : 96;
+    }
+    if (index == 2) {
         return state && state->whisperDetailsExpanded ? 190 : 112;
     }
-    return state && state->votCliDetailsExpanded ? 176 : 104;
+    return state && state->votCliDetailsExpanded ? 132 : 104;
 }
 
 RECT SettingsToolCardRect(const DialogState* state, int width, int height, int index) {
@@ -669,18 +679,17 @@ std::wstring WhisperDialogMessage(const ToolInstallStatus& status) {
 }
 
 std::wstring VotCliDialogTitle(const VotCliStatus& status) {
-    return status.available ? L"vot-cli установлен" : L"vot-cli не найден";
+    return status.available ? L"VOT helper установлен" : L"VOT helper не найден";
 }
 
 std::wstring VotCliDialogMessage(const VotCliStatus& status) {
     if (status.available) {
-        return L"vot-cli найден и будет использоваться для получения озвучки перевода.\n\nПуть:\n" +
+        return L"VOT helper найден и будет использоваться для получения озвучки перевода." +
+            (status.version.empty() ? L"" : L"\n\nВерсия: " + status.version) +
+            L"\n\nПуть:\n" +
             status.executable.wstring();
     }
-    if (!status.nodeAvailable) {
-        return L"vot-cli не найден, и node.exe тоже не найден. Установите Node.js 18+ или проверьте PATH, затем установите vot-cli через npm.";
-    }
-    return L"vot-cli не найден. Нажмите «Установить», чтобы выполнить команду:\n\nnpm install -g vot-cli\n\nПосле установки приложение проверит, появился ли vot-cli в PATH.";
+    return L"VOT helper не найден. Нажмите «Скачать», чтобы загрузить vot-helper.exe из последнего GitHub release.";
 }
 
 void RefreshWhisperDialogText(DialogState* state) {
@@ -696,7 +705,9 @@ void RefreshVotCliDialogText(DialogState* state) {
     if (!state || !state->config) {
         return;
     }
-    const VotCliStatus status = VotCliManager::Resolve(state->workingConfig);
+    const VotCliStatus status = state->paths
+        ? VotCliManager::Resolve(*state->paths, state->workingConfig)
+        : VotCliManager::ResolveUserPath(state->workingConfig.votCliPath);
     state->title = VotCliDialogTitle(status);
     state->message = VotCliDialogMessage(status);
 }
@@ -834,6 +845,12 @@ void RefreshSettingsButtons(DialogState* state) {
     SetDarkButtonState(state->window, IdVoiceOverMixed, state->workingConfig.voiceOverMode == L"mixed");
     SetDarkButtonState(state->window, IdVoiceOverLangRu, state->workingConfig.voiceOverLanguage == L"ru");
     SetDarkButtonState(state->window, IdVoiceOverLangEn, state->workingConfig.voiceOverLanguage == L"en");
+    SetDarkButtonState(
+        state->window,
+        IdYtDlpDetails,
+        state->ytDlpDetailsExpanded,
+        state->ytDlpDetailsExpanded ? L"Hide" : L"Details"
+    );
     SetDarkButtonState(
         state->window,
         IdFfmpegDetails,
@@ -1168,10 +1185,12 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         IdVoiceOverLangRu,
         IdVoiceOverLangEn
     };
-    const std::array<int, 6> toolIds = {
+    const std::array<int, 8> toolIds = {
+        IdYtDlp,
         IdFfmpeg,
         IdWhisper,
         IdVotCli,
+        IdYtDlpDetails,
         IdFfmpegDetails,
         IdWhisperDetails,
         IdVotCliDetails
@@ -1215,6 +1234,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         }
     }
 
+    HWND ytDlp = GetDlgItem(state->window, IdYtDlp);
     HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
     HWND autoUpdate = GetDlgItem(state->window, IdAutoUpdate);
     HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
@@ -1226,6 +1246,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND voiceOverLangEn = GetDlgItem(state->window, IdVoiceOverLangEn);
     HWND whisper = GetDlgItem(state->window, IdWhisper);
     HWND votCli = GetDlgItem(state->window, IdVotCli);
+    HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
     HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
     HWND whisperDetails = GetDlgItem(state->window, IdWhisperDetails);
     HWND votCliDetails = GetDlgItem(state->window, IdVotCliDetails);
@@ -1300,9 +1321,10 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
             MoveWindow(action, toolCard.right - cardPadding - detailsWidth - kDialogButtonGap - actionWidth, buttonY, actionWidth, 34, TRUE);
         }
     };
-    layoutToolCard(0, ffmpeg, ffmpegDetails);
-    layoutToolCard(1, whisper, whisperDetails);
-    layoutToolCard(2, votCli, votCliDetails);
+    layoutToolCard(0, ytDlp, ytDlpDetails);
+    layoutToolCard(1, ffmpeg, ffmpegDetails);
+    layoutToolCard(2, whisper, whisperDetails);
+    layoutToolCard(3, votCli, votCliDetails);
 
     if (checkUpdates) {
         const RECT aboutCard = SettingsCardRect(state, width, height, 0, kSettingsAboutCardHeight);
@@ -1530,6 +1552,51 @@ void DrawLogsDialog(DialogState* state, HDC dc, const RECT& client) {
     DeleteObject(textFont);
 }
 
+void DrawRoundedPanel(HDC dc, const RECT& rect, Gdiplus::Color fill, Gdiplus::Color border, int radius) {
+    Gdiplus::Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+    Gdiplus::GraphicsPath path;
+    AddRoundedRect(path, rect, radius);
+    Gdiplus::SolidBrush fillBrush(fill);
+    Gdiplus::Pen borderPen(border, 1.0f);
+    graphics.FillPath(&fillBrush, &path);
+    graphics.DrawPath(&borderPen, &path);
+}
+
+void DrawSettingsCard(
+    HDC dc,
+    const RECT& rect,
+    const std::wstring& title,
+    const std::wstring& subtitle,
+    HFONT labelFont,
+    HFONT textFont,
+    int rightReserve = 18
+) {
+    DrawRoundedPanel(dc, rect, Gdiplus::Color(255, 25, 29, 38), Gdiplus::Color(255, 48, 55, 68), 10);
+    RECT titleRect = {rect.left + kSettingsCardPadding, rect.top + 14, rect.right - rightReserve, rect.top + 38};
+    DrawTextBlock(dc, title, titleRect, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    RECT subtitleRect = {rect.left + kSettingsCardPadding, rect.top + 40, rect.right - rightReserve, rect.top + 64};
+    DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+}
+
+void DrawToolStatusPill(HDC dc, const RECT& rect, const std::wstring& text, bool ok, HFONT smallFont) {
+    DrawRoundedPanel(
+        dc,
+        rect,
+        ok ? Gdiplus::Color(255, 26, 56, 42) : Gdiplus::Color(255, 58, 38, 43),
+        ok ? Gdiplus::Color(255, 69, 132, 95) : Gdiplus::Color(255, 130, 58, 69),
+        12
+    );
+    DrawTextBlock(
+        dc,
+        text,
+        rect,
+        ok ? RGB(168, 235, 195) : RGB(255, 190, 198),
+        smallFont,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+    );
+}
+
 void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawDialogBackground(dc, client);
 
@@ -1538,38 +1605,10 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     HFONT textFont = CreateUiFont(-14, FW_NORMAL);
     HFONT smallFont = CreateUiFont(-12, FW_NORMAL);
 
-    auto drawRounded = [](HDC target, const RECT& rect, Gdiplus::Color fill, Gdiplus::Color border, int radius) {
-        Gdiplus::Graphics graphics(target);
-        graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
-        Gdiplus::GraphicsPath path;
-        AddRoundedRect(path, rect, radius);
-        Gdiplus::SolidBrush fillBrush(fill);
-        Gdiplus::Pen borderPen(border, 1.0f);
-        graphics.FillPath(&fillBrush, &path);
-        graphics.DrawPath(&borderPen, &path);
-    };
-    auto drawCard = [&](const RECT& rect, const std::wstring& title, const std::wstring& subtitle, int rightReserve = 18) {
-        drawRounded(dc, rect, Gdiplus::Color(255, 25, 29, 38), Gdiplus::Color(255, 48, 55, 68), 10);
-        RECT titleRect = {rect.left + kSettingsCardPadding, rect.top + 14, rect.right - rightReserve, rect.top + 38};
-        DrawTextBlock(dc, title, titleRect, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        RECT subtitleRect = {rect.left + kSettingsCardPadding, rect.top + 40, rect.right - rightReserve, rect.top + 64};
-        DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    };
-    auto drawStatus = [&](const RECT& rect, const std::wstring& text, bool ok) {
-        drawRounded(
-            dc,
-            rect,
-            ok ? Gdiplus::Color(255, 26, 56, 42) : Gdiplus::Color(255, 58, 38, 43),
-            ok ? Gdiplus::Color(255, 69, 132, 95) : Gdiplus::Color(255, 130, 58, 69),
-            12
-        );
-        DrawTextBlock(dc, text, rect, ok ? RGB(168, 235, 195) : RGB(255, 190, 198), smallFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    };
-
     const RECT sidebar = SettingsSidebarRect(state, client.right, client.bottom);
     const RECT content = SettingsContentRect(state, client.right, client.bottom);
     const bool collapsed = IsSettingsSidebarCollapsed(state, client.right);
-    drawRounded(dc, sidebar, Gdiplus::Color(255, 24, 28, 37), Gdiplus::Color(255, 48, 55, 68), 10);
+    DrawRoundedPanel(dc, sidebar, Gdiplus::Color(255, 24, 28, 37), Gdiplus::Color(255, 48, 55, 68), 10);
     if (!collapsed) {
         RECT sidebarTitle = {
             sidebar.left + 16,
@@ -1592,7 +1631,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     switch (state->settingsSection) {
     case SettingsSection::VoiceOver:
         sectionTitle = L"Озвучка";
-        sectionSubtitle = L"Параметры будущих переводов через vot-cli.";
+        sectionSubtitle = L"Параметры будущих переводов через VOT helper.";
         break;
     case SettingsSection::Tools:
         sectionTitle = L"Инструменты";
@@ -1613,11 +1652,11 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
 
     if (state->settingsSection == SettingsSection::Downloads) {
         RECT qualityCard = SettingsCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight);
-        drawCard(qualityCard, L"Качество", L"Качество по умолчанию для новых загрузок.");
+        DrawSettingsCard(dc, qualityCard, L"Качество", L"Качество по умолчанию для новых загрузок.", labelFont, textFont);
         RECT formatCard = SettingsCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight);
-        drawCard(formatCard, L"Формат", L"Контейнер итогового файла.");
+        DrawSettingsCard(dc, formatCard, L"Формат", L"Контейнер итогового файла.", labelFont, textFont);
         RECT behaviorCard = SettingsCardRect(state, client.right, client.bottom, 2, kSettingsBehaviorCardHeight);
-        drawCard(behaviorCard, L"Поведение", L"Автопроверка, расшифровка и параллельные загрузки.");
+        DrawSettingsCard(dc, behaviorCard, L"Поведение", L"Автопроверка, расшифровка и параллельные загрузки.", labelFont, textFont);
         RECT parallelLabel = {
             behaviorCard.left + kSettingsCardPadding,
             behaviorCard.top + kSettingsBehaviorSecondRowTop,
@@ -1627,20 +1666,29 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         DrawTextBlock(dc, L"Параллельные загрузки", parallelLabel, kTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         DrawTextBlock(dc, std::to_wstring(state->workingConfig.maxParallelDownloads), SettingsParallelValueRect(state, client.right, client.bottom), kTextColor, labelFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     } else if (state->settingsSection == SettingsSection::VoiceOver) {
-        drawCard(SettingsCardRect(state, client.right, client.bottom, 0, kSettingsVoiceModeCardHeight), L"Режим", L"Как сохранить перевод после скачивания.");
-        drawCard(SettingsCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"Язык результата", L"Доступны русский и английский.");
+        DrawSettingsCard(dc, SettingsCardRect(state, client.right, client.bottom, 0, kSettingsVoiceModeCardHeight), L"Режим", L"Как сохранить перевод после скачивания.", labelFont, textFont);
+        DrawSettingsCard(dc, SettingsCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"Язык результата", L"Доступны русский и английский.", labelFont, textFont);
     } else if (state->settingsSection == SettingsSection::Tools) {
-        RECT ffmpegCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
+        RECT ytDlpCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
+        const ToolInstallStatus ytDlpStatus = state->paths ? YtDlpManager(*state->paths).Status() : ToolInstallStatus{};
+        DrawSettingsCard(dc, ytDlpCard, L"yt-dlp", ytDlpStatus.installed ? L"Download engine is installed." : L"Download engine is missing.", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {ytDlpCard.left + 18, ytDlpCard.top + 66, ytDlpCard.left + 126, ytDlpCard.top + 90}, ytDlpStatus.installed ? L"Found" : L"No", ytDlpStatus.installed, smallFont);
+        DrawToolStatusPill(dc, {ytDlpCard.left + 138, ytDlpCard.top + 66, ytDlpCard.left + 246, ytDlpCard.top + 90}, ytDlpStatus.version.empty() ? L"Version" : ytDlpStatus.version, ytDlpStatus.installed, smallFont);
+        if (state->ytDlpDetailsExpanded) {
+            DrawUtilityStatusPath(dc, ytDlpStatus.installed ? L"yt-dlp:" : L"Status:", ytDlpStatus.executable, ytDlpCard.left + 18, ytDlpCard.top + 100, ytDlpCard.right - 18, textFont);
+        }
+
+        RECT ffmpegCard = SettingsToolCardRect(state, client.right, client.bottom, 1);
         FfmpegStatus ffmpegStatus = state->paths
             ? FfmpegManager::Resolve(*state->paths, state->workingConfig)
             : FfmpegManager::ResolveUserPath(state->workingConfig.ffmpegPath);
-        drawCard(ffmpegCard, L"FFmpeg", ffmpegStatus.available ? L"Готов для объединения и обработки медиа." : L"Не найден или путь недоступен.", 280);
-        drawStatus({ffmpegCard.left + 18, ffmpegCard.top + 66, ffmpegCard.left + 126, ffmpegCard.top + 90}, ffmpegStatus.available ? L"Найден" : L"Нет", ffmpegStatus.available);
+        DrawSettingsCard(dc, ffmpegCard, L"FFmpeg", ffmpegStatus.available ? L"Готов для объединения и обработки медиа." : L"Не найден или путь недоступен.", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {ffmpegCard.left + 18, ffmpegCard.top + 66, ffmpegCard.left + 126, ffmpegCard.top + 90}, ffmpegStatus.available ? L"Найден" : L"Нет", ffmpegStatus.available, smallFont);
         if (state->ffmpegDetailsExpanded) {
             DrawUtilityStatusPath(dc, ffmpegStatus.available ? L"Путь:" : L"Статус:", ffmpegStatus.ffmpegExe, ffmpegCard.left + 18, ffmpegCard.top + 96, ffmpegCard.right - 18, textFont);
         }
 
-        RECT whisperCard = SettingsToolCardRect(state, client.right, client.bottom, 1);
+        RECT whisperCard = SettingsToolCardRect(state, client.right, client.bottom, 2);
         const ToolInstallStatus whisperStatus = ResolveDialogWhisperStatus(state);
         const std::filesystem::path whisperModelPath = ResolveDialogWhisperModelPath(state);
         std::error_code modelEc;
@@ -1648,26 +1696,27 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         const std::wstring whisperSubtitle = whisperStatus.installed
             ? L"Backend: " + WhisperManager::BackendDisplayName(whisperStatus.whisperBackend)
             : L"Нужен для расшифровки аудиодорожек.";
-        drawCard(whisperCard, L"Whisper.cpp", whisperSubtitle, 280);
-        drawStatus({whisperCard.left + 18, whisperCard.top + 70, whisperCard.left + 126, whisperCard.top + 94}, whisperStatus.installed ? L"Найден" : L"Нет", whisperStatus.installed);
-        drawStatus({whisperCard.left + 138, whisperCard.top + 70, whisperCard.left + 246, whisperCard.top + 94}, whisperModelAvailable ? L"Модель" : L"Нет модели", whisperModelAvailable);
+        DrawSettingsCard(dc, whisperCard, L"Whisper.cpp", whisperSubtitle, labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {whisperCard.left + 18, whisperCard.top + 70, whisperCard.left + 126, whisperCard.top + 94}, whisperStatus.installed ? L"Найден" : L"Нет", whisperStatus.installed, smallFont);
+        DrawToolStatusPill(dc, {whisperCard.left + 138, whisperCard.top + 70, whisperCard.left + 246, whisperCard.top + 94}, whisperModelAvailable ? L"Модель" : L"Нет модели", whisperModelAvailable, smallFont);
         if (state->whisperDetailsExpanded) {
             DrawUtilityStatusPath(dc, whisperStatus.installed ? L"Путь:" : L"Whisper:", whisperStatus.executable, whisperCard.left + 18, whisperCard.top + 104, whisperCard.right - 18, textFont);
             DrawUtilityStatusPath(dc, L"Модель:", whisperModelPath, whisperCard.left + 18, whisperCard.top + 148, whisperCard.right - 18, textFont);
         }
 
-        RECT votCard = SettingsToolCardRect(state, client.right, client.bottom, 2);
-        const VotCliStatus votCliStatus = VotCliManager::Resolve(state->workingConfig);
-        drawCard(votCard, L"vot-cli", votCliStatus.available ? L"Готов для озвучки видео." : (votCliStatus.message.empty() ? L"Не найден." : votCliStatus.message), 280);
-        drawStatus({votCard.left + 18, votCard.top + 66, votCard.left + 126, votCard.top + 90}, votCliStatus.available ? L"Найден" : L"Нет", votCliStatus.available);
-        drawStatus({votCard.left + 138, votCard.top + 66, votCard.left + 246, votCard.top + 90}, votCliStatus.nodeAvailable ? L"Node" : L"Нет Node", votCliStatus.nodeAvailable);
+        RECT votCard = SettingsToolCardRect(state, client.right, client.bottom, 3);
+        const VotCliStatus votCliStatus = state->paths
+            ? VotCliManager::Resolve(*state->paths, state->workingConfig)
+            : VotCliManager::ResolveUserPath(state->workingConfig.votCliPath);
+        DrawSettingsCard(dc, votCard, L"VOT helper", votCliStatus.available ? L"Готов для озвучки видео." : (votCliStatus.message.empty() ? L"Не найден." : votCliStatus.message), labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {votCard.left + 18, votCard.top + 66, votCard.left + 126, votCard.top + 90}, votCliStatus.available ? L"Найден" : L"Нет", votCliStatus.available, smallFont);
+        DrawToolStatusPill(dc, {votCard.left + 138, votCard.top + 66, votCard.left + 246, votCard.top + 90}, votCliStatus.version.empty() ? L"EXE" : votCliStatus.version, votCliStatus.available, smallFont);
         if (state->votCliDetailsExpanded) {
-            DrawUtilityStatusPath(dc, votCliStatus.available ? L"vot-cli:" : L"Статус:", votCliStatus.executable, votCard.left + 18, votCard.top + 100, votCard.right - 18, textFont);
-            DrawUtilityStatusPath(dc, votCliStatus.nodeAvailable ? L"Node:" : L"Node:", votCliStatus.nodeExecutable, votCard.left + 18, votCard.top + 144, votCard.right - 18, textFont);
+            DrawUtilityStatusPath(dc, votCliStatus.available ? L"VOT:" : L"Статус:", votCliStatus.executable, votCard.left + 18, votCard.top + 100, votCard.right - 18, textFont);
         }
     } else {
         RECT aboutCard = SettingsCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
-        drawCard(aboutCard, L"YouTube Downloader", L"Портативный Win32-загрузчик видео с поддержкой yt-dlp, FFmpeg, Whisper.cpp и vot-cli.");
+        DrawSettingsCard(dc, aboutCard, L"YouTube Downloader", L"Портативный Win32-загрузчик видео с поддержкой yt-dlp, FFmpeg, Whisper.cpp и VOT helper.", labelFont, textFont);
         DrawTextBlock(
             dc,
             L"Версия: " YTD_APP_VERSION_WIDE,
@@ -1815,10 +1864,58 @@ void CreateWhisperControls(DialogState* state) {
 }
 
 void CreateVotCliControls(DialogState* state) {
-    HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true);
+    HWND installButton = CreateDarkButton(state->window, state->instance, L"Скачать", IdInstall, true);
     HWND skipButton = CreateDarkButton(state->window, state->instance, L"Пропустить", IdSkip, false);
-    AddDialogTooltip(state, installButton, L"Запускает npm install -g vot-cli.");
-    AddDialogTooltip(state, skipButton, L"Закрывает окно vot-cli без изменений.");
+    AddDialogTooltip(state, installButton, L"Скачивает или обновляет vot-helper.exe из GitHub release.");
+    AddDialogTooltip(state, skipButton, L"Закрывает окно VOT helper без изменений.");
+}
+
+std::wstring ExceptionToWide(const std::exception& ex) {
+    return std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+}
+
+void PostProgressUpdate(
+    DialogState* state,
+    HWND window,
+    std::uint64_t downloaded,
+    std::uint64_t total,
+    std::wstring status
+) {
+    {
+        std::lock_guard lock(state->progressMutex);
+        state->pendingProgress = ProgressUpdate{downloaded, total, std::move(status)};
+    }
+    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+}
+
+void PostProgressError(DialogState* state, HWND window, std::wstring error) {
+    {
+        std::lock_guard lock(state->progressMutex);
+        state->progressError = std::move(error);
+    }
+    PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+}
+
+void StartYtDlpInstallWorker(DialogState* state) {
+    if (!state || !state->paths || !state->cancelEvent) {
+        return;
+    }
+
+    HWND window = state->window;
+    const AppPaths paths = *state->paths;
+    HANDLE cancelEvent = state->cancelEvent;
+
+    state->worker = std::jthread([state, window, paths, cancelEvent](std::stop_token) {
+        try {
+            PostProgressUpdate(state, window, 0, 0, L"Updating yt-dlp...");
+            YtDlpManager(paths).InstallOrUpdate(cancelEvent);
+            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+        } catch (const std::exception& ex) {
+            PostProgressError(state, window, ExceptionToWide(ex));
+        } catch (...) {
+            PostProgressError(state, window, L"Unknown yt-dlp update error");
+        }
+    });
 }
 
 void StartFfmpegInstallWorker(DialogState* state) {
@@ -1836,28 +1933,16 @@ void StartFfmpegInstallWorker(DialogState* state) {
             const FfmpegStatus status = FfmpegManager::InstallEssentials(
                 paths,
                 [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                    PostProgressUpdate(state, window, downloaded, total, statusText);
                 },
                 cancelEvent
             );
             config->ffmpegPath = status.ffmpegExe;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, ExceptionToWide(ex));
         } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"Неизвестная ошибка установки FFmpeg";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, L"Неизвестная ошибка установки FFmpeg");
         }
     });
 }
@@ -1879,11 +1964,7 @@ void StartWhisperInstallWorker(DialogState* state) {
                 paths,
                 backend,
                 [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                    PostProgressUpdate(state, window, downloaded, total, statusText);
                 },
                 cancelEvent
             );
@@ -1891,52 +1972,40 @@ void StartWhisperInstallWorker(DialogState* state) {
             config->whisperBackend = status.whisperBackend;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, ExceptionToWide(ex));
         } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"Неизвестная ошибка установки whisper.cpp";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, L"Неизвестная ошибка установки whisper.cpp");
         }
     });
 }
 
 void StartVotCliInstallWorker(DialogState* state) {
-    if (!state || !state->config || !state->cancelEvent) {
+    if (!state || !state->paths || !state->config || !state->cancelEvent) {
         return;
     }
 
     HWND window = state->window;
+    const AppPaths paths = *state->paths;
     AppConfig* config = state->config;
     HANDLE cancelEvent = state->cancelEvent;
 
-    std::thread([window, config, cancelEvent]() {
+    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
         try {
-            const VotCliStatus status = VotCliManager::InstallGlobal(
-                [window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    auto* update = new ProgressUpdate{};
-                    update->downloaded = downloaded;
-                    update->total = total;
-                    update->status = statusText;
-                    PostMessageW(window, kProgressUpdateMessage, 0, reinterpret_cast<LPARAM>(update));
+            const ToolInstallStatus status = VotCliManager::InstallOrUpdate(
+                paths,
+                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
+                    PostProgressUpdate(state, window, downloaded, total, statusText);
                 },
                 cancelEvent
             );
             config->votCliPath = status.executable;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
-            auto* error = new std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
-            PostMessageW(window, kProgressDoneMessage, FALSE, reinterpret_cast<LPARAM>(error));
+            PostProgressError(state, window, ExceptionToWide(ex));
         } catch (...) {
-            auto* error = new std::wstring(L"Неизвестная ошибка установки vot-cli");
-            PostMessageW(window, kProgressDoneMessage, FALSE, reinterpret_cast<LPARAM>(error));
+            PostProgressError(state, window, L"Неизвестная ошибка установки VOT helper");
         }
-    }).detach();
+    });
 }
 
 void StartWhisperModelDownloadWorker(DialogState* state) {
@@ -1956,28 +2025,16 @@ void StartWhisperModelDownloadWorker(DialogState* state) {
                 paths,
                 model,
                 [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                    PostProgressUpdate(state, window, downloaded, total, statusText);
                 },
                 cancelEvent
             );
             config->whisperModelPath = modelPath;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, ExceptionToWide(ex));
         } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"Неизвестная ошибка скачивания модели Whisper";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, L"Неизвестная ошибка скачивания модели Whisper");
         }
     });
 }
@@ -1998,11 +2055,7 @@ void StartAppUpdateWorker(DialogState* state) {
                 paths,
                 release,
                 [state, window](std::uint64_t downloaded, std::uint64_t total) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, L"Скачивание обновления..."};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
+                    PostProgressUpdate(state, window, downloaded, total, L"Скачивание обновления...");
                 },
                 cancelEvent
             );
@@ -2012,17 +2065,9 @@ void StartAppUpdateWorker(DialogState* state) {
             AppUpdateService::StartDownloadedUpdate(paths, downloadedExe);
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, ExceptionToWide(ex));
         } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"Неизвестная ошибка обновления приложения";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            PostProgressError(state, window, L"Неизвестная ошибка обновления приложения");
         }
     });
 }
@@ -2032,6 +2077,8 @@ void CreateProgressControls(DialogState* state) {
     AddDialogTooltip(state, cancelButton, L"Отменяет текущую операцию.");
     if (state->progressMode == ProgressMode::AppUpdate) {
         StartAppUpdateWorker(state);
+    } else if (state->progressMode == ProgressMode::YtDlpInstall) {
+        StartYtDlpInstallWorker(state);
     } else if (state->progressMode == ProgressMode::WhisperInstall) {
         StartWhisperInstallWorker(state);
     } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
@@ -2138,8 +2185,10 @@ void CreateSettingsControls(DialogState* state) {
     );
     HWND voiceOverRuButton = CreateDarkButton(state->window, state->instance, L"RU", IdVoiceOverLangRu, state->workingConfig.voiceOverLanguage == L"ru");
     HWND voiceOverEnButton = CreateDarkButton(state->window, state->instance, L"EN", IdVoiceOverLangEn, state->workingConfig.voiceOverLanguage == L"en");
+    HWND ytDlpButton = CreateDarkButton(state->window, state->instance, L"yt-dlp", IdYtDlp, false);
     HWND whisperButton = CreateDarkButton(state->window, state->instance, L"Whisper", IdWhisper, false);
-    HWND votCliButton = CreateDarkButton(state->window, state->instance, L"vot-cli", IdVotCli, false);
+    HWND votCliButton = CreateDarkButton(state->window, state->instance, L"VOT", IdVotCli, false);
+    HWND ytDlpDetailsButton = CreateDarkButton(state->window, state->instance, L"Details", IdYtDlpDetails, false);
     HWND ffmpegDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdFfmpegDetails, false);
     HWND whisperDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdWhisperDetails, false);
     HWND votCliDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdVotCliDetails, false);
@@ -2148,8 +2197,8 @@ void CreateSettingsControls(DialogState* state) {
     HWND saveButton = CreateDarkButton(state->window, state->instance, L"Сохранить", IdOk, true);
     AddDialogTooltip(state, collapseButton, L"Сворачивает или разворачивает меню настроек.");
     AddDialogTooltip(state, downloadsButton, L"Качество, формат и поведение новых загрузок.");
-    AddDialogTooltip(state, voiceOverButton, L"Настройки озвучки через vot-cli.");
-    AddDialogTooltip(state, toolsButton, L"Статус и настройка FFmpeg, Whisper.cpp и vot-cli.");
+    AddDialogTooltip(state, voiceOverButton, L"Настройки озвучки через VOT helper.");
+    AddDialogTooltip(state, toolsButton, L"Статус и настройка FFmpeg, Whisper.cpp и VOT helper.");
     AddDialogTooltip(state, aboutNavButton, L"Версия приложения и обновления.");
     AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg.");
     AddDialogTooltip(state, autoUpdateButton, L"Включает или отключает автоматическую проверку обновлений приложения.");
@@ -2158,13 +2207,15 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, transcribeButton, L"Включает автоматическую расшифровку через whisper.cpp после успешного скачивания.");
     AddDialogTooltip(state, voiceOverSeparateButton, L"Собирает новый файл с отдельной аудиодорожкой перевода.");
     AddDialogTooltip(state, voiceOverMixedButton, L"Собирает новый файл, где оригинал приглушен и смешан с переводом.");
-    AddDialogTooltip(state, voiceOverRuButton, L"Запрашивает русскую озвучку через vot-cli.");
-    AddDialogTooltip(state, voiceOverEnButton, L"Запрашивает английскую озвучку через vot-cli.");
+    AddDialogTooltip(state, voiceOverRuButton, L"Запрашивает русскую озвучку через VOT helper.");
+    AddDialogTooltip(state, voiceOverEnButton, L"Запрашивает английскую озвучку через VOT helper.");
+    AddDialogTooltip(state, ytDlpButton, L"Обновляет локальный yt-dlp.exe из GitHub release.");
     AddDialogTooltip(state, whisperButton, L"Открывает установку whisper.cpp и менеджер моделей.");
-    AddDialogTooltip(state, votCliButton, L"Открывает установку vot-cli через npm.");
+    AddDialogTooltip(state, votCliButton, L"Открывает установку или обновление VOT helper.");
+    AddDialogTooltip(state, ytDlpDetailsButton, L"Показывает или скрывает полный путь yt-dlp.");
     AddDialogTooltip(state, ffmpegDetailsButton, L"Показывает или скрывает полный путь FFmpeg.");
     AddDialogTooltip(state, whisperDetailsButton, L"Показывает или скрывает путь Whisper.cpp и модель.");
-    AddDialogTooltip(state, votCliDetailsButton, L"Показывает или скрывает путь vot-cli и Node.js.");
+    AddDialogTooltip(state, votCliDetailsButton, L"Показывает или скрывает путь VOT helper.");
     AddDialogTooltip(state, updateButton, L"Проверяет наличие новой версии приложения.");
     AddDialogTooltip(state, cancelButton, L"Закрывает настройки без сохранения изменений.");
     AddDialogTooltip(state, saveButton, L"Сохраняет выбранные настройки.");
@@ -2426,6 +2477,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 RefreshSettingsButtons(state);
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
+            case IdYtDlp:
+                if (state->type == DialogType::Settings && state->paths) {
+                    ShowYtDlpInstallProgress(window, state->instance, *state->paths);
+                    InvalidateRect(window, nullptr, FALSE);
+                    return 0;
+                }
+                return 0;
             case IdWhisper:
                 if (state->type == DialogType::Settings && state->paths && state->config) {
                     if (ShowWhisperDialog(window, state->instance, *state->paths, state->workingConfig)) {
@@ -2508,6 +2566,16 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdSettingsToggleSidebar:
                 if (state->type == DialogType::Settings) {
                     state->workingConfig.settingsSidebarCollapsed = !state->workingConfig.settingsSidebarCollapsed;
+                    RefreshSettingsButtons(state);
+                    RECT client = {};
+                    GetClientRect(window, &client);
+                    LayoutDialog(state, client.right, client.bottom);
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
+            case IdYtDlpDetails:
+                if (state->type == DialogType::Settings) {
+                    state->ytDlpDetailsExpanded = !state->ytDlpDetailsExpanded;
                     RefreshSettingsButtons(state);
                     RECT client = {};
                     GetClientRect(window, &client);
@@ -2685,12 +2753,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             if (state->progressSuccess) {
                 if (state->progressMode == ProgressMode::AppUpdate) {
                     state->message = L"Обновление скачано. Приложение будет закрыто и запущено заново.";
+                } else if (state->progressMode == ProgressMode::YtDlpInstall) {
+                    state->message = L"yt-dlp updated.";
                 } else if (state->progressMode == ProgressMode::WhisperInstall) {
                     state->message = L"whisper.cpp " + WhisperManager::BackendDisplayName(state->whisperBackend) + L" установлен.";
                 } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
                     state->message = L"Модель Whisper скачана и выбрана.";
                 } else if (state->progressMode == ProgressMode::VotCliInstall) {
-                    state->message = L"vot-cli установлен.";
+                    state->message = L"VOT helper установлен.";
                 } else {
                     state->message = L"FFmpeg установлен.";
                 }
@@ -2712,12 +2782,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     state->message = *error;
                 } else if (state->progressMode == ProgressMode::AppUpdate) {
                     state->message = L"Не удалось обновить приложение.";
+                } else if (state->progressMode == ProgressMode::YtDlpInstall) {
+                    state->message = L"Could not update yt-dlp.";
                 } else if (state->progressMode == ProgressMode::WhisperInstall) {
                     state->message = L"Не удалось установить whisper.cpp.";
                 } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
                     state->message = L"Не удалось скачать модель Whisper.";
                 } else if (state->progressMode == ProgressMode::VotCliInstall) {
-                    state->message = L"Не удалось установить vot-cli.";
+                    state->message = L"Не удалось установить VOT helper.";
                 } else {
                     state->message = L"Не удалось установить FFmpeg.";
                 }
@@ -3606,6 +3678,22 @@ bool ShowFfmpegInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& p
     return saved;
 }
 
+bool ShowYtDlpInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::YtDlpInstall;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = L"Update yt-dlp";
+    state->message = L"Preparing...";
+    state->paths = &paths;
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
+    return saved;
+}
+
 bool ShowWhisperInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config, WhisperBackend backend) {
     auto* state = new DialogState{};
     state->type = DialogType::Progress;
@@ -3630,7 +3718,7 @@ bool ShowVotCliInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& p
     state->progressMode = ProgressMode::VotCliInstall;
     state->instance = instance;
     state->owner = owner;
-    state->title = L"Установка vot-cli";
+    state->title = L"Установка VOT helper";
     state->message = L"Подготовка...";
     state->paths = &paths;
     state->config = &config;

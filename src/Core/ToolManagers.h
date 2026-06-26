@@ -59,9 +59,8 @@ struct ToolInstallStatus {
 
 struct VotCliStatus {
     bool available = false;
-    bool nodeAvailable = false;
     std::filesystem::path executable;
-    std::filesystem::path nodeExecutable;
+    std::wstring version;
     std::wstring message;
 };
 
@@ -69,8 +68,6 @@ struct ToolProcessInvocation {
     std::filesystem::path executable;
     std::vector<std::wstring> arguments;
 };
-
-ToolProcessInvocation BuildVotCliInstallInvocation(const std::filesystem::path& npmExecutable);
 
 struct WhisperModelInfo {
     std::wstring id;
@@ -85,6 +82,7 @@ struct WhisperModelInfo {
 };
 
 bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
+bool ShouldInstallVotUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
 bool ValidateYtDlpExecutableVersion(const std::filesystem::path& executable, const std::wstring& expectedVersion);
 bool ShouldInstallAppUpdate(const ReleaseAssetInfo& latest);
 std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release);
@@ -124,9 +122,19 @@ public:
 
 class VotCliManager {
 public:
-    static VotCliStatus Resolve(const AppConfig& config);
+    static const char* WindowsAssetName();
+    static ToolInstallStatus Status(const AppPaths& paths);
+    static VotCliStatus Resolve(const AppPaths& paths, const AppConfig& config);
     static VotCliStatus ResolveUserPath(const std::filesystem::path& path);
-    static VotCliStatus InstallGlobal(
+    static ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
+    static ToolInstallStatus InstallOrUpdate(
+        const AppPaths& paths,
+        const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
+        HANDLE cancelEvent = nullptr
+    );
+    static ToolInstallStatus InstallOrUpdate(
+        const AppPaths& paths,
+        const ReleaseAssetInfo& release,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
     );
