@@ -403,6 +403,13 @@ Defer:
 - custom affected-file overwrite dialog;
 - post-processing waiting queue.
 
+Current execution note: this branch has since advanced past that bounded
+settings stage. The settings sidebar/card shell, centralized tool actions,
+post-processing waiting queue, affected-file confirmation, and CUDA
+self-test/fallback handling are now part of the current work; the remaining
+close-out verification has been performed with a Release build, core tests,
+text audit, and manual `PrintWindow` UI smoke.
+
 ## Additional Resolved Decisions
 
 - Settings rewrite happens before installer wiring in the temporary UI.

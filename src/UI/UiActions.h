@@ -25,7 +25,15 @@ enum class ToolReadinessIssue {
     MissingFfmpegForWhisper,
     MissingWhisperExe,
     MissingWhisperModel,
+    MissingWhisperSetup,
+    MissingWhisperCuda,
     MissingVotExe
+};
+
+enum class WhisperCudaReadinessAction {
+    UseResolvedBackend,
+    FallbackToCpu,
+    BlockCuda
 };
 
 struct ToolReadinessDialogContent {
@@ -72,6 +80,23 @@ std::wstring SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode mode);
 std::wstring OpenDownloadFolderButtonText();
 std::wstring TranslationSettingsCollapsedIcon();
 std::wstring ToolSetupButtonText();
+std::wstring WhisperBackendStatusText(WhisperBackend configuredBackend, WhisperBackend resolvedBackend, bool cudaAvailable);
+std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cudaAvailable, bool backendInstalled);
+std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText);
+std::wstring LocalizedToolErrorText(const std::string& message);
+std::wstring PostProcessingQueueStatusText(QueueTaskAction action);
+bool ShouldBlockWhisperCudaBackend(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool cudaRuntimeAvailable
+);
+WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool cudaSelfTestPassed,
+    bool cpuBackendInstalled,
+    bool modelReady
+);
 std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
     const TranscriptionPaths& paths,
     SubtitleFfmpegMode subtitleMode

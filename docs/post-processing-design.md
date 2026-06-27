@@ -558,29 +558,45 @@ The next settings stage does not need to finish:
 
 ## Current Branch Status
 
-As of the current `codex/post-processing-foundation` work, the branch has a
-functional foundation but not the final settings UX.
+As of the current `codex/post-processing-foundation` work, the branch has the
+post-processing foundation and settings sidebar/card shell in place.
 
 Implemented or partially implemented:
 
 - final config fields and app paths for Whisper, VOT, voice-over, and subtitles;
-- VOT zip/checksum installation infrastructure;
+- VOT zip/checksum installation infrastructure plus lightweight `--version`
+  self-test after install and manual path selection;
 - Whisper release/model/backend infrastructure;
 - manual completed-task actions for transcription and translation;
+- separate post-processing queue with one active operation, waiting row state,
+  cancellation for waiting/active operations, and non-persistent queued work;
 - Whisper and VOT transcription to `.srt` and `.txt`;
 - VOT voice-over MP3 sidecar generation;
 - FFmpeg subtitle/audio integration using temporary output and original video
   replacement;
 - global `Open folder` button near logs;
+- custom tool-readiness dialogs that open `Инструменты`;
+- affected-file confirmation listing sidecars and in-place video modification;
+- sidebar/card settings dialog with collapsed sidebar icons, bottom `О
+  программе`, custom language combo menus, and workflow tool notices;
+- tool status cards with install/select/model actions centralized in
+  `Инструменты`;
+- VOT manual path selection supports direct `vot-helper.exe` selection and a
+  candidate picker when a selected folder contains multiple matches;
+- CUDA candidate detection for Whisper install selection and explicit readiness
+  handling when selected CUDA falls back to CPU or runtime is unavailable;
+- Whisper executable `--version` self-test after install/manual selection and
+  persisted CPU fallback when selected CUDA fails readiness before transcription;
+- Whisper tools UI shows CPU/CUDA availability and offers CPU/CUDA
+  install/reinstall text based on the selected backend and CUDA candidate;
+- FFmpeg-gated subtitle/audio integration controls stay visible and their
+  tooltips explicitly explain that FFmpeg is required when the option is disabled;
 - tests for many core path, config, tool, argument, and action helpers.
 
-Still required:
+Verified in the current pass:
 
-- replace the temporary settings dialog with the sidebar/card UI above;
-- move install/select/model actions into `Инструменты`;
-- add disabled tool-gated controls and tooltips in workflow sections;
-- add a real post-processing waiting queue instead of only one active operation;
-- replace simple overwrite prompts with custom conflict dialogs listing affected
-  files;
-- add CUDA detection/self-test/fallback UI;
-- complete manual UI verification.
+- Release build and core test suite;
+- text audit for removed native combo boxes and old English mode labels;
+- manual `PrintWindow` UI smoke of the main window, settings downloads,
+  transcription, translation, tools, expanded tool details, and collapsed
+  sidebar icons.

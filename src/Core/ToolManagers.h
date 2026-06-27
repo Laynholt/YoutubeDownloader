@@ -79,6 +79,7 @@ public:
     static std::filesystem::path BackendInstallDir(const AppPaths& paths, WhisperBackend backend);
     static std::filesystem::path BackendExecutablePath(const AppPaths& paths, WhisperBackend backend);
     static std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
+    static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static ToolInstallStatus ResolveBackend(const AppPaths& paths, WhisperBackend backend);
     static ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
     static ReleaseAssetInfo CheckLatestRelease(WhisperBackend backend = WhisperBackend::Cpu, HANDLE cancelEvent = nullptr);
@@ -101,6 +102,9 @@ public:
     );
 };
 
+WhisperBackend SelectWhisperInstallBackend(WhisperBackend configuredBackend, bool cudaAvailable);
+bool IsWhisperCudaCandidateAvailable();
+
 struct VotExeStatus {
     bool available = false;
     std::filesystem::path executable;
@@ -116,7 +120,9 @@ public:
     static VotExeStatus Resolve(const AppPaths& paths, const AppConfig& config);
     static VotExeStatus ResolveUserPath(const std::filesystem::path& path);
     static std::filesystem::path FindExecutable(const std::filesystem::path& root);
+    static std::vector<std::filesystem::path> FindExecutables(const std::filesystem::path& root);
     static std::wstring Sha256ForFile(const std::string& sumsText, const std::string& fileName);
+    static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static VotExeStatus Install(
         const AppPaths& paths,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},

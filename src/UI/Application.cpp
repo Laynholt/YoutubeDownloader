@@ -225,6 +225,26 @@ std::filesystem::path FirstExistingMediaOutput(const DownloadTaskSnapshot& task)
     return {};
 }
 
+std::wstring BuildMissingMediaFileMessage(const DownloadTaskSnapshot& task) {
+    std::wstring message =
+        L"Не удалось найти скачанный медиафайл для этой задачи.\n\n"
+        L"Задача: " + (task.title.empty() ? task.request.url : task.title) + L"\n";
+    if (!task.request.url.empty()) {
+        message += L"Ссылка: " + task.request.url + L"\n";
+    }
+    if (task.outputFiles.empty()) {
+        message +=
+            L"\nВ записи очереди нет пути к итоговому файлу. Возможно, yt-dlp завершил загрузку без передачи имени файла приложению.";
+    } else {
+        message += L"\nПроверенные пути:\n";
+        for (const std::filesystem::path& path : task.outputFiles) {
+            message += L"- " + path.wstring() + L"\n";
+        }
+        message += L"\nПроверьте, что файл не был удалён, перемещён или переименован после загрузки.";
+    }
+    return message;
+}
+
 QueueTaskActionInput BuildQueueActionInputForTask(
     const DownloadTaskSnapshot& task,
     bool postProcessingBusy
@@ -257,22 +277,48 @@ int QueueActionId(QueueTaskAction action) {
     return 0;
 }
 
+QueueTaskAction QueueTaskActionFromId(int action) {
+    switch (action) {
+    case kQueueActionTranscribe:
+        return QueueTaskAction::Transcribe;
+    case kQueueActionTranslate:
+        return QueueTaskAction::Translate;
+    case kQueueActionRetry:
+        return QueueTaskAction::Retry;
+    case kQueueActionDelete:
+        return QueueTaskAction::Clear;
+    case kQueueActionCancel:
+        return QueueTaskAction::CancelPostProcessing;
+    default:
+        return QueueTaskAction::None;
+    }
+}
+
 std::vector<QueueActionRect> BuildQueueActionRects(
     const RECT& row,
     const std::vector<QueueTaskActionItem>& actions
 ) {
     constexpr int buttonHeight = 26;
     constexpr int gap = 8;
-    int right = row.right - 12;
+    auto actionWidth = [](QueueTaskAction action) {
+        return action == QueueTaskAction::Transcribe ? 132 : 96;
+    };
+    int totalWidth = 0;
+    for (const QueueTaskActionItem& item : actions) {
+        totalWidth += actionWidth(item.action);
+    }
+    if (!actions.empty()) {
+        totalWidth += gap * (static_cast<int>(actions.size()) - 1);
+    }
+    int left = row.right - 12 - totalWidth;
     std::vector<QueueActionRect> rects;
     rects.reserve(actions.size());
     for (const QueueTaskActionItem& item : actions) {
-        const int width = item.action == QueueTaskAction::Transcribe ? 132 : 96;
-        RECT rect = {right - width, row.top + 12, right, row.top + 12 + buttonHeight};
+        const int width = actionWidth(item.action);
+        RECT rect = {left, row.top + 12, left + width, row.top + 12 + buttonHeight};
         rects.push_back({QueueActionId(item.action), item.text, rect});
-        right = rect.left - gap;
+        left = rect.right + gap;
     }
-    std::reverse(rects.begin(), rects.end());
     return rects;
 }
 
@@ -1927,7 +1973,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
             const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
             status += L" · " + FormatDuration(elapsedMs / 1000);
         } else if (postProcessingBusy) {
-            status = L"Ожидает обработки...";
+            status = PostProcessingQueueStatusText(PostProcessingActionForTask(task.id));
         }
         if (!postProcessingBusy && !task.statusText.empty() && task.statusText != status) {
             status += L" · " + task.statusText;
@@ -2747,7 +2793,7 @@ void Application::StartPostProcessing(int taskId, int action) {
 
     const std::filesystem::path mediaPath = FirstExistingMediaOutput(task);
     if (mediaPath.empty()) {
-        ShowErrorDialog(m_window, m_instance, L"Файл не найден", L"Не удалось найти скачанный файл для этой задачи.");
+        ShowErrorDialog(m_window, m_instance, L"Файл не найден", BuildMissingMediaFileMessage(task));
         return;
     }
     if (task.request.url.empty()) {
@@ -2769,24 +2815,54 @@ void Application::StartPostProcessing(int taskId, int action) {
             return;
         }
         if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
-            if (!ffmpeg.available) {
-                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingFfmpegForWhisper)) {
-                    ShowAndSaveSettings(SettingsInitialSection::Tools);
-                }
-                return;
-            }
-            const ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
+            ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
             const std::filesystem::path modelPath = config.whisperModelPath.empty()
                 ? paths.localWhisperModelPath()
                 : config.whisperModelPath;
-            if (!whisper.installed) {
-                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingWhisperExe)) {
-                    ShowAndSaveSettings(SettingsInitialSection::Tools);
+            const bool whisperModelReady = std::filesystem::is_regular_file(modelPath, ec);
+            ec.clear();
+            const ToolInstallStatus cpuWhisper = WhisperManager::ResolveBackend(paths, WhisperBackend::Cpu);
+            const bool whisperCudaSelfTestPassed = whisper.installed &&
+                whisper.whisperBackend == WhisperBackend::Cuda &&
+                WhisperManager::SelfTestExecutable(whisper.executable);
+            const WhisperCudaReadinessAction cudaReadiness = whisper.installed
+                ? ResolveWhisperCudaReadinessAction(
+                    config.whisperBackend,
+                    whisper.whisperBackend,
+                    whisperCudaSelfTestPassed,
+                    cpuWhisper.installed,
+                    whisperModelReady
+                )
+                : WhisperCudaReadinessAction::UseResolvedBackend;
+            if (cudaReadiness == WhisperCudaReadinessAction::FallbackToCpu) {
+                config.whisperBackend = WhisperBackend::Cpu;
+                m_config.whisperBackend = WhisperBackend::Cpu;
+                if (m_paths) {
+                    ConfigStore::Save(*m_paths, m_config);
                 }
-                return;
+                whisper = WhisperManager::Resolve(paths, config);
+                SetTransientStatus(L"CUDA Whisper недоступен: переключено на CPU");
             }
-            if (!std::filesystem::is_regular_file(modelPath, ec)) {
-                if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingWhisperModel)) {
+            const bool whisperCudaBlocked = cudaReadiness == WhisperCudaReadinessAction::BlockCuda;
+            const int missingCount =
+                (ffmpeg.available ? 0 : 1) +
+                (whisper.installed ? 0 : 1) +
+                (whisperModelReady ? 0 : 1) +
+                (whisperCudaBlocked ? 1 : 0);
+            if (missingCount > 0) {
+                ToolReadinessIssue issue = ToolReadinessIssue::MissingWhisperSetup;
+                if (missingCount == 1) {
+                    if (!ffmpeg.available) {
+                        issue = ToolReadinessIssue::MissingFfmpegForWhisper;
+                    } else if (!whisper.installed) {
+                        issue = ToolReadinessIssue::MissingWhisperExe;
+                    } else if (!whisperModelReady) {
+                        issue = ToolReadinessIssue::MissingWhisperModel;
+                    } else {
+                        issue = ToolReadinessIssue::MissingWhisperCuda;
+                    }
+                }
+                if (ShowToolReadinessDialog(m_window, m_instance, issue)) {
                     ShowAndSaveSettings(SettingsInitialSection::Tools);
                 }
                 return;
@@ -2977,7 +3053,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
             }
         } catch (const std::exception& ex) {
             complete.success = false;
-            complete.error = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            complete.error = LocalizedToolErrorText(ex.what());
             complete.status = action == kQueueActionTranscribe ? L"Транскрибация не выполнена" : L"Перевод не выполнен";
         } catch (...) {
             complete.success = false;
@@ -3020,6 +3096,26 @@ bool Application::HasPostProcessingOperationForTask(int taskId) const {
             return operation.taskId == taskId;
         }
     );
+}
+
+QueueTaskAction Application::PostProcessingActionForTask(int taskId) const {
+    if (taskId <= 0) {
+        return QueueTaskAction::None;
+    }
+    if (m_postProcessingTaskId == taskId) {
+        return QueueTaskActionFromId(m_postProcessingAction);
+    }
+
+    const auto queued = std::find_if(
+        m_postProcessingQueue.begin(),
+        m_postProcessingQueue.end(),
+        [taskId](const PendingPostProcessingOperation& operation) {
+            return operation.taskId == taskId;
+        }
+    );
+    return queued == m_postProcessingQueue.end()
+        ? QueueTaskAction::None
+        : QueueTaskActionFromId(queued->action);
 }
 
 bool Application::CancelPostProcessing(int taskId) {

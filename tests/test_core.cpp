@@ -238,6 +238,7 @@ void TestQueueTaskActionsForPostProcessing() {
     Require(actions[1].action == QueueTaskAction::Translate, "completed task second action should be translate");
     Require(actions[1].text == L"Перевести", "translate action text mismatch");
     Require(actions[2].action == QueueTaskAction::Clear, "completed task third action should be clear");
+    Require(actions[2].text == L"Закрыть", "completed task final action should be close");
 
     completed.postProcessingBusy = true;
     const std::vector<QueueTaskActionItem> busy = BuildQueueTaskActions(completed);
@@ -250,6 +251,7 @@ void TestQueueTaskActionsForPostProcessing() {
     const std::vector<QueueTaskActionItem> noUrl = BuildQueueTaskActions(completed);
     Require(noUrl.size() == 1, "completed task without source URL should only expose clear");
     Require(noUrl[0].action == QueueTaskAction::Clear, "completed task without source URL should expose clear action");
+    Require(noUrl[0].text == L"Закрыть", "completed task without source URL close text mismatch");
 
     QueueTaskActionInput failed;
     failed.failedOrCanceled = true;
@@ -277,6 +279,21 @@ void TestToolReadinessDialogContent() {
     Require(
         vot.message.find(L"vot-helper.exe") != std::wstring::npos,
         "readiness dialog should name the missing VOT executable"
+    );
+
+    const ToolReadinessDialogContent whisperSetup = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingWhisperSetup);
+    Require(
+        whisperSetup.message.find(L"FFmpeg") != std::wstring::npos &&
+        whisperSetup.message.find(L"whisper-cli.exe") != std::wstring::npos &&
+        whisperSetup.message.find(L"модель") != std::wstring::npos,
+        "aggregate Whisper readiness dialog should name all required components"
+    );
+
+    const ToolReadinessDialogContent whisperCuda = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingWhisperCuda);
+    Require(
+        whisperCuda.message.find(L"CUDA") != std::wstring::npos &&
+        whisperCuda.message.find(L"CPU") != std::wstring::npos,
+        "CUDA readiness dialog should explain CUDA fallback"
     );
 }
 
@@ -310,12 +327,178 @@ void TestPostProcessingModeDisplayText() {
         "main open-folder button text should be explicit"
     );
     Require(
-        TranslationSettingsCollapsedIcon() == L"🔊",
+        TranslationSettingsCollapsedIcon() == L"♫",
         "collapsed translation settings icon should communicate voice-over"
     );
     Require(
         ToolSetupButtonText() == L"Настроить",
         "tool setup button text should open setup dialogs"
+    );
+    Require(
+        WhisperBackendStatusText(WhisperBackend::Cuda, WhisperBackend::Cuda, true) == L"CUDA",
+        "ready selected CUDA backend should show CUDA status"
+    );
+    Require(
+        WhisperBackendStatusText(WhisperBackend::Cuda, WhisperBackend::Cpu, false) == L"CUDA нет",
+        "missing selected CUDA backend should show unavailable CUDA status"
+    );
+    Require(
+        WhisperBackendStatusText(WhisperBackend::Auto, WhisperBackend::Cpu, false) == L"CPU",
+        "auto backend resolved to CPU should show CPU status"
+    );
+    Require(
+        WhisperInstallButtonText(WhisperBackend::Cuda, true, true) == L"Переустановить CUDA",
+        "installed CUDA whisper should expose CUDA reinstall action"
+    );
+    Require(
+        WhisperInstallButtonText(WhisperBackend::Cuda, false, false) == L"Установить CPU",
+        "missing CUDA candidate should offer CPU install"
+    );
+    const std::wstring ffmpegTooltip = FfmpegGatedOptionTooltip(L"Добавлять дорожку");
+    Require(
+        ffmpegTooltip.find(L"Добавлять дорожку") != std::wstring::npos &&
+        ffmpegTooltip.find(L"Требуется FFmpeg") != std::wstring::npos &&
+        ffmpegTooltip.find(L"недоступна") != std::wstring::npos,
+        "FFmpeg gated tooltip should explain disabled options"
+    );
+    Require(
+        LocalizedToolErrorText("operation canceled") == L"Операция отменена",
+        "tool cancellation error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("media file is no longer available") == L"Исходный медиафайл больше недоступен",
+        "missing media revalidation error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("whisper-cli.exe is no longer available") == L"whisper-cli.exe больше недоступен",
+        "missing whisper revalidation error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("Whisper model is no longer available") == L"Модель Whisper больше недоступна",
+        "missing whisper model revalidation error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("vot-helper.exe is no longer available") == L"vot-helper.exe больше недоступен",
+        "missing VOT revalidation error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("installed VOT helper self-test failed") == L"VOT helper установлен, но не прошёл проверку запуска",
+        "VOT self-test install error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("installed whisper.cpp self-test failed") == L"Whisper.cpp установлен, но не прошёл проверку запуска",
+        "Whisper self-test install error should be localized"
+    );
+    Require(
+        LocalizedToolErrorText("network failed") == L"network failed",
+        "unknown tool errors should keep their original text"
+    );
+}
+
+void TestPostProcessingQueueStatusText() {
+    Require(
+        PostProcessingQueueStatusText(QueueTaskAction::Transcribe) == L"Ожидает транскрибации...",
+        "queued transcription status should name the operation"
+    );
+    Require(
+        PostProcessingQueueStatusText(QueueTaskAction::Translate) == L"Ожидает перевода...",
+        "queued translation status should name the operation"
+    );
+    Require(
+        PostProcessingQueueStatusText(QueueTaskAction::None) == L"Ожидает обработки...",
+        "unknown queued post-processing status should fall back to generic text"
+    );
+}
+
+void TestCompletedQueueTaskActionsDoNotDependOnOutputProbe() {
+    QueueTaskActionInput completed;
+    completed.completed = true;
+    completed.hasSourceUrl = true;
+    completed.hasOutputFile = false;
+
+    const std::vector<QueueTaskActionItem> actions = BuildQueueTaskActions(completed);
+    Require(actions.size() == 3, "completed task with source URL should expose post-processing actions");
+    Require(actions[0].action == QueueTaskAction::Transcribe, "completed task first action should be transcribe");
+    Require(actions[1].action == QueueTaskAction::Translate, "completed task second action should be translate");
+    Require(actions[2].action == QueueTaskAction::Clear, "completed task third action should be clear");
+    Require(actions[2].text == L"Закрыть", "completed task final action should be close");
+}
+
+void TestWhisperInstallBackendSelection() {
+    Require(
+        SelectWhisperInstallBackend(WhisperBackend::Auto, true) == WhisperBackend::Cuda,
+        "auto whisper install should prefer CUDA when available"
+    );
+    Require(
+        SelectWhisperInstallBackend(WhisperBackend::Auto, false) == WhisperBackend::Cpu,
+        "auto whisper install should use CPU when CUDA is unavailable"
+    );
+    Require(
+        SelectWhisperInstallBackend(WhisperBackend::Cuda, false) == WhisperBackend::Cpu,
+        "explicit CUDA whisper install should fall back to CPU when CUDA is unavailable"
+    );
+    Require(
+        SelectWhisperInstallBackend(WhisperBackend::Cpu, true) == WhisperBackend::Cpu,
+        "explicit CPU whisper install should be honored"
+    );
+}
+
+void TestWhisperCudaReadiness() {
+    Require(
+        !ShouldBlockWhisperCudaBackend(WhisperBackend::Auto, WhisperBackend::Cpu, false),
+        "auto backend should not block when CPU is selected"
+    );
+    Require(
+        !ShouldBlockWhisperCudaBackend(WhisperBackend::Cuda, WhisperBackend::Cuda, true),
+        "selected CUDA backend should be ready when CUDA executable and runtime are available"
+    );
+    Require(
+        ShouldBlockWhisperCudaBackend(WhisperBackend::Cuda, WhisperBackend::Cpu, true),
+        "selected CUDA backend should block when resolver fell back to CPU"
+    );
+    Require(
+        ShouldBlockWhisperCudaBackend(WhisperBackend::Cuda, WhisperBackend::Cuda, false),
+        "selected CUDA backend should block when CUDA runtime candidate is unavailable"
+    );
+    Require(
+        ResolveWhisperCudaReadinessAction(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cuda,
+            false,
+            true,
+            true
+        ) == WhisperCudaReadinessAction::FallbackToCpu,
+        "failed CUDA self-test should fall back to installed CPU when model is ready"
+    );
+    Require(
+        ResolveWhisperCudaReadinessAction(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cuda,
+            false,
+            false,
+            true
+        ) == WhisperCudaReadinessAction::BlockCuda,
+        "failed CUDA self-test should block when CPU fallback is unavailable"
+    );
+    Require(
+        ResolveWhisperCudaReadinessAction(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cpu,
+            true,
+            true,
+            true
+        ) == WhisperCudaReadinessAction::FallbackToCpu,
+        "resolved CPU fallback should be accepted and persisted for selected CUDA"
+    );
+    Require(
+        ResolveWhisperCudaReadinessAction(
+            WhisperBackend::Auto,
+            WhisperBackend::Cpu,
+            false,
+            true,
+            true
+        ) == WhisperCudaReadinessAction::UseResolvedBackend,
+        "auto backend should use resolved CPU without CUDA readiness handling"
     );
 }
 
@@ -1182,6 +1365,23 @@ void TestVotExeResolutionAndChecksumParsing() {
     Require(selected.available, "folder containing vot-helper.exe should resolve");
     Require(selected.executable == selectedDir / L"vot-helper.exe", "selected VOT folder path mismatch");
 
+    const fs::path multipleDir = root / L"multiple";
+    const fs::path firstVot = multipleDir / L"vot-helper.exe";
+    const fs::path secondVot = multipleDir / L"nested" / L"vot-helper.exe";
+    fs::create_directories(secondVot.parent_path());
+    {
+        std::ofstream out(firstVot);
+        out << "first vot";
+    }
+    {
+        std::ofstream out(secondVot);
+        out << "second vot";
+    }
+    const std::vector<fs::path> candidates = VotExeManager::FindExecutables(multipleDir);
+    Require(candidates.size() == 2, "multiple VOT helper candidates should be reported");
+    Require(candidates[0] == firstVot, "direct VOT helper candidate should be first");
+    Require(candidates[1] == secondVot, "nested VOT helper candidate should be preserved");
+
     const std::string sums =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  vot-helper.exe\n"
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb *vot-helper-windows-x64.zip\n";
@@ -1565,6 +1765,28 @@ void TestYtDlpExecutableVersionValidation() {
     Require(
         !ValidateYtDlpExecutableVersion(CurrentTestExecutablePath(), L"2026.06.10"),
         "yt-dlp executable validation should reject mismatched version output"
+    );
+}
+
+void TestVotExecutableSelfTest() {
+    Require(
+        VotExeManager::SelfTestExecutable(CurrentTestExecutablePath()),
+        "VOT self-test should accept an executable that supports --version"
+    );
+    Require(
+        !VotExeManager::SelfTestExecutable({}),
+        "VOT self-test should reject an empty executable path"
+    );
+}
+
+void TestWhisperExecutableSelfTest() {
+    Require(
+        WhisperManager::SelfTestExecutable(CurrentTestExecutablePath()),
+        "Whisper self-test should accept an executable that supports --version"
+    );
+    Require(
+        !WhisperManager::SelfTestExecutable({}),
+        "Whisper self-test should reject an empty executable path"
     );
 }
 
@@ -2664,8 +2886,12 @@ int main(int argc, char** argv) {
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
     TestQueueTaskActionsForPostProcessing();
+    TestCompletedQueueTaskActionsDoNotDependOnOutputProbe();
+    TestWhisperInstallBackendSelection();
+    TestWhisperCudaReadiness();
     TestToolReadinessDialogContent();
     TestPostProcessingModeDisplayText();
+    TestPostProcessingQueueStatusText();
     TestAffectedFileOverwriteLists();
     TestEditContextMenuModel();
     TestPasteReplacesExistingEditText();
@@ -2699,6 +2925,8 @@ int main(int argc, char** argv) {
     TestWhisperExecutableDiscovery();
     TestVotExeResolutionAndChecksumParsing();
     TestVotExeReleaseParsing();
+    TestVotExecutableSelfTest();
+    TestWhisperExecutableSelfTest();
     TestTranscriptionPathsAndArguments();
     TestSubtitleFfmpegArguments();
     TestWhisperProgressAndErrorParsing();

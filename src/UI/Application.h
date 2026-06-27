@@ -23,6 +23,8 @@
 #include <string>
 #include <thread>
 
+enum class QueueTaskAction;
+
 class Application {
 public:
     Application();
@@ -119,6 +121,7 @@ private:
     void StartPostProcessingWorker(PendingPostProcessingOperation operation);
     void StartNextQueuedPostProcessing();
     bool HasPostProcessingOperationForTask(int taskId) const;
+    QueueTaskAction PostProcessingActionForTask(int taskId) const;
     bool CancelPostProcessing(int taskId);
     void RefreshQueueText();
     std::wstring GetWindowTextString(HWND control) const;

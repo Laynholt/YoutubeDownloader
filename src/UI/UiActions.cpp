@@ -34,11 +34,11 @@ std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInpu
 
     if (input.completed) {
         std::vector<QueueTaskActionItem> actions;
-        if (input.hasOutputFile && input.hasSourceUrl) {
+        if (input.hasSourceUrl) {
             actions.push_back({QueueTaskAction::Transcribe, L"Транскрибировать"});
             actions.push_back({QueueTaskAction::Translate, L"Перевести"});
         }
-        actions.push_back({QueueTaskAction::Clear, L"Очистить"});
+        actions.push_back({QueueTaskAction::Clear, L"Закрыть"});
         return actions;
     }
 
@@ -73,6 +73,17 @@ ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue is
         content.message =
             L"Не найдена выбранная модель Whisper. Без модели whisper-cli.exe не сможет распознать аудио.\n\n"
             L"Откройте раздел Инструменты, чтобы скачать или выбрать модель Whisper.";
+        break;
+    case ToolReadinessIssue::MissingWhisperSetup:
+        content.message =
+            L"Для транскрибации через Whisper нужно подготовить несколько компонентов: FFmpeg для извлечения аудио, "
+            L"whisper-cli.exe для распознавания и модель Whisper.\n\n"
+            L"Откройте раздел Инструменты, чтобы установить или выбрать недостающие файлы.";
+        break;
+    case ToolReadinessIssue::MissingWhisperCuda:
+        content.message =
+            L"В настройках выбран CUDA-backend Whisper, но CUDA недоступна или приложение нашло только CPU-версию whisper-cli.exe.\n\n"
+            L"Откройте раздел Инструменты, чтобы установить CUDA-версию, выбрать CPU-режим или скачать подходящий Whisper заново.";
         break;
     case ToolReadinessIssue::MissingVotExe:
         content.message =
@@ -113,11 +124,103 @@ std::wstring OpenDownloadFolderButtonText() {
 }
 
 std::wstring TranslationSettingsCollapsedIcon() {
-    return L"🔊";
+    return L"♫";
 }
 
 std::wstring ToolSetupButtonText() {
     return L"Настроить";
+}
+
+std::wstring WhisperBackendStatusText(WhisperBackend configuredBackend, WhisperBackend resolvedBackend, bool cudaAvailable) {
+    if (configuredBackend == WhisperBackend::Cuda && (!cudaAvailable || resolvedBackend != WhisperBackend::Cuda)) {
+        return L"CUDA нет";
+    }
+    if (resolvedBackend == WhisperBackend::Cuda) {
+        return L"CUDA";
+    }
+    if (resolvedBackend == WhisperBackend::Custom) {
+        return L"Выбран";
+    }
+    return L"CPU";
+}
+
+std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cudaAvailable, bool backendInstalled) {
+    const bool installCuda = configuredBackend != WhisperBackend::Cpu && cudaAvailable;
+    if (installCuda) {
+        return backendInstalled ? L"Переустановить CUDA" : L"Установить CUDA";
+    }
+    return backendInstalled ? L"Переустановить CPU" : L"Установить CPU";
+}
+
+std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText) {
+    return actionText + L"\nТребуется FFmpeg; без него эта опция недоступна.";
+}
+
+std::wstring LocalizedToolErrorText(const std::string& message) {
+    if (message == "operation canceled") {
+        return L"Операция отменена";
+    }
+    if (message == "media file is no longer available") {
+        return L"Исходный медиафайл больше недоступен";
+    }
+    if (message == "FFmpeg is no longer available") {
+        return L"FFmpeg больше недоступен";
+    }
+    if (message == "whisper-cli.exe is no longer available") {
+        return L"whisper-cli.exe больше недоступен";
+    }
+    if (message == "Whisper model is no longer available") {
+        return L"Модель Whisper больше недоступна";
+    }
+    if (message == "vot-helper.exe is no longer available") {
+        return L"vot-helper.exe больше недоступен";
+    }
+    if (message == "installed VOT helper self-test failed") {
+        return L"VOT helper установлен, но не прошёл проверку запуска";
+    }
+    if (message == "installed whisper.cpp self-test failed") {
+        return L"Whisper.cpp установлен, но не прошёл проверку запуска";
+    }
+    return std::wstring(message.begin(), message.end());
+}
+
+std::wstring PostProcessingQueueStatusText(QueueTaskAction action) {
+    switch (action) {
+    case QueueTaskAction::Transcribe:
+        return L"Ожидает транскрибации...";
+    case QueueTaskAction::Translate:
+        return L"Ожидает перевода...";
+    default:
+        return L"Ожидает обработки...";
+    }
+}
+
+bool ShouldBlockWhisperCudaBackend(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool cudaRuntimeAvailable
+) {
+    return configuredBackend == WhisperBackend::Cuda &&
+        (!cudaRuntimeAvailable || resolvedBackend != WhisperBackend::Cuda);
+}
+
+WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool cudaSelfTestPassed,
+    bool cpuBackendInstalled,
+    bool modelReady
+) {
+    if (configuredBackend != WhisperBackend::Cuda) {
+        return WhisperCudaReadinessAction::UseResolvedBackend;
+    }
+    if (resolvedBackend == WhisperBackend::Cuda && cudaSelfTestPassed) {
+        return WhisperCudaReadinessAction::UseResolvedBackend;
+    }
+    if (cpuBackendInstalled && modelReady) {
+        return WhisperCudaReadinessAction::FallbackToCpu;
+    }
+    return WhisperCudaReadinessAction::BlockCuda;
 }
 
 std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(

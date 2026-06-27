@@ -630,6 +630,21 @@ std::filesystem::path WhisperManager::FindExecutableDir(const std::filesystem::p
     return {};
 }
 
+bool WhisperManager::SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    if (!IsExecutableFile(executable)) {
+        return false;
+    }
+
+    ProcessRunOptions options;
+    options.executable = executable;
+    options.arguments = {L"--version"};
+    options.timeoutMs = 15000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult result = ProcessRunner::Run(options);
+    return !result.canceled && !result.timedOut && result.exitCode == 0;
+}
+
 ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperBackend backend) {
     ToolInstallStatus status;
     status.whisperBackend = backend;
@@ -775,6 +790,9 @@ ToolInstallStatus WhisperManager::Install(
     if (!status.installed) {
         throw std::runtime_error("installed whisper.cpp could not be resolved");
     }
+    if (!SelfTestExecutable(status.executable, cancelEvent)) {
+        throw std::runtime_error("installed whisper.cpp self-test failed");
+    }
     return status;
 }
 
@@ -784,6 +802,29 @@ ToolInstallStatus WhisperManager::Install(
     HANDLE cancelEvent
 ) {
     return Install(paths, WhisperBackend::Cpu, onProgress, cancelEvent);
+}
+
+WhisperBackend SelectWhisperInstallBackend(WhisperBackend configuredBackend, bool cudaAvailable) {
+    if (configuredBackend == WhisperBackend::Cuda) {
+        return cudaAvailable ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+    }
+    if (configuredBackend == WhisperBackend::Cpu) {
+        return WhisperBackend::Cpu;
+    }
+    return cudaAvailable ? WhisperBackend::Cuda : WhisperBackend::Cpu;
+}
+
+bool IsWhisperCudaCandidateAvailable() {
+    std::wstring buffer(MAX_PATH, L'\0');
+    const DWORD length = SearchPathW(
+        nullptr,
+        L"nvidia-smi.exe",
+        nullptr,
+        static_cast<DWORD>(buffer.size()),
+        buffer.data(),
+        nullptr
+    );
+    return length > 0 && length < buffer.size();
 }
 
 std::filesystem::path WhisperManager::DownloadModel(
@@ -881,24 +922,32 @@ VotExeStatus VotExeManager::ResolveUserPath(const std::filesystem::path& path) {
 }
 
 std::filesystem::path VotExeManager::FindExecutable(const std::filesystem::path& root) {
+    const std::vector<std::filesystem::path> candidates = FindExecutables(root);
+    return candidates.empty() ? std::filesystem::path{} : candidates.front();
+}
+
+std::vector<std::filesystem::path> VotExeManager::FindExecutables(const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> candidates;
     if (root.empty()) {
-        return {};
+        return candidates;
     }
 
     std::error_code ec;
     if (std::filesystem::is_regular_file(root, ec) && root.filename() == L"vot-helper.exe") {
-        return root;
+        candidates.push_back(root);
+        return candidates;
     }
 
     if (!std::filesystem::is_directory(root, ec)) {
-        return {};
+        return candidates;
     }
 
     const std::filesystem::path direct = root / L"vot-helper.exe";
     if (IsExecutableFile(direct)) {
-        return direct;
+        candidates.push_back(direct);
     }
 
+    std::vector<std::filesystem::path> nested;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
         if (ec) {
             break;
@@ -906,12 +955,18 @@ std::filesystem::path VotExeManager::FindExecutable(const std::filesystem::path&
         if (!entry.is_regular_file(ec)) {
             continue;
         }
-        if (entry.path().filename() == L"vot-helper.exe") {
-            return entry.path();
+        const std::filesystem::path candidate = entry.path();
+        if (candidate == direct) {
+            continue;
+        }
+        if (candidate.filename() == L"vot-helper.exe") {
+            nested.push_back(candidate);
         }
     }
 
-    return {};
+    std::sort(nested.begin(), nested.end());
+    candidates.insert(candidates.end(), nested.begin(), nested.end());
+    return candidates;
 }
 
 std::wstring VotExeManager::Sha256ForFile(const std::string& sumsText, const std::string& fileName) {
@@ -932,6 +987,21 @@ std::wstring VotExeManager::Sha256ForFile(const std::string& sumsText, const std
         }
     }
     return {};
+}
+
+bool VotExeManager::SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    if (!IsExecutableFile(executable)) {
+        return false;
+    }
+
+    ProcessRunOptions options;
+    options.executable = executable;
+    options.arguments = {L"--version"};
+    options.timeoutMs = 15000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult result = ProcessRunner::Run(options);
+    return !result.canceled && !result.timedOut && result.exitCode == 0;
 }
 
 VotExeStatus VotExeManager::Install(
@@ -1050,6 +1120,9 @@ VotExeStatus VotExeManager::Install(
     VotExeStatus status = ResolveUserPath(paths.localVotExePath());
     if (!status.available) {
         throw std::runtime_error("installed VOT helper could not be resolved");
+    }
+    if (!SelfTestExecutable(status.executable, cancelEvent)) {
+        throw std::runtime_error("installed VOT helper self-test failed");
     }
     return status;
 }
