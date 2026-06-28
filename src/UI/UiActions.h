@@ -106,6 +106,13 @@ bool ShouldRetryWhisperCudaFailureWithCpu(
     bool cpuSelfTestPassed,
     bool modelReady
 );
+bool ShouldFallbackWhisperCudaInstallToCpu(
+    WhisperBackend installBackend,
+    const std::string& installError,
+    bool cpuBackendInstalled,
+    bool cpuSelfTestPassed,
+    bool modelReady
+);
 std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
     const TranscriptionPaths& paths,
     SubtitleFfmpegMode subtitleMode

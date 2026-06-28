@@ -251,6 +251,7 @@ struct DialogState {
     std::mutex progressMutex;
     std::optional<ProgressUpdate> pendingProgress;
     std::optional<std::wstring> progressError;
+    std::optional<std::wstring> progressSuccessMessage;
     std::vector<WhisperModelInfo> whisperModels;
     int selectedWhisperModelIndex = 0;
     std::optional<WhisperModelInfo> progressWhisperModel;
@@ -2269,9 +2270,34 @@ void StartWhisperInstallWorker(DialogState* state) {
             config->whisperBackend = status.whisperBackend;
             PostMessageW(window, kProgressDoneMessage, TRUE, 0);
         } catch (const std::exception& ex) {
+            const std::string installError = ex.what();
+            const ToolInstallStatus cpuStatus = WhisperManager::ResolveBackend(paths, WhisperBackend::Cpu);
+            const std::filesystem::path modelPath = config->whisperModelPath.empty()
+                ? paths.localWhisperModelPath()
+                : config->whisperModelPath;
+            const bool modelReady = IsRegularFile(modelPath);
+            const bool cpuSelfTestPassed = cpuStatus.installed &&
+                WhisperManager::SelfTestExecutable(cpuStatus.executable, cancelEvent);
+            if (ShouldFallbackWhisperCudaInstallToCpu(
+                    installBackend,
+                    installError,
+                    cpuStatus.installed,
+                    cpuSelfTestPassed,
+                    modelReady
+                )) {
+                config->whisperPath = cpuStatus.executable;
+                config->whisperBackend = WhisperBackend::Cpu;
+                {
+                    std::lock_guard lock(state->progressMutex);
+                    state->progressSuccessMessage =
+                        L"CUDA Whisper установлен, но не прошёл проверку запуска. Переключено на установленный CPU backend.";
+                }
+                PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+                return;
+            }
             {
                 std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(ex.what());
+                state->progressError = LocalizedToolErrorText(installError);
             }
             PostMessageW(window, kProgressDoneMessage, FALSE, 0);
         } catch (...) {
@@ -3184,7 +3210,15 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             state->progressDone = true;
             state->progressSuccess = wParam == TRUE;
             if (state->progressSuccess) {
-                if (state->progressMode == ProgressMode::AppUpdate) {
+                std::optional<std::wstring> successMessage;
+                {
+                    std::lock_guard lock(state->progressMutex);
+                    successMessage = std::move(state->progressSuccessMessage);
+                    state->progressSuccessMessage.reset();
+                }
+                if (successMessage) {
+                    state->message = *successMessage;
+                } else if (state->progressMode == ProgressMode::AppUpdate) {
                     state->message = L"Обновление скачано. Приложение будет закрыто и запущено заново.";
                 } else if (state->progressMode == ProgressMode::WhisperInstall) {
                     state->message = L"Whisper.cpp установлен.";

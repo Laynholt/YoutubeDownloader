@@ -553,6 +553,46 @@ void TestWhisperCudaReadiness() {
         ),
         "failed CUDA transcription should not retry when CPU self-test fails"
     );
+    Require(
+        ShouldFallbackWhisperCudaInstallToCpu(
+            WhisperBackend::Cuda,
+            "installed whisper.cpp self-test failed",
+            true,
+            true,
+            true
+        ),
+        "failed CUDA install self-test should fall back to tested CPU with model"
+    );
+    Require(
+        !ShouldFallbackWhisperCudaInstallToCpu(
+            WhisperBackend::Cpu,
+            "installed whisper.cpp self-test failed",
+            true,
+            true,
+            true
+        ),
+        "CPU install should not use CUDA setup fallback"
+    );
+    Require(
+        !ShouldFallbackWhisperCudaInstallToCpu(
+            WhisperBackend::Cuda,
+            "whisper.cpp release asset was not found",
+            true,
+            true,
+            true
+        ),
+        "CUDA install should not fall back to CPU for unrelated setup failures"
+    );
+    Require(
+        !ShouldFallbackWhisperCudaInstallToCpu(
+            WhisperBackend::Cuda,
+            "installed whisper.cpp self-test failed",
+            true,
+            true,
+            false
+        ),
+        "CUDA install fallback should require a ready model"
+    );
 }
 
 void TestAffectedFileOverwriteLists() {
