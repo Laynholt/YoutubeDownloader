@@ -571,6 +571,8 @@ Implemented or partially implemented:
 - separate post-processing queue with one active operation, waiting row state,
   cancellation for waiting/active operations, and non-persistent queued work;
 - Whisper and VOT transcription to `.srt` and `.txt`;
+- transcription now treats partial TXT/SRT sidecar commits as failure instead of
+  reporting success with only one required output;
 - VOT voice-over MP3 sidecar generation;
 - FFmpeg subtitle/audio integration using temporary output and original video
   replacement;
@@ -581,6 +583,8 @@ Implemented or partially implemented:
 - global `Open folder` button near logs;
 - custom tool-readiness dialogs that open `Инструменты`;
 - affected-file confirmation listing sidecars and in-place video modification;
+- tool readiness and FFmpeg-only mode fallback are resolved before affected-file
+  confirmation, so the overwrite dialog reflects the effective operation;
 - queued post-processing revalidates approved affected output paths at start and
   fails gracefully if a new output conflict appears after the original
   confirmation;

@@ -1868,6 +1868,59 @@ std::filesystem::path CurrentTestExecutablePath() {
     return buffer;
 }
 
+void TestTranscriptionFailsWhenOnlyOneSidecarCanBeCommitted() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TranscriptionPartialSidecar");
+    const fs::path media = root / L"Downloads" / L"Video One.mp4";
+    const fs::path tempDir = root / L"tmp";
+    fs::create_directories(media.parent_path());
+    {
+        std::ofstream out(media, std::ios::binary | std::ios::trunc);
+        out << "media";
+    }
+
+    const TranscriptionPaths expectedPaths = BuildTranscriptionPaths(media, tempDir, 0);
+    {
+        std::ofstream out(expectedPaths.finalTextPath, std::ios::binary | std::ios::trunc);
+        out << "previous transcript";
+    }
+
+    HANDLE lockedText = CreateFileW(
+        expectedPaths.finalTextPath.c_str(),
+        GENERIC_READ,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    Require(lockedText != INVALID_HANDLE_VALUE, "fixture should lock final transcript text file");
+
+    TranscriptionRequest request;
+    request.engine = TranscriptionEngine::Vot;
+    request.mediaPath = media;
+    request.tempDirectory = tempDir;
+    request.votExePath = CurrentTestExecutablePath();
+    request.youtubeUrl = L"https://example.invalid/video";
+    request.language = L"auto";
+    request.votTargetLanguage = L"ru";
+    request.subtitleMode = SubtitleFfmpegMode::Off;
+
+    const TranscriptionResult result = TranscriptionClient::Transcribe(request);
+    CloseHandle(lockedText);
+
+    Require(!result.success, "transcription should fail unless both TXT and SRT sidecars are committed");
+    Require(result.textPath.empty(), "partial transcription failure should not report a TXT result");
+    Require(result.srtPath.empty(), "partial transcription failure should not report an SRT result");
+    {
+        std::ifstream in(expectedPaths.finalTextPath, std::ios::binary);
+        const std::string text{
+            std::istreambuf_iterator<char>(in),
+            std::istreambuf_iterator<char>()
+        };
+        Require(text == "previous transcript", "failed partial transcription should preserve existing TXT");
+    }
+}
+
 void TestYtDlpExecutableVersionValidation() {
     Require(
         ValidateYtDlpExecutableVersion(CurrentTestExecutablePath(), L"2026.06.09"),
@@ -1948,6 +2001,28 @@ int RunProcessTreeParentFixture() {
 
 int RunProcessTreeChildFixture() {
     Sleep(60000);
+    return 0;
+}
+
+int RunVotSubtitlesFixture(int argc, char** argv) {
+    fs::path outputPath;
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (std::string(argv[i]) == "--output") {
+            outputPath = fs::path(argv[i + 1]);
+            break;
+        }
+    }
+    if (outputPath.empty()) {
+        return 2;
+    }
+
+    std::error_code ec;
+    fs::create_directories(outputPath.parent_path(), ec);
+    std::ofstream out(outputPath, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return 3;
+    }
+    out << "1\n00:00:00,000 --> 00:00:01,000\nTest subtitle\n";
     return 0;
 }
 
@@ -2981,6 +3056,9 @@ int main(int argc, char** argv) {
         std::cout << "2026.06.09\n";
         return 0;
     }
+    if (argc >= 2 && std::string(argv[1]) == "subtitles") {
+        return RunVotSubtitlesFixture(argc, argv);
+    }
     if (argc >= 2 && std::string(argv[1]) == "--process-tree-parent-fixture") {
         return RunProcessTreeParentFixture();
     }
@@ -3041,6 +3119,7 @@ int main(int argc, char** argv) {
     TestVotExeReleaseParsing();
     TestVotExecutableSelfTest();
     TestWhisperExecutableSelfTest();
+    TestTranscriptionFailsWhenOnlyOneSidecarCanBeCommitted();
     TestTranscriptionPathsAndArguments();
     TestSubtitleFfmpegArguments();
     TestWhisperProgressAndErrorParsing();

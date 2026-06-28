@@ -2807,15 +2807,6 @@ void Application::StartPostProcessing(int taskId, int action) {
     std::vector<std::filesystem::path> approvedAffectedFiles;
     std::error_code ec;
     if (action == kQueueActionTranscribe) {
-        const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(mediaPath, paths.transcriptionTempDir(), 0);
-        const std::vector<std::filesystem::path> affectedFiles = BuildTranscriptionAffectedFiles(
-            transcriptPaths,
-            config.subtitleFfmpegMode
-        );
-        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись транскрибации", affectedFiles)) {
-            return;
-        }
-        approvedAffectedFiles = affectedFiles;
         if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
             ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
             const std::filesystem::path modelPath = config.whisperModelPath.empty()
@@ -2882,16 +2873,16 @@ void Application::StartPostProcessing(int taskId, int action) {
                 SetTransientStatus(L"FFmpeg не найден: субтитры будут сохранены отдельными файлами");
             }
         }
-    } else if (action == kQueueActionTranslate) {
-        const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(mediaPath, paths.voiceOverTempDir(), config.voiceOverLanguage);
-        const std::vector<std::filesystem::path> affectedFiles = BuildVoiceOverAffectedFiles(
-            voicePaths,
-            config.voiceOverFfmpegMode
+        const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(mediaPath, paths.transcriptionTempDir(), 0);
+        const std::vector<std::filesystem::path> affectedFiles = BuildTranscriptionAffectedFiles(
+            transcriptPaths,
+            config.subtitleFfmpegMode
         );
-        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись перевода", affectedFiles)) {
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись транскрибации", affectedFiles)) {
             return;
         }
         approvedAffectedFiles = affectedFiles;
+    } else if (action == kQueueActionTranslate) {
         const VotExeStatus vot = VotExeManager::Resolve(paths, config);
         if (!vot.available) {
             if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingVotExe)) {
@@ -2903,6 +2894,15 @@ void Application::StartPostProcessing(int taskId, int action) {
             config.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
             SetTransientStatus(L"FFmpeg не найден: перевод будет сохранён отдельным MP3");
         }
+        const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(mediaPath, paths.voiceOverTempDir(), config.voiceOverLanguage);
+        const std::vector<std::filesystem::path> affectedFiles = BuildVoiceOverAffectedFiles(
+            voicePaths,
+            config.voiceOverFfmpegMode
+        );
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись перевода", affectedFiles)) {
+            return;
+        }
+        approvedAffectedFiles = affectedFiles;
     } else {
         return;
     }

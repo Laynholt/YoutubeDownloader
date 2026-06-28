@@ -444,8 +444,8 @@ TranscriptionResult TranscriptionClient::Transcribe(
 
         textMoved = CommitPostProcessingSidecarFile(paths.tempTextPath, paths.finalTextPath);
         srtMoved = CommitPostProcessingSidecarFile(paths.tempSrtPath, paths.finalSrtPath);
-        if (!textMoved && !srtMoved) {
-            return Failed(L"Whisper не создал файл расшифровки");
+        if (!textMoved || !srtMoved) {
+            return Failed(L"Whisper не сохранил TXT и SRT файлы расшифровки");
         }
     } else {
         EmitTranscriptionProgress(callbacks, 10.0, L"Получение субтитров VOT");
@@ -491,8 +491,8 @@ TranscriptionResult TranscriptionClient::Transcribe(
 
         textMoved = CommitPostProcessingSidecarFile(paths.tempTextPath, paths.finalTextPath);
         srtMoved = CommitPostProcessingSidecarFile(paths.tempSrtPath, paths.finalSrtPath);
-        if (!textMoved && !srtMoved) {
-            return Failed(L"Не удалось сохранить субтитры VOT");
+        if (!textMoved || !srtMoved) {
+            return Failed(L"Не удалось сохранить TXT и SRT файлы VOT");
         }
     }
 
