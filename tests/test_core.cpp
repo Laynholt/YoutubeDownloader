@@ -1478,6 +1478,13 @@ void TestWhisperBackendResolution() {
     Require(cpu.executable == paths.localWhisperCpuExePath(), "local CPU whisper path mismatch");
     Require(cpu.whisperBackend == WhisperBackend::Cpu, "local CPU whisper backend mismatch");
 
+    config.whisperPath = paths.localWhisperCpuExePath();
+    cpu = WhisperManager::Resolve(paths, config);
+    Require(cpu.installed, "configured local CPU whisper path should resolve");
+    Require(cpu.executable == paths.localWhisperCpuExePath(), "configured local CPU whisper path mismatch");
+    Require(cpu.whisperBackend == WhisperBackend::Cpu, "configured local CPU path should keep CPU backend");
+    config.whisperPath.clear();
+
     fs::create_directories(paths.localWhisperCudaExePath().parent_path());
     {
         std::ofstream out(paths.localWhisperCudaExePath());
@@ -1488,6 +1495,12 @@ void TestWhisperBackendResolution() {
     Require(cuda.installed, "selected CUDA whisper should resolve");
     Require(cuda.executable == paths.localWhisperCudaExePath(), "selected CUDA whisper path mismatch");
     Require(cuda.whisperBackend == WhisperBackend::Cuda, "selected CUDA whisper backend mismatch");
+
+    config.whisperPath = paths.localWhisperCudaExePath();
+    cuda = WhisperManager::Resolve(paths, config);
+    Require(cuda.installed, "configured local CUDA whisper path should resolve");
+    Require(cuda.executable == paths.localWhisperCudaExePath(), "configured local CUDA whisper path mismatch");
+    Require(cuda.whisperBackend == WhisperBackend::Cuda, "configured local CUDA path should keep CUDA backend");
 
     config.whisperPath = root / L"custom" / L"whisper-cli.exe";
     fs::create_directories(config.whisperPath.parent_path());

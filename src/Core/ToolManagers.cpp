@@ -52,6 +52,14 @@ bool IsExecutableFile(const std::filesystem::path& path) {
     return !path.empty() && std::filesystem::is_regular_file(path, ec);
 }
 
+bool IsSameExistingFile(const std::filesystem::path& left, const std::filesystem::path& right) {
+    if (left.empty() || right.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::equivalent(left, right, ec) && !ec;
+}
+
 FfmpegStatus MakeFfmpegStatus(FfmpegSource source, const std::filesystem::path& exe) {
     FfmpegStatus status;
     status.available = true;
@@ -655,6 +663,12 @@ ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperB
 
 ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig& config) {
     if (!config.whisperPath.empty() && IsExecutableFile(config.whisperPath)) {
+        if (IsSameExistingFile(config.whisperPath, paths.localWhisperCpuExePath())) {
+            return ResolveBackend(paths, WhisperBackend::Cpu);
+        }
+        if (IsSameExistingFile(config.whisperPath, paths.localWhisperCudaExePath())) {
+            return ResolveBackend(paths, WhisperBackend::Cuda);
+        }
         ToolInstallStatus status;
         status.installed = true;
         status.executable = config.whisperPath;
