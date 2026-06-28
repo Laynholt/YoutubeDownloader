@@ -352,6 +352,10 @@ void TestPostProcessingModeDisplayText() {
         "installed CUDA whisper should expose CUDA reinstall action"
     );
     Require(
+        WhisperInstallButtonText(WhisperBackend::Cpu, true, false) == L"Установить CUDA",
+        "available CUDA candidate should offer CUDA install even when CPU is configured"
+    );
+    Require(
         WhisperInstallButtonText(WhisperBackend::Cuda, false, false) == L"Установить CPU",
         "missing CUDA candidate should offer CPU install"
     );
@@ -439,8 +443,8 @@ void TestWhisperInstallBackendSelection() {
         "explicit CUDA whisper install should fall back to CPU when CUDA is unavailable"
     );
     Require(
-        SelectWhisperInstallBackend(WhisperBackend::Cpu, true) == WhisperBackend::Cpu,
-        "explicit CPU whisper install should be honored"
+        SelectWhisperInstallBackend(WhisperBackend::Cpu, true) == WhisperBackend::Cuda,
+        "whisper install should prefer CUDA when available even if CPU is configured"
     );
 }
 

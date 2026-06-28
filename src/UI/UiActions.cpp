@@ -146,7 +146,8 @@ std::wstring WhisperBackendStatusText(WhisperBackend configuredBackend, WhisperB
 }
 
 std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cudaAvailable, bool backendInstalled) {
-    const bool installCuda = configuredBackend != WhisperBackend::Cpu && cudaAvailable;
+    (void)configuredBackend;
+    const bool installCuda = cudaAvailable;
     if (installCuda) {
         return backendInstalled ? L"Переустановить CUDA" : L"Установить CUDA";
     }

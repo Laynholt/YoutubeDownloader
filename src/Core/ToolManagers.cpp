@@ -805,12 +805,7 @@ ToolInstallStatus WhisperManager::Install(
 }
 
 WhisperBackend SelectWhisperInstallBackend(WhisperBackend configuredBackend, bool cudaAvailable) {
-    if (configuredBackend == WhisperBackend::Cuda) {
-        return cudaAvailable ? WhisperBackend::Cuda : WhisperBackend::Cpu;
-    }
-    if (configuredBackend == WhisperBackend::Cpu) {
-        return WhisperBackend::Cpu;
-    }
+    (void)configuredBackend;
     return cudaAvailable ? WhisperBackend::Cuda : WhisperBackend::Cpu;
 }
 
