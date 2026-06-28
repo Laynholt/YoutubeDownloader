@@ -2822,6 +2822,8 @@ void Application::StartPostProcessing(int taskId, int action) {
             const bool whisperModelReady = std::filesystem::is_regular_file(modelPath, ec);
             ec.clear();
             const ToolInstallStatus cpuWhisper = WhisperManager::ResolveBackend(paths, WhisperBackend::Cpu);
+            const bool cpuWhisperSelfTestPassed = cpuWhisper.installed &&
+                WhisperManager::SelfTestExecutable(cpuWhisper.executable);
             const bool whisperCudaSelfTestPassed = whisper.installed &&
                 whisper.whisperBackend == WhisperBackend::Cuda &&
                 WhisperManager::SelfTestExecutable(whisper.executable);
@@ -2830,7 +2832,7 @@ void Application::StartPostProcessing(int taskId, int action) {
                     config.whisperBackend,
                     whisper.whisperBackend,
                     whisperCudaSelfTestPassed,
-                    cpuWhisper.installed,
+                    cpuWhisperSelfTestPassed,
                     whisperModelReady
                 )
                 : WhisperCudaReadinessAction::UseResolvedBackend;

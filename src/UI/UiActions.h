@@ -94,7 +94,7 @@ WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
     WhisperBackend configuredBackend,
     WhisperBackend resolvedBackend,
     bool cudaSelfTestPassed,
-    bool cpuBackendInstalled,
+    bool cpuSelfTestPassed,
     bool modelReady
 );
 bool ShouldRetryWhisperCudaFailureWithCpu(

@@ -473,7 +473,7 @@ void TestWhisperCudaReadiness() {
             true,
             true
         ) == WhisperCudaReadinessAction::FallbackToCpu,
-        "failed CUDA self-test should fall back to installed CPU when model is ready"
+        "failed CUDA self-test should fall back to tested CPU when model is ready"
     );
     Require(
         ResolveWhisperCudaReadinessAction(
@@ -483,7 +483,17 @@ void TestWhisperCudaReadiness() {
             false,
             true
         ) == WhisperCudaReadinessAction::BlockCuda,
-        "failed CUDA self-test should block when CPU fallback is unavailable"
+        "failed CUDA self-test should block when CPU fallback is unavailable or untested"
+    );
+    Require(
+        ResolveWhisperCudaReadinessAction(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cpu,
+            false,
+            false,
+            true
+        ) == WhisperCudaReadinessAction::BlockCuda,
+        "resolved CPU fallback should block when CPU self-test fails"
     );
     Require(
         ResolveWhisperCudaReadinessAction(

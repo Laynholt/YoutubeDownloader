@@ -213,7 +213,7 @@ WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
     WhisperBackend configuredBackend,
     WhisperBackend resolvedBackend,
     bool cudaSelfTestPassed,
-    bool cpuBackendInstalled,
+    bool cpuSelfTestPassed,
     bool modelReady
 ) {
     if (configuredBackend != WhisperBackend::Cuda) {
@@ -222,7 +222,7 @@ WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
     if (resolvedBackend == WhisperBackend::Cuda && cudaSelfTestPassed) {
         return WhisperCudaReadinessAction::UseResolvedBackend;
     }
-    if (cpuBackendInstalled && modelReady) {
+    if (cpuSelfTestPassed && modelReady) {
         return WhisperCudaReadinessAction::FallbackToCpu;
     }
     return WhisperCudaReadinessAction::BlockCuda;
