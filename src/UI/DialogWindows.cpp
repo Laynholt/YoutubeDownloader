@@ -1191,17 +1191,27 @@ void LayoutFfmpegDialog(DialogState* state, int width, int height) {
     const int buttonWidth = (availableWidth - (kDialogButtonGap * static_cast<int>(ids.size() - 1))) /
         static_cast<int>(ids.size());
     if (state->type == DialogType::Whisper && state->config) {
-        const ToolInstallStatus status = state->paths
-            ? WhisperManager::Resolve(*state->paths, *state->config)
+        const bool cudaAvailable = IsWhisperCudaCandidateAvailable();
+        const WhisperBackend installBackend = SelectWhisperInstallBackend(state->config->whisperBackend, cudaAvailable);
+        const ToolInstallStatus cpuStatus = state->paths
+            ? WhisperManager::ResolveBackend(*state->paths, WhisperBackend::Cpu)
             : ToolInstallStatus{};
+        const ToolInstallStatus cudaStatus = state->paths
+            ? WhisperManager::ResolveBackend(*state->paths, WhisperBackend::Cuda)
+            : ToolInstallStatus{};
+        const bool installTargetInstalled = IsWhisperInstallTargetInstalled(
+            installBackend,
+            cpuStatus.installed,
+            cudaStatus.installed
+        );
         HWND install = GetDlgItem(state->window, IdInstall);
         if (install) {
             SetWindowTextW(
                 install,
                 WhisperInstallButtonText(
-                state->config->whisperBackend,
-                IsWhisperCudaCandidateAvailable(),
-                status.installed
+                    state->config->whisperBackend,
+                    cudaAvailable,
+                    installTargetInstalled
                 ).c_str()
             );
         }

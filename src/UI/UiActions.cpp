@@ -154,6 +154,10 @@ std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cud
     return backendInstalled ? L"Переустановить CPU" : L"Установить CPU";
 }
 
+bool IsWhisperInstallTargetInstalled(WhisperBackend installBackend, bool cpuInstalled, bool cudaInstalled) {
+    return installBackend == WhisperBackend::Cuda ? cudaInstalled : cpuInstalled;
+}
+
 std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText) {
     return actionText + L"\nТребуется FFmpeg; без него эта опция недоступна.";
 }

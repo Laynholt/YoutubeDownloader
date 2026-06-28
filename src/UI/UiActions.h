@@ -82,6 +82,7 @@ std::wstring TranslationSettingsCollapsedIcon();
 std::wstring ToolSetupButtonText();
 std::wstring WhisperBackendStatusText(WhisperBackend configuredBackend, WhisperBackend resolvedBackend, bool cudaAvailable);
 std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cudaAvailable, bool backendInstalled);
+bool IsWhisperInstallTargetInstalled(WhisperBackend installBackend, bool cpuInstalled, bool cudaInstalled);
 std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText);
 std::wstring LocalizedToolErrorText(const std::string& message);
 std::wstring PostProcessingQueueStatusText(QueueTaskAction action);

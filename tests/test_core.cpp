@@ -356,6 +356,18 @@ void TestPostProcessingModeDisplayText() {
         "available CUDA candidate should offer CUDA install even when CPU is configured"
     );
     Require(
+        !IsWhisperInstallTargetInstalled(WhisperBackend::Cuda, true, false),
+        "installed CPU backend should not make the CUDA install target look installed"
+    );
+    Require(
+        IsWhisperInstallTargetInstalled(WhisperBackend::Cuda, true, true),
+        "installed CUDA backend should make the CUDA install target look installed"
+    );
+    Require(
+        IsWhisperInstallTargetInstalled(WhisperBackend::Cpu, true, false),
+        "installed CPU backend should make the CPU install target look installed"
+    );
+    Require(
         WhisperInstallButtonText(WhisperBackend::Cuda, false, false) == L"Установить CPU",
         "missing CUDA candidate should offer CPU install"
     );
