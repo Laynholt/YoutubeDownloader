@@ -97,6 +97,15 @@ WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
     bool cpuBackendInstalled,
     bool modelReady
 );
+bool ShouldRetryWhisperCudaFailureWithCpu(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool transcriptionSucceeded,
+    bool transcriptionCanceled,
+    bool cpuBackendInstalled,
+    bool cpuSelfTestPassed,
+    bool modelReady
+);
 std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
     const TranscriptionPaths& paths,
     SubtitleFfmpegMode subtitleMode

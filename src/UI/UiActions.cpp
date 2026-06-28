@@ -227,6 +227,24 @@ WhisperCudaReadinessAction ResolveWhisperCudaReadinessAction(
     return WhisperCudaReadinessAction::BlockCuda;
 }
 
+bool ShouldRetryWhisperCudaFailureWithCpu(
+    WhisperBackend configuredBackend,
+    WhisperBackend resolvedBackend,
+    bool transcriptionSucceeded,
+    bool transcriptionCanceled,
+    bool cpuBackendInstalled,
+    bool cpuSelfTestPassed,
+    bool modelReady
+) {
+    return configuredBackend == WhisperBackend::Cuda &&
+        resolvedBackend == WhisperBackend::Cuda &&
+        !transcriptionSucceeded &&
+        !transcriptionCanceled &&
+        cpuBackendInstalled &&
+        cpuSelfTestPassed &&
+        modelReady;
+}
+
 std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
     const TranscriptionPaths& paths,
     SubtitleFfmpegMode subtitleMode

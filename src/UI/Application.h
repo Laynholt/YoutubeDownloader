@@ -70,6 +70,7 @@ private:
         int action = 0;
         bool success = false;
         bool canceled = false;
+        bool fallbackWhisperToCpu = false;
         std::wstring status;
         std::wstring error;
     };

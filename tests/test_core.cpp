@@ -501,6 +501,54 @@ void TestWhisperCudaReadiness() {
         ) == WhisperCudaReadinessAction::UseResolvedBackend,
         "auto backend should use resolved CPU without CUDA readiness handling"
     );
+    Require(
+        ShouldRetryWhisperCudaFailureWithCpu(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cuda,
+            false,
+            false,
+            true,
+            true,
+            true
+        ),
+        "failed CUDA transcription should retry with CPU when fallback is ready"
+    );
+    Require(
+        !ShouldRetryWhisperCudaFailureWithCpu(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cuda,
+            false,
+            true,
+            true,
+            true,
+            true
+        ),
+        "canceled CUDA transcription should not retry with CPU"
+    );
+    Require(
+        !ShouldRetryWhisperCudaFailureWithCpu(
+            WhisperBackend::Auto,
+            WhisperBackend::Cuda,
+            false,
+            false,
+            true,
+            true,
+            true
+        ),
+        "auto-selected CUDA failure should not persist an explicit CPU fallback"
+    );
+    Require(
+        !ShouldRetryWhisperCudaFailureWithCpu(
+            WhisperBackend::Cuda,
+            WhisperBackend::Cuda,
+            false,
+            false,
+            true,
+            false,
+            true
+        ),
+        "failed CUDA transcription should not retry when CPU self-test fails"
+    );
 }
 
 void TestAffectedFileOverwriteLists() {

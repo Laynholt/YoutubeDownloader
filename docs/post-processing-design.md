@@ -598,7 +598,8 @@ Implemented or partially implemented:
 - CUDA candidate detection for Whisper install selection and explicit readiness
   handling when selected CUDA falls back to CPU or runtime is unavailable;
 - Whisper executable `--version` self-test after install/manual selection and
-  persisted CPU fallback when selected CUDA fails readiness before transcription;
+  persisted CPU fallback when selected CUDA fails readiness before transcription
+  or fails during the transcription run while a tested CPU backend is available;
 - Whisper tools UI shows CPU/CUDA availability and offers CPU/CUDA
   install/reinstall text based on the selected backend and CUDA candidate;
 - FFmpeg-gated subtitle/audio integration controls stay visible and their

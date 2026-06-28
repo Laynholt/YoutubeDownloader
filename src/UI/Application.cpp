@@ -1600,6 +1600,13 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 m_postProcessingStatus.clear();
                 m_postProcessingStartedTick = 0;
                 StopAndJoin(m_postProcessingWorker);
+                if (result.fallbackWhisperToCpu && m_paths) {
+                    m_config.whisperBackend = WhisperBackend::Cpu;
+                    ConfigStore::Save(*m_paths, m_config);
+                    if (m_logger) {
+                        m_logger->Info(L"CUDA Whisper fallback persisted: backend=cpu");
+                    }
+                }
                 if (result.success) {
                     SetTransientStatus(result.status);
                     if (m_logger) {
@@ -3041,7 +3048,28 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                 callbacks.onProgress = [&](double percent, const std::wstring& status) {
                     publishProgress(percent, status);
                 };
-                const TranscriptionResult result = TranscriptionClient::Transcribe(request, callbacks, cancelEvent.get());
+                TranscriptionResult result = TranscriptionClient::Transcribe(request, callbacks, cancelEvent.get());
+                if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
+                    const ToolInstallStatus cpuWhisper = WhisperManager::ResolveBackend(paths, WhisperBackend::Cpu);
+                    const bool modelReady = !request.whisperModelPath.empty() &&
+                        std::filesystem::is_regular_file(request.whisperModelPath);
+                    const bool cpuSelfTestPassed = cpuWhisper.installed &&
+                        WhisperManager::SelfTestExecutable(cpuWhisper.executable, cancelEvent.get());
+                    if (ShouldRetryWhisperCudaFailureWithCpu(
+                            config.whisperBackend,
+                            whisper.whisperBackend,
+                            result.success,
+                            result.canceled,
+                            cpuWhisper.installed,
+                            cpuSelfTestPassed,
+                            modelReady
+                        )) {
+                        publishProgress(0.0, L"CUDA Whisper недоступен: повтор на CPU");
+                        request.whisperExePath = cpuWhisper.executable;
+                        result = TranscriptionClient::Transcribe(request, callbacks, cancelEvent.get());
+                        complete.fallbackWhisperToCpu = true;
+                    }
+                }
                 complete.success = result.success;
                 complete.canceled = result.canceled;
                 complete.error = result.errorText;
