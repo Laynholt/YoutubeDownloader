@@ -1,5 +1,6 @@
 #include "VoiceOverTranslationClient.h"
 
+#include "PostProcessingFileOps.h"
 #include "ProcessRunner.h"
 
 #include <algorithm>
@@ -148,59 +149,6 @@ VoiceOverTranslationResult Canceled(std::vector<std::filesystem::path> cleanupPa
     result.canceled = true;
     result.errorText = L"Отменено";
     return result;
-}
-
-bool MoveFileReplacing(const std::filesystem::path& source, const std::filesystem::path& destination) {
-    if (!IsRegularFile(source)) {
-        return false;
-    }
-
-    std::error_code ec;
-    std::filesystem::create_directories(destination.parent_path(), ec);
-    std::filesystem::remove(destination, ec);
-    ec.clear();
-    std::filesystem::rename(source, destination, ec);
-    if (!ec && IsRegularFile(destination)) {
-        return true;
-    }
-
-    ec.clear();
-    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec || !IsRegularFile(destination)) {
-        return false;
-    }
-    ec.clear();
-    std::filesystem::remove(source, ec);
-    return true;
-}
-
-bool ReplaceOriginalMedia(const std::filesystem::path& replacement, const std::filesystem::path& original) {
-    if (!IsRegularFile(replacement)) {
-        return false;
-    }
-
-    std::error_code ec;
-    if (!IsRegularFile(original)) {
-        std::filesystem::rename(replacement, original, ec);
-        return !ec && IsRegularFile(original);
-    }
-
-    const BOOL replaced = ReplaceFileW(
-        original.c_str(),
-        replacement.c_str(),
-        nullptr,
-        0,
-        nullptr,
-        nullptr
-    );
-    if (replaced) {
-        return true;
-    }
-
-    std::filesystem::remove(original, ec);
-    ec.clear();
-    std::filesystem::rename(replacement, original, ec);
-    return !ec && IsRegularFile(original);
 }
 
 void EmitVoiceOverProgress(
@@ -370,7 +318,7 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
         std::filesystem::remove(paths.tempAudioPath, ec);
         return Failed(L"vot-helper.exe завершился с ошибкой: " + ProcessErrorSummary(translated, L"неизвестная ошибка"));
     }
-    if (!MoveFileReplacing(paths.tempAudioPath, paths.finalAudioPath)) {
+    if (!CommitPostProcessingSidecarFile(paths.tempAudioPath, paths.finalAudioPath)) {
         std::filesystem::remove(paths.tempAudioPath, ec);
         return Failed(L"vot-helper.exe не создал mp3 с переводом");
     }
@@ -403,7 +351,7 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
         std::filesystem::remove(paths.tempVideoPath, ec);
         return Failed(L"FFmpeg не встроил перевод в видео: " + ProcessErrorSummary(embedded, L"неизвестная ошибка"));
     }
-    if (!ReplaceOriginalMedia(paths.tempVideoPath, paths.finalVideoPath)) {
+    if (!ReplaceOriginalMediaWithPostProcessedFile(paths.tempVideoPath, paths.finalVideoPath)) {
         std::filesystem::remove(paths.tempVideoPath, ec);
         return Failed(L"Не удалось заменить исходное видео версией с переводом");
     }

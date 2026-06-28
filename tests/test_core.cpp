@@ -8,6 +8,7 @@
 #include "FileOperations.h"
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
+#include "PostProcessingFileOps.h"
 #include "ProcessRunner.h"
 #include "TranscriptionClient.h"
 #include "ToolManagers.h"
@@ -548,6 +549,93 @@ void TestAffectedFileOverwriteLists() {
     affected = BuildVoiceOverAffectedFiles(voicePaths, VoiceOverFfmpegMode::Off);
     Require(affected.size() == 1, "voice-over off should list existing MP3 only");
     Require(affected[0] == voicePaths.finalAudioPath, "voice-over affected MP3 mismatch");
+}
+
+void TestPostProcessingOriginalMediaReplacement() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_PostProcessingReplaceMedia");
+    const fs::path original = root / L"video.mp4";
+    const fs::path replacement = root / L"video.tmp.mp4";
+    const fs::path missingReplacement = root / L"missing.tmp.mp4";
+
+    auto writeText = [](const fs::path& path, const std::string& text) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+    };
+    auto readText = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    writeText(original, "original video");
+    writeText(replacement, "processed video");
+
+    Require(
+        ReplaceOriginalMediaWithPostProcessedFile(replacement, original),
+        "post-processing replacement should commit a valid temp media file"
+    );
+    Require(readText(original) == "processed video", "original media should contain processed content after replacement");
+    Require(!fs::exists(replacement), "committed post-processing temp media should be removed");
+
+    Require(
+        !ReplaceOriginalMediaWithPostProcessedFile(missingReplacement, original),
+        "post-processing replacement should reject a missing temp media file"
+    );
+    Require(readText(original) == "processed video", "failed post-processing replacement should keep original media untouched");
+
+    writeText(original, "stable video");
+    writeText(replacement, "locked processed video");
+    HANDLE lockedReplacement = CreateFileW(
+        replacement.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    Require(lockedReplacement != INVALID_HANDLE_VALUE, "fixture should lock replacement media file");
+    const bool lockedReplaced = ReplaceOriginalMediaWithPostProcessedFile(replacement, original);
+    CloseHandle(lockedReplacement);
+
+    Require(!lockedReplaced, "locked post-processing temp media should not be committed");
+    Require(fs::is_regular_file(original), "failed locked replacement should keep original media file");
+    Require(readText(original) == "stable video", "failed locked replacement should preserve original media content");
+}
+
+void TestPostProcessingSidecarCommitPreservesExistingDestinationOnFailure() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_PostProcessingSidecarCommit");
+    const fs::path existing = root / L"video.vot.ru.mp3";
+    const fs::path staged = root / L"tmp" / L"video.vot.ru.mp3";
+
+    auto writeText = [](const fs::path& path, const std::string& text) {
+        fs::create_directories(path.parent_path());
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
+    };
+    auto readText = [](const fs::path& path) {
+        std::ifstream in(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+
+    writeText(existing, "previous mp3");
+    writeText(staged, "new mp3");
+
+    HANDLE lockedStaged = CreateFileW(
+        staged.c_str(),
+        GENERIC_READ,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    Require(lockedStaged != INVALID_HANDLE_VALUE, "fixture should lock staged sidecar file");
+    const bool committed = CommitPostProcessingSidecarFile(staged, existing);
+    CloseHandle(lockedStaged);
+
+    Require(!committed, "locked staged sidecar should not be committed");
+    Require(fs::is_regular_file(existing), "failed sidecar commit should keep existing sidecar file");
+    Require(readText(existing) == "previous mp3", "failed sidecar commit should preserve existing sidecar content");
 }
 
 void TestEditContextMenuModel() {
@@ -2893,6 +2981,8 @@ int main(int argc, char** argv) {
     TestPostProcessingModeDisplayText();
     TestPostProcessingQueueStatusText();
     TestAffectedFileOverwriteLists();
+    TestPostProcessingOriginalMediaReplacement();
+    TestPostProcessingSidecarCommitPreservesExistingDestinationOnFailure();
     TestEditContextMenuModel();
     TestPasteReplacesExistingEditText();
     TestPasteReplacingEditTextIgnoresInvalidHandles();

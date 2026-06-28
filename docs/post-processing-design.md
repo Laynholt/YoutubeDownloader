@@ -574,6 +574,10 @@ Implemented or partially implemented:
 - VOT voice-over MP3 sidecar generation;
 - FFmpeg subtitle/audio integration using temporary output and original video
   replacement;
+- shared post-processing file commit helpers used by subtitle/audio FFmpeg
+  integration and sidecar outputs, with tests for successful temp-file commit,
+  failed media commit preserving the current original media, and failed sidecar
+  commit preserving a pre-existing result file;
 - global `Open folder` button near logs;
 - custom tool-readiness dialogs that open `Инструменты`;
 - affected-file confirmation listing sidecars and in-place video modification;

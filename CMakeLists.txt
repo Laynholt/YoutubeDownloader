@@ -33,6 +33,7 @@ set(CORE_SOURCES
     src/Core/FileOperations.cpp
     src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
+    src/Core/PostProcessingFileOps.cpp
     src/Core/ToolManagers.cpp
     src/Core/TranscriptionClient.cpp
     src/Core/Version.cpp
@@ -53,6 +54,7 @@ set(CORE_HEADERS
     src/Core/FileOperations.h
     src/Core/KeyboardShortcuts.h
     src/Core/Logger.h
+    src/Core/PostProcessingFileOps.h
     src/Core/ToolManagers.h
     src/Core/TranscriptionClient.h
     src/Core/Version.h
