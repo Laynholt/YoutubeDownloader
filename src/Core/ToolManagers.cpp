@@ -948,18 +948,15 @@ std::vector<std::filesystem::path> VotExeManager::FindExecutables(const std::fil
     }
 
     std::vector<std::filesystem::path> nested;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(root, ec)) {
+    for (const auto& entry : std::filesystem::directory_iterator(root, ec)) {
         if (ec) {
             break;
         }
-        if (!entry.is_regular_file(ec)) {
+        if (!entry.is_directory(ec)) {
             continue;
         }
-        const std::filesystem::path candidate = entry.path();
-        if (candidate == direct) {
-            continue;
-        }
-        if (candidate.filename() == L"vot-helper.exe") {
+        const std::filesystem::path candidate = entry.path() / L"vot-helper.exe";
+        if (IsExecutableFile(candidate)) {
             nested.push_back(candidate);
         }
     }

@@ -1479,7 +1479,9 @@ void TestVotExeResolutionAndChecksumParsing() {
     const fs::path multipleDir = root / L"multiple";
     const fs::path firstVot = multipleDir / L"vot-helper.exe";
     const fs::path secondVot = multipleDir / L"nested" / L"vot-helper.exe";
+    const fs::path unrelatedDeepVot = multipleDir / L"unrelated" / L"cache" / L"package" / L"bin" / L"vot-helper.exe";
     fs::create_directories(secondVot.parent_path());
+    fs::create_directories(unrelatedDeepVot.parent_path());
     {
         std::ofstream out(firstVot);
         out << "first vot";
@@ -1488,8 +1490,12 @@ void TestVotExeResolutionAndChecksumParsing() {
         std::ofstream out(secondVot);
         out << "second vot";
     }
+    {
+        std::ofstream out(unrelatedDeepVot);
+        out << "unrelated deep vot";
+    }
     const std::vector<fs::path> candidates = VotExeManager::FindExecutables(multipleDir);
-    Require(candidates.size() == 2, "multiple VOT helper candidates should be reported");
+    Require(candidates.size() == 2, "only nearby VOT helper candidates should be reported");
     Require(candidates[0] == firstVot, "direct VOT helper candidate should be first");
     Require(candidates[1] == secondVot, "nested VOT helper candidate should be preserved");
 

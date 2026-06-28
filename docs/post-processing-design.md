@@ -593,7 +593,8 @@ Implemented or partially implemented:
 - tool status cards with install/select/model actions centralized in
   `Инструменты`;
 - VOT manual path selection supports direct `vot-helper.exe` selection and a
-  candidate picker when a selected folder contains multiple matches;
+  candidate picker when a selected folder or nearby extracted subfolder contains
+  multiple matches, without recursively scanning unrelated deep descendants;
 - CUDA candidate detection for Whisper install selection and explicit readiness
   handling when selected CUDA falls back to CPU or runtime is unavailable;
 - Whisper executable `--version` self-test after install/manual selection and
