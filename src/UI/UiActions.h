@@ -105,6 +105,10 @@ std::vector<std::filesystem::path> BuildVoiceOverAffectedFiles(
     const VoiceOverTranslationPaths& paths,
     VoiceOverFfmpegMode ffmpegMode
 );
+std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(
+    const std::vector<std::filesystem::path>& currentAffectedFiles,
+    const std::vector<std::filesystem::path>& approvedAffectedFiles
+);
 std::vector<EditContextMenuItem> BuildEditContextMenuItems(
     bool canUndo,
     bool hasSelection,

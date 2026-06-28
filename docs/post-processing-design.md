@@ -581,6 +581,9 @@ Implemented or partially implemented:
 - global `Open folder` button near logs;
 - custom tool-readiness dialogs that open `Инструменты`;
 - affected-file confirmation listing sidecars and in-place video modification;
+- queued post-processing revalidates approved affected output paths at start and
+  fails gracefully if a new output conflict appears after the original
+  confirmation;
 - sidebar/card settings dialog with collapsed sidebar icons, bottom `О
   программе`, custom language combo menus, and workflow tool notices;
 - tool status cards with install/select/model actions centralized in

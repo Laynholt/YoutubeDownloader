@@ -1,5 +1,6 @@
 #include "UiActions.h"
 
+#include <algorithm>
 #include <cstring>
 #include <system_error>
 
@@ -181,6 +182,9 @@ std::wstring LocalizedToolErrorText(const std::string& message) {
     if (message == "installed whisper.cpp self-test failed") {
         return L"Whisper.cpp установлен, но не прошёл проверку запуска";
     }
+    if (message == "post-processing output conflict is no longer approved") {
+        return L"Появился новый конфликт вывода. Повторите операцию и подтвердите перезапись.";
+    }
     return std::wstring(message.begin(), message.end());
 }
 
@@ -255,6 +259,24 @@ std::vector<std::filesystem::path> BuildVoiceOverAffectedFiles(
         affected.push_back(paths.finalVideoPath);
     }
     return affected;
+}
+
+std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(
+    const std::vector<std::filesystem::path>& currentAffectedFiles,
+    const std::vector<std::filesystem::path>& approvedAffectedFiles
+) {
+    std::vector<std::filesystem::path> unapproved;
+    for (const std::filesystem::path& current : currentAffectedFiles) {
+        const auto approved = std::find(
+            approvedAffectedFiles.begin(),
+            approvedAffectedFiles.end(),
+            current
+        );
+        if (approved == approvedAffectedFiles.end()) {
+            unapproved.push_back(current);
+        }
+    }
+    return unapproved;
 }
 
 std::vector<EditContextMenuItem> BuildEditContextMenuItems(

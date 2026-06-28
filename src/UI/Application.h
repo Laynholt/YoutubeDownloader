@@ -79,6 +79,7 @@ private:
         int action = 0;
         DownloadTaskSnapshot task;
         std::filesystem::path mediaPath;
+        std::vector<std::filesystem::path> approvedAffectedFiles;
         AppPaths paths;
         AppConfig config;
         FfmpegStatus ffmpeg;

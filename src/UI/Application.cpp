@@ -2804,6 +2804,7 @@ void Application::StartPostProcessing(int taskId, int action) {
     AppConfig config = m_config;
     const AppPaths paths = *m_paths;
     const FfmpegStatus ffmpeg = FfmpegManager::Resolve(paths, config);
+    std::vector<std::filesystem::path> approvedAffectedFiles;
     std::error_code ec;
     if (action == kQueueActionTranscribe) {
         const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(mediaPath, paths.transcriptionTempDir(), 0);
@@ -2814,6 +2815,7 @@ void Application::StartPostProcessing(int taskId, int action) {
         if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись транскрибации", affectedFiles)) {
             return;
         }
+        approvedAffectedFiles = affectedFiles;
         if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
             ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
             const std::filesystem::path modelPath = config.whisperModelPath.empty()
@@ -2889,6 +2891,7 @@ void Application::StartPostProcessing(int taskId, int action) {
         if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись перевода", affectedFiles)) {
             return;
         }
+        approvedAffectedFiles = affectedFiles;
         const VotExeStatus vot = VotExeManager::Resolve(paths, config);
         if (!vot.available) {
             if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingVotExe)) {
@@ -2909,6 +2912,7 @@ void Application::StartPostProcessing(int taskId, int action) {
         action,
         task,
         mediaPath,
+        approvedAffectedFiles,
         paths,
         config,
         ffmpeg
@@ -2950,6 +2954,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
         const AppPaths paths = operation.paths;
         const AppConfig config = operation.config;
         const FfmpegStatus ffmpeg = operation.ffmpeg;
+        const std::vector<std::filesystem::path> approvedAffectedFiles = operation.approvedAffectedFiles;
         const int action = operation.action;
         PostProcessingCompleteResult complete;
         complete.taskId = task.id;
@@ -2977,6 +2982,12 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
             PostMessageW(window, kMsgPostProcessingProgress, 0, 0);
         };
 
+        auto requireApprovedAffectedFiles = [&](const std::vector<std::filesystem::path>& currentAffectedFiles) {
+            if (!FindUnapprovedAffectedFiles(currentAffectedFiles, approvedAffectedFiles).empty()) {
+                throw std::runtime_error("post-processing output conflict is no longer approved");
+            }
+        };
+
         try {
             if (!cancelEvent.get()) {
                 throw std::runtime_error("failed to create post-processing cancellation event");
@@ -2987,6 +2998,15 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
 
             requireRegularFile(mediaPath, "media file is no longer available");
             if (action == kQueueActionTranscribe) {
+                const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(
+                    mediaPath,
+                    paths.transcriptionTempDir(),
+                    0
+                );
+                requireApprovedAffectedFiles(BuildTranscriptionAffectedFiles(
+                    transcriptPaths,
+                    config.subtitleFfmpegMode
+                ));
                 const ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
                 const VotExeStatus vot = VotExeManager::Resolve(paths, config);
                 if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
@@ -3027,6 +3047,15 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                 complete.error = result.errorText;
                 complete.status = result.success ? L"Транскрибация завершена" : L"Транскрибация не выполнена";
             } else {
+                const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(
+                    mediaPath,
+                    paths.voiceOverTempDir(),
+                    config.voiceOverLanguage
+                );
+                requireApprovedAffectedFiles(BuildVoiceOverAffectedFiles(
+                    voicePaths,
+                    config.voiceOverFfmpegMode
+                ));
                 const VotExeStatus vot = VotExeManager::Resolve(paths, config);
                 requireRegularFile(vot.executable, "vot-helper.exe is no longer available");
                 if (config.voiceOverFfmpegMode != VoiceOverFfmpegMode::Off) {

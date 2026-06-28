@@ -551,6 +551,29 @@ void TestAffectedFileOverwriteLists() {
     Require(affected[0] == voicePaths.finalAudioPath, "voice-over affected MP3 mismatch");
 }
 
+void TestPostProcessingAffectedFileApprovalRevalidation() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_AffectedApproval");
+    const fs::path media = root / L"Downloads" / L"Video One.mp4";
+    const fs::path transcriptTxt = root / L"Downloads" / L"Video One.txt";
+    const fs::path transcriptSrt = root / L"Downloads" / L"Video One.srt";
+
+    const std::vector<fs::path> approved{media, transcriptTxt};
+    const std::vector<fs::path> current{media, transcriptTxt, transcriptSrt};
+    const std::vector<fs::path> unapproved = FindUnapprovedAffectedFiles(current, approved);
+
+    Require(unapproved.size() == 1, "new affected output should require fresh approval");
+    Require(unapproved[0] == transcriptSrt, "unapproved affected output mismatch");
+    Require(
+        FindUnapprovedAffectedFiles(approved, current).empty(),
+        "previously approved affected outputs should not be rejected"
+    );
+    Require(
+        LocalizedToolErrorText("post-processing output conflict is no longer approved") ==
+            L"Появился новый конфликт вывода. Повторите операцию и подтвердите перезапись.",
+        "new output conflict revalidation error should be localized"
+    );
+}
+
 void TestPostProcessingOriginalMediaReplacement() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_PostProcessingReplaceMedia");
     const fs::path original = root / L"video.mp4";
@@ -2981,6 +3004,7 @@ int main(int argc, char** argv) {
     TestPostProcessingModeDisplayText();
     TestPostProcessingQueueStatusText();
     TestAffectedFileOverwriteLists();
+    TestPostProcessingAffectedFileApprovalRevalidation();
     TestPostProcessingOriginalMediaReplacement();
     TestPostProcessingSidecarCommitPreservesExistingDestinationOnFailure();
     TestEditContextMenuModel();
