@@ -830,7 +830,12 @@ ToolInstallStatus WhisperManager::Install(
     const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress,
     HANDLE cancelEvent
 ) {
-    return Install(paths, WhisperBackend::Cpu, onProgress, cancelEvent);
+    return Install(
+        paths,
+        SelectWhisperInstallBackend(WhisperBackend::Auto, IsWhisperCudaCandidateAvailable()),
+        onProgress,
+        cancelEvent
+    );
 }
 
 WhisperBackend SelectWhisperInstallBackend(WhisperBackend configuredBackend, bool cudaAvailable) {
