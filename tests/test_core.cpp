@@ -1634,6 +1634,19 @@ void TestVotExeResolutionAndChecksumParsing() {
             L"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "VOT zip checksum mismatch"
     );
+    const std::string uppercaseSums =
+        "ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD  vot-helper-windows-x64.zip\n";
+    Require(
+        VotExeManager::Sha256ForFile(uppercaseSums, "vot-helper-windows-x64.zip") ==
+            L"abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        "VOT zip checksum should normalize uppercase hex"
+    );
+    const std::string invalidSums =
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz  vot-helper-windows-x64.zip\n";
+    Require(
+        VotExeManager::Sha256ForFile(invalidSums, "vot-helper-windows-x64.zip").empty(),
+        "VOT zip checksum parser should reject non-hex hashes"
+    );
 }
 
 void TestVotExeReleaseParsing() {

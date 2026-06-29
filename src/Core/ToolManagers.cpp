@@ -12,6 +12,7 @@
 #include <bcrypt.h>
 
 #include <array>
+#include <cctype>
 #include <cwctype>
 #include <fstream>
 #include <iomanip>
@@ -50,6 +51,20 @@ std::wstring NormalizeVersion(std::wstring version) {
 bool IsExecutableFile(const std::filesystem::path& path) {
     std::error_code ec;
     return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
+std::wstring NormalizeSha256Hex(std::string hash) {
+    if (hash.size() != 64) {
+        return {};
+    }
+    for (char& ch : hash) {
+        const unsigned char byte = static_cast<unsigned char>(ch);
+        if (!std::isxdigit(byte)) {
+            return {};
+        }
+        ch = static_cast<char>(std::tolower(byte));
+    }
+    return AsciiToWide(hash);
 }
 
 bool IsSameExistingFile(const std::filesystem::path& left, const std::filesystem::path& right) {
@@ -988,8 +1003,8 @@ std::wstring VotExeManager::Sha256ForFile(const std::string& sumsText, const std
         if (!name.empty() && name.front() == '*') {
             name.erase(name.begin());
         }
-        if (name == fileName && hash.size() == 64) {
-            return AsciiToWide(hash);
+        if (name == fileName) {
+            return NormalizeSha256Hex(hash);
         }
     }
     return {};
