@@ -20,15 +20,19 @@ public:
     std::filesystem::path localFfmpegExePath() const;
     std::filesystem::path localFfprobeExePath() const;
     std::filesystem::path localFfplayExePath() const;
+    std::filesystem::path localFfmpegVersionPath() const;
     std::filesystem::path localWhisperDir() const;
     std::filesystem::path localWhisperCpuDir() const;
     std::filesystem::path localWhisperCudaDir() const;
     std::filesystem::path localWhisperCpuExePath() const;
+    std::filesystem::path localWhisperCpuVersionPath() const;
     std::filesystem::path localWhisperCudaExePath() const;
+    std::filesystem::path localWhisperCudaVersionPath() const;
     std::filesystem::path localWhisperModelsDir() const;
     std::filesystem::path localWhisperModelPath() const;
     std::filesystem::path localVotDir() const;
     std::filesystem::path localVotExePath() const;
+    std::filesystem::path localVotVersionPath() const;
     std::filesystem::path transcriptionTempDir() const;
     std::filesystem::path voiceOverTempDir() const;
 

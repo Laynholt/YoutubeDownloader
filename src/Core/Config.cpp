@@ -288,9 +288,12 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.downloadDir = PathFromJsonString(json, "download_dir", config.downloadDir);
         config.cookiesPath = PathFromJsonString(json, "cookies_path", config.cookiesPath);
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
+        config.ffmpegVersion = WStringFromJson(json, "ffmpeg_version", config.ffmpegVersion);
         config.whisperPath = PathFromJsonString(json, "whisper_path", config.whisperPath);
+        config.whisperVersion = WStringFromJson(json, "whisper_version", config.whisperVersion);
         config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
         config.votExePath = PathFromJsonString(json, "vot_exe_path", config.votExePath);
+        config.votExeVersion = WStringFromJson(json, "vot_exe_version", config.votExeVersion);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
         config.transcriptionEngine = TranscriptionEngineFromJson(json, "transcription_engine", config.transcriptionEngine);
@@ -331,9 +334,12 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["download_dir"] = PathToJsonString(config.downloadDir);
     json["cookies_path"] = PathToJsonString(config.cookiesPath);
     json["ffmpeg_path"] = PathToJsonString(config.ffmpegPath);
+    json["ffmpeg_version"] = WideToUtf8(config.ffmpegVersion);
     json["whisper_path"] = PathToJsonString(config.whisperPath);
+    json["whisper_version"] = WideToUtf8(config.whisperVersion);
     json["whisper_model_path"] = PathToJsonString(config.whisperModelPath);
     json["vot_exe_path"] = PathToJsonString(config.votExePath);
+    json["vot_exe_version"] = WideToUtf8(config.votExeVersion);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
     json["transcription_engine"] = WideToUtf8(TranscriptionEngineToConfigValue(config.transcriptionEngine));

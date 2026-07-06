@@ -42,9 +42,12 @@ struct AppConfig {
     std::filesystem::path downloadDir;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegPath;
+    std::wstring ffmpegVersion;
     std::filesystem::path whisperPath;
+    std::wstring whisperVersion;
     std::filesystem::path whisperModelPath;
     std::filesystem::path votExePath;
+    std::wstring votExeVersion;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
     TranscriptionEngine transcriptionEngine = TranscriptionEngine::Whisper;

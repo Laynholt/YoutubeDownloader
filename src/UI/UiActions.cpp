@@ -220,7 +220,7 @@ bool IsWhisperInstallTargetInstalled(WhisperBackend installBackend, bool cpuInst
 }
 
 std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText) {
-    return actionText + L"\nТребуется FFmpeg; без него эта опция недоступна.";
+    return actionText;
 }
 
 std::wstring LocalizedToolErrorText(const std::string& message) {

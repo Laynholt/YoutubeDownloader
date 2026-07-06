@@ -60,6 +60,10 @@ std::filesystem::path AppPaths::localFfplayExePath() const {
     return localFfmpegBinDir() / L"ffplay.exe";
 }
 
+std::filesystem::path AppPaths::localFfmpegVersionPath() const {
+    return localFfmpegBinDir().parent_path() / L"version.txt";
+}
+
 std::filesystem::path AppPaths::localWhisperDir() const {
     return toolsDir() / L"whisper";
 }
@@ -76,8 +80,16 @@ std::filesystem::path AppPaths::localWhisperCpuExePath() const {
     return localWhisperCpuDir() / L"whisper-cli.exe";
 }
 
+std::filesystem::path AppPaths::localWhisperCpuVersionPath() const {
+    return localWhisperCpuDir() / L"version.txt";
+}
+
 std::filesystem::path AppPaths::localWhisperCudaExePath() const {
     return localWhisperCudaDir() / L"whisper-cli.exe";
+}
+
+std::filesystem::path AppPaths::localWhisperCudaVersionPath() const {
+    return localWhisperCudaDir() / L"version.txt";
 }
 
 std::filesystem::path AppPaths::localWhisperModelsDir() const {
@@ -94,6 +106,10 @@ std::filesystem::path AppPaths::localVotDir() const {
 
 std::filesystem::path AppPaths::localVotExePath() const {
     return localVotDir() / L"vot-helper.exe";
+}
+
+std::filesystem::path AppPaths::localVotVersionPath() const {
+    return localVotDir() / L"version.txt";
 }
 
 std::filesystem::path AppPaths::transcriptionTempDir() const {

@@ -67,15 +67,19 @@ void TestAppPaths() {
     Require(paths.localFfmpegBinDir() == root / L"tools" / L"ffmpeg" / L"bin", "ffmpeg bin path mismatch");
     Require(paths.localFfmpegExePath() == root / L"tools" / L"ffmpeg" / L"bin" / L"ffmpeg.exe", "ffmpeg path mismatch");
     Require(paths.localFfprobeExePath() == root / L"tools" / L"ffmpeg" / L"bin" / L"ffprobe.exe", "ffprobe path mismatch");
+    Require(paths.localFfmpegVersionPath() == root / L"tools" / L"ffmpeg" / L"version.txt", "ffmpeg version path mismatch");
     Require(paths.localWhisperDir() == root / L"tools" / L"whisper", "whisper dir path mismatch");
     Require(paths.localWhisperCpuDir() == root / L"tools" / L"whisper" / L"cpu", "whisper CPU dir path mismatch");
     Require(paths.localWhisperCudaDir() == root / L"tools" / L"whisper" / L"cuda", "whisper CUDA dir path mismatch");
     Require(paths.localWhisperCpuExePath() == root / L"tools" / L"whisper" / L"cpu" / L"whisper-cli.exe", "whisper CPU exe path mismatch");
+    Require(paths.localWhisperCpuVersionPath() == root / L"tools" / L"whisper" / L"cpu" / L"version.txt", "whisper CPU version path mismatch");
     Require(paths.localWhisperCudaExePath() == root / L"tools" / L"whisper" / L"cuda" / L"whisper-cli.exe", "whisper CUDA exe path mismatch");
+    Require(paths.localWhisperCudaVersionPath() == root / L"tools" / L"whisper" / L"cuda" / L"version.txt", "whisper CUDA version path mismatch");
     Require(paths.localWhisperModelsDir() == root / L"tools" / L"whisper" / L"models", "whisper models path mismatch");
     Require(paths.localWhisperModelPath() == root / L"tools" / L"whisper" / L"models" / L"ggml-large-v3-turbo.bin", "whisper default model path mismatch");
     Require(paths.localVotDir() == root / L"tools" / L"vot", "vot dir path mismatch");
     Require(paths.localVotExePath() == root / L"tools" / L"vot" / L"vot-helper.exe", "vot exe path mismatch");
+    Require(paths.localVotVersionPath() == root / L"tools" / L"vot" / L"version.txt", "vot version path mismatch");
     Require(paths.transcriptionTempDir() == root / L"stuff" / L"transcription_tmp", "transcription temp path mismatch");
     Require(paths.voiceOverTempDir() == root / L"stuff" / L"voiceover_tmp", "voice-over temp path mismatch");
 }
@@ -107,12 +111,15 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.downloadDir = root / L"Downloads";
     saved.cookiesPath = root / L"cookies.txt";
     saved.ffmpegPath = root / L"ffmpeg.exe";
+    saved.ffmpegVersion = L"6.1";
     saved.transcriptionEngine = TranscriptionEngine::Vot;
     saved.whisperPath = root / L"whisper" / L"whisper-cli.exe";
+    saved.whisperVersion = L"1.9.1";
     saved.whisperModelPath = root / L"models" / L"ggml-small.bin";
     saved.whisperBackend = WhisperBackend::Cuda;
     saved.whisperLanguage = L"ru";
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
+    saved.votExeVersion = L"vot-2.4.12-r2";
     saved.votSubtitleLanguage = L"en";
     saved.voiceOverLanguage = L"en";
     saved.voiceOverOriginalVolumePercent = 40;
@@ -132,12 +139,15 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.downloadDir == saved.downloadDir, "download dir round-trip mismatch");
     Require(loaded.cookiesPath == saved.cookiesPath, "cookies path round-trip mismatch");
     Require(loaded.ffmpegPath == saved.ffmpegPath, "ffmpeg path round-trip mismatch");
+    Require(loaded.ffmpegVersion == saved.ffmpegVersion, "ffmpeg version round-trip mismatch");
     Require(loaded.transcriptionEngine == TranscriptionEngine::Vot, "transcription engine round-trip mismatch");
     Require(loaded.whisperPath == saved.whisperPath, "whisper path round-trip mismatch");
+    Require(loaded.whisperVersion == saved.whisperVersion, "whisper version round-trip mismatch");
     Require(loaded.whisperModelPath == saved.whisperModelPath, "whisper model path round-trip mismatch");
     Require(loaded.whisperBackend == WhisperBackend::Cuda, "whisper backend round-trip mismatch");
     Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
     Require(loaded.votExePath == saved.votExePath, "vot path round-trip mismatch");
+    Require(loaded.votExeVersion == saved.votExeVersion, "vot version round-trip mismatch");
     Require(loaded.votSubtitleLanguage == L"en", "VOT subtitle language round-trip mismatch");
     Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
     Require(loaded.voiceOverOriginalVolumePercent == 40, "voice-over original volume round-trip mismatch");
@@ -377,10 +387,8 @@ void TestPostProcessingModeDisplayText() {
     );
     const std::wstring ffmpegTooltip = FfmpegGatedOptionTooltip(L"Добавлять дорожку");
     Require(
-        ffmpegTooltip.find(L"Добавлять дорожку") != std::wstring::npos &&
-        ffmpegTooltip.find(L"Требуется FFmpeg") != std::wstring::npos &&
-        ffmpegTooltip.find(L"недоступна") != std::wstring::npos,
-        "FFmpeg gated tooltip should explain disabled options"
+        ffmpegTooltip == L"Добавлять дорожку",
+        "FFmpeg gated tooltip should keep only the action text"
     );
     Require(
         LocalizedToolErrorText("operation canceled") == L"Операция отменена",
@@ -1461,12 +1469,16 @@ void TestAppUpdateLocalSha256SumsCreation() {
     }
     AppUpdateService::EnsureLocalSha256Sums(paths);
 
-    std::ifstream preserved(sumsPath, std::ios::binary);
-    const std::string preservedText{
-        std::istreambuf_iterator<char>(preserved),
+    std::ifstream overwritten(sumsPath, std::ios::binary);
+    const std::string overwrittenText{
+        std::istreambuf_iterator<char>(overwritten),
         std::istreambuf_iterator<char>()
     };
-    Require(preservedText == "sentinel\n", "existing local checksum file should not be overwritten");
+    Require(overwrittenText != "sentinel\n", "existing local checksum file should be overwritten");
+    Require(
+        overwrittenText.find("  YoutubeDownloader.exe\n") == 64,
+        "overwritten local checksum should use release asset filename"
+    );
 }
 
 void TestFfmpegResolutionPrecedence() {
@@ -1475,6 +1487,7 @@ void TestFfmpegResolutionPrecedence() {
 
     AppConfig config;
     config.ffmpegPath = root / L"chosen" / L"ffmpeg.exe";
+    config.ffmpegVersion = L"7.0-custom";
     fs::create_directories(config.ffmpegPath.parent_path());
     {
         std::ofstream out(config.ffmpegPath);
@@ -1491,12 +1504,18 @@ void TestFfmpegResolutionPrecedence() {
     Require(chosen.available, "saved ffmpeg path should resolve");
     Require(chosen.source == FfmpegSource::ConfiguredPath, "saved ffmpeg path should take precedence");
     Require(chosen.ffmpegExe == config.ffmpegPath, "configured ffmpeg path mismatch");
+    Require(chosen.version == L"7.0-custom", "configured ffmpeg version mismatch");
 
     config.ffmpegPath.clear();
+    {
+        std::ofstream out(paths.localFfmpegVersionPath());
+        out << "2026-07-01";
+    }
     const FfmpegStatus local = FfmpegManager::Resolve(paths, config);
     Require(local.available, "local ffmpeg path should resolve");
     Require(local.source == FfmpegSource::LocalTools, "local ffmpeg source mismatch");
     Require(local.ffmpegExe == paths.localFfmpegExePath(), "local ffmpeg path mismatch");
+    Require(local.version == L"2026-07-01", "local ffmpeg version mismatch");
 }
 
 void TestFfmpegUserPathAndExtractedTreeResolution() {
@@ -1614,10 +1633,15 @@ void TestWhisperBackendResolution() {
         std::ofstream out(paths.localWhisperCpuExePath());
         out << "cpu";
     }
+    {
+        std::ofstream out(paths.localWhisperCpuVersionPath());
+        out << "1.9.1";
+    }
 
     ToolInstallStatus cpu = WhisperManager::Resolve(paths, config);
     Require(cpu.installed, "local CPU whisper should resolve");
     Require(cpu.executable == paths.localWhisperCpuExePath(), "local CPU whisper path mismatch");
+    Require(cpu.version == L"1.9.1", "local CPU whisper version mismatch");
     Require(cpu.whisperBackend == WhisperBackend::Cpu, "local CPU whisper backend mismatch");
 
     config.whisperPath = paths.localWhisperCpuExePath();
@@ -1632,10 +1656,15 @@ void TestWhisperBackendResolution() {
         std::ofstream out(paths.localWhisperCudaExePath());
         out << "cuda";
     }
+    {
+        std::ofstream out(paths.localWhisperCudaVersionPath());
+        out << "1.9.2";
+    }
     config.whisperBackend = WhisperBackend::Cuda;
     ToolInstallStatus cuda = WhisperManager::Resolve(paths, config);
     Require(cuda.installed, "selected CUDA whisper should resolve");
     Require(cuda.executable == paths.localWhisperCudaExePath(), "selected CUDA whisper path mismatch");
+    Require(cuda.version == L"1.9.2", "selected CUDA whisper version mismatch");
     Require(cuda.whisperBackend == WhisperBackend::Cuda, "selected CUDA whisper backend mismatch");
 
     config.whisperPath = paths.localWhisperCudaExePath();
@@ -1645,6 +1674,7 @@ void TestWhisperBackendResolution() {
     Require(cuda.whisperBackend == WhisperBackend::Cuda, "configured local CUDA path should keep CUDA backend");
 
     config.whisperPath = root / L"custom" / L"whisper-cli.exe";
+    config.whisperVersion = L"custom-whisper";
     fs::create_directories(config.whisperPath.parent_path());
     {
         std::ofstream out(config.whisperPath);
@@ -1653,6 +1683,7 @@ void TestWhisperBackendResolution() {
     ToolInstallStatus custom = WhisperManager::Resolve(paths, config);
     Require(custom.installed, "custom whisper path should resolve");
     Require(custom.executable == config.whisperPath, "custom whisper path mismatch");
+    Require(custom.version == L"custom-whisper", "custom whisper version mismatch");
     Require(custom.whisperBackend == WhisperBackend::Custom, "custom whisper backend mismatch");
 }
 
@@ -1699,11 +1730,17 @@ void TestVotExeResolutionAndChecksumParsing() {
         std::ofstream out(paths.localVotExePath());
         out << "vot";
     }
+    {
+        std::ofstream out(paths.localVotVersionPath());
+        out << "vot-2.4.12-r2";
+    }
     VotExeStatus local = VotExeManager::Resolve(paths, config);
     Require(local.available, "local VOT exe should resolve");
     Require(local.executable == paths.localVotExePath(), "local VOT exe path mismatch");
+    Require(local.version == L"vot-2.4.12-r2", "local VOT version mismatch");
 
     config.votExePath = root / L"custom" / L"vot-helper.exe";
+    config.votExeVersion = L"custom-vot";
     fs::create_directories(config.votExePath.parent_path());
     {
         std::ofstream out(config.votExePath);
@@ -1712,6 +1749,7 @@ void TestVotExeResolutionAndChecksumParsing() {
     VotExeStatus custom = VotExeManager::Resolve(paths, config);
     Require(custom.available, "custom VOT exe should resolve");
     Require(custom.executable == config.votExePath, "custom VOT exe path mismatch");
+    Require(custom.version == L"custom-vot", "custom VOT version mismatch");
 
     const fs::path selectedDir = root / L"selected";
     fs::create_directories(selectedDir);

@@ -105,6 +105,52 @@ std::filesystem::path SearchPathExe(const wchar_t* exeName) {
     return std::filesystem::path(buffer);
 }
 
+std::wstring ParseFfmpegVersionLine(const std::wstring& text) {
+    std::wistringstream input(text);
+    std::wstring firstLine;
+    std::getline(input, firstLine);
+    std::wistringstream parts(firstLine);
+    std::wstring name;
+    std::wstring label;
+    std::wstring version;
+    if (parts >> name >> label >> version && name == L"ffmpeg" && label == L"version") {
+        return version;
+    }
+    return {};
+}
+
+std::wstring FirstTrimmedLine(std::wstring text) {
+    const size_t newline = text.find_first_of(L"\r\n");
+    if (newline != std::wstring::npos) {
+        text.resize(newline);
+    }
+    while (!text.empty() && iswspace(text.back())) {
+        text.pop_back();
+    }
+    while (!text.empty() && iswspace(text.front())) {
+        text.erase(text.begin());
+    }
+    return text;
+}
+
+std::wstring ReadExecutableVersion(
+    const std::filesystem::path& executable,
+    std::vector<std::wstring> arguments,
+    HANDLE cancelEvent = nullptr
+) {
+    ProcessRunOptions options;
+    options.executable = executable;
+    options.arguments = std::move(arguments);
+    options.timeoutMs = 15000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult result = ProcessRunner::Run(options);
+    if (result.canceled || result.timedOut || result.exitCode != 0) {
+        return {};
+    }
+    return FirstTrimmedLine(result.stdoutText.empty() ? result.stderrText : result.stdoutText);
+}
+
 std::wstring ReadTextFile(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
@@ -420,11 +466,14 @@ FfmpegStatus FfmpegManager::Resolve(const AppPaths& paths, const AppConfig& conf
     if (configured.available) {
         FfmpegStatus status = configured;
         status.source = FfmpegSource::ConfiguredPath;
+        status.version = config.ffmpegVersion;
         return status;
     }
 
     if (IsExecutableFile(paths.localFfmpegExePath())) {
-        return MakeFfmpegStatus(FfmpegSource::LocalTools, paths.localFfmpegExePath());
+        FfmpegStatus status = MakeFfmpegStatus(FfmpegSource::LocalTools, paths.localFfmpegExePath());
+        status.version = ReadTextFile(paths.localFfmpegVersionPath());
+        return status;
     }
 
     const std::filesystem::path pathExe = SearchPathExe(L"ffmpeg.exe");
@@ -478,6 +527,10 @@ std::filesystem::path FfmpegManager::FindExtractedBinDir(const std::filesystem::
         }
     }
     return {};
+}
+
+std::wstring FfmpegManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    return ParseFfmpegVersionLine(ReadExecutableVersion(executable, {L"-version"}, cancelEvent));
 }
 
 std::wstring FfmpegManager::EssentialsDownloadUrl() {
@@ -564,6 +617,8 @@ FfmpegStatus FfmpegManager::InstallEssentials(
         throw std::runtime_error("installed FFmpeg could not be resolved");
     }
     status.source = FfmpegSource::LocalTools;
+    status.version = ExecutableVersion(status.ffmpegExe, cancelEvent);
+    WriteTextFile(paths.localFfmpegVersionPath(), status.version);
     return status;
 }
 
@@ -668,11 +723,20 @@ bool WhisperManager::SelfTestExecutable(const std::filesystem::path& executable,
     return !result.canceled && !result.timedOut && result.exitCode == 0;
 }
 
+std::wstring WhisperManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    return ReadExecutableVersion(executable, {L"--version"}, cancelEvent);
+}
+
 ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperBackend backend) {
     ToolInstallStatus status;
     status.whisperBackend = backend;
     status.executable = BackendExecutablePath(paths, backend);
     status.installed = IsExecutableFile(status.executable);
+    if (status.installed) {
+        status.version = ReadTextFile(
+            backend == WhisperBackend::Cuda ? paths.localWhisperCudaVersionPath() : paths.localWhisperCpuVersionPath()
+        );
+    }
     return status;
 }
 
@@ -687,6 +751,7 @@ ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig
         ToolInstallStatus status;
         status.installed = true;
         status.executable = config.whisperPath;
+        status.version = config.whisperVersion;
         status.whisperBackend = WhisperBackend::Custom;
         return status;
     }
@@ -822,6 +887,11 @@ ToolInstallStatus WhisperManager::Install(
     if (!SelfTestExecutable(status.executable, cancelEvent)) {
         throw std::runtime_error("installed whisper.cpp self-test failed");
     }
+    WriteTextFile(
+        installBackend == WhisperBackend::Cuda ? paths.localWhisperCudaVersionPath() : paths.localWhisperCpuVersionPath(),
+        release.version
+    );
+    status.version = release.version;
     return status;
 }
 
@@ -930,11 +1000,17 @@ ReleaseAssetInfo VotExeManager::CheckLatestSha256Sums(HANDLE cancelEvent) {
 VotExeStatus VotExeManager::Resolve(const AppPaths& paths, const AppConfig& config) {
     VotExeStatus status = ResolveUserPath(config.votExePath);
     if (status.available) {
+        if (IsSameExistingFile(status.executable, paths.localVotExePath())) {
+            status.version = ReadTextFile(paths.localVotVersionPath());
+        } else {
+            status.version = config.votExeVersion;
+        }
         return status;
     }
 
     status = ResolveUserPath(paths.localVotExePath());
     if (status.available) {
+        status.version = ReadTextFile(paths.localVotVersionPath());
         return status;
     }
 
@@ -1028,6 +1104,10 @@ bool VotExeManager::SelfTestExecutable(const std::filesystem::path& executable, 
 
     const ProcessRunResult result = ProcessRunner::Run(options);
     return !result.canceled && !result.timedOut && result.exitCode == 0;
+}
+
+std::wstring VotExeManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    return ReadExecutableVersion(executable, {L"--version"}, cancelEvent);
 }
 
 VotExeStatus VotExeManager::Install(
@@ -1150,6 +1230,8 @@ VotExeStatus VotExeManager::Install(
     if (!SelfTestExecutable(status.executable, cancelEvent)) {
         throw std::runtime_error("installed VOT helper self-test failed");
     }
+    WriteTextFile(paths.localVotVersionPath(), release.version);
+    status.version = release.version;
     return status;
 }
 
@@ -1283,11 +1365,6 @@ ReleaseAssetInfo AppUpdateService::CheckLatestSha256Sums(HANDLE cancelEvent) {
 
 void AppUpdateService::EnsureLocalSha256Sums(const AppPaths& paths) {
     const std::filesystem::path target = paths.stuffDir() / AsciiToWide(Sha256SumsAssetName());
-    std::error_code ec;
-    if (std::filesystem::exists(target, ec)) {
-        return;
-    }
-
     const std::wstring sha256 = FileSha256Hex(CurrentExecutablePath());
     WriteTextFile(target, sha256 + L"  " + AsciiToWide(ExeAssetName()) + L"\n");
 }

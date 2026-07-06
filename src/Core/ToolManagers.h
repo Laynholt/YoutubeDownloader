@@ -34,6 +34,7 @@ struct FfmpegStatus {
     bool available = false;
     FfmpegSource source = FfmpegSource::Missing;
     std::filesystem::path ffmpegExe;
+    std::wstring version;
     std::wstring message;
 };
 
@@ -41,6 +42,7 @@ class FfmpegManager {
 public:
     static FfmpegStatus Resolve(const AppPaths& paths, const AppConfig& config);
     static FfmpegStatus ResolveUserPath(const std::filesystem::path& path);
+    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static std::filesystem::path FindExtractedBinDir(const std::filesystem::path& extractedRoot);
     static std::wstring EssentialsDownloadUrl();
     static FfmpegStatus InstallEssentials(
@@ -79,6 +81,7 @@ public:
     static std::filesystem::path BackendInstallDir(const AppPaths& paths, WhisperBackend backend);
     static std::filesystem::path BackendExecutablePath(const AppPaths& paths, WhisperBackend backend);
     static std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
+    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static ToolInstallStatus ResolveBackend(const AppPaths& paths, WhisperBackend backend);
     static ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
@@ -108,6 +111,7 @@ bool IsWhisperCudaCandidateAvailable();
 struct VotExeStatus {
     bool available = false;
     std::filesystem::path executable;
+    std::wstring version;
     std::wstring message;
 };
 
@@ -122,6 +126,7 @@ public:
     static std::filesystem::path FindExecutable(const std::filesystem::path& root);
     static std::vector<std::filesystem::path> FindExecutables(const std::filesystem::path& root);
     static std::wstring Sha256ForFile(const std::string& sumsText, const std::string& fileName);
+    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
     static VotExeStatus Install(
         const AppPaths& paths,
