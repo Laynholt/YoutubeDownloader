@@ -931,7 +931,7 @@ void TestConfigParallelDownloadBounds() {
         std::ofstream out(paths.configPath());
         out << R"json({"max_parallel_downloads": 1})json";
     }
-    Require(ConfigStore::Load(paths).maxParallelDownloads == 3, "parallel downloads should clamp to minimum 3");
+    Require(ConfigStore::Load(paths).maxParallelDownloads == 1, "parallel downloads should clamp to minimum 1");
 
     {
         std::ofstream out(paths.configPath(), std::ios::trunc);

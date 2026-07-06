@@ -309,7 +309,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.voiceOverFfmpegMode = VoiceOverFfmpegModeFromJson(json, "voice_over_ffmpeg_mode", config.voiceOverFfmpegMode);
         config.subtitleFfmpegMode = SubtitleFfmpegModeFromJson(json, "subtitle_ffmpeg_mode", config.subtitleFfmpegMode);
         config.maxParallelDownloads = IntFromJson(json, "max_parallel_downloads", config.maxParallelDownloads);
-        config.maxParallelDownloads = std::clamp(config.maxParallelDownloads, 3, 10);
+        config.maxParallelDownloads = std::clamp(config.maxParallelDownloads, 1, 10);
         config.autoUpdateApp = BoolFromJson(json, "auto_update_app", config.autoUpdateApp);
         config.lastYtDlpCheckAt = WStringFromJson(json, "last_ytdlp_check_at", config.lastYtDlpCheckAt);
         config.lastYtDlpVersion = WStringFromJson(json, "last_ytdlp_version", config.lastYtDlpVersion);

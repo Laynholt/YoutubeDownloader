@@ -3505,12 +3505,12 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 RefreshSettingsButtons(state);
                 return 0;
             case IdParallelMinus:
-                state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 3, 10);
+                state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 1, 10);
                 RefreshSettingsButtons(state);
                 InvalidateRect(state->window, nullptr, FALSE);
                 return 0;
             case IdParallelPlus:
-                state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads + 1, 3, 10);
+                state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads + 1, 1, 10);
                 RefreshSettingsButtons(state);
                 InvalidateRect(state->window, nullptr, FALSE);
                 return 0;
