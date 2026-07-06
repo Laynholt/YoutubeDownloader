@@ -16,6 +16,7 @@
 #include <array>
 #include <cstring>
 #include <deque>
+#include <cwctype>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -159,6 +160,7 @@ enum DialogCommand {
     IdVotSubtitleLanguageEdit = 153,
     IdVoiceVolumeMinus = 154,
     IdVoiceVolumePlus = 155,
+    IdWhisperModelChooseFolder = 156,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -239,6 +241,8 @@ struct DialogState {
     AppConfig workingConfig;
     SettingsSection settingsSection = SettingsSection::Downloads;
     bool settingsSidebarCollapsed = false;
+    int settingsScrollY = 0;
+    int whisperStatusScrollY = 0;
     bool ytDlpDetailsExpanded = false;
     bool ffmpegDetailsExpanded = false;
     bool whisperDetailsExpanded = false;
@@ -369,19 +373,106 @@ int SettingsToolCardHeight(const DialogState* state, int index) {
         return state && state->ffmpegDetailsExpanded ? 124 : kSettingsToolCardHeight;
     }
     if (index == 2) {
-        return state && state->whisperDetailsExpanded ? 146 : kSettingsToolCardHeight;
+        return state && state->whisperDetailsExpanded ? 226 : kSettingsToolCardHeight;
     }
     return state && state->votDetailsExpanded ? 124 : kSettingsToolCardHeight;
 }
 
 RECT SettingsToolCardRect(const DialogState* state, int width, int height, int index) {
     const RECT content = SettingsContentRect(state, width, height);
-    int top = content.top + kSettingsContentTop;
+    int top = content.top + kSettingsContentTop - (state ? state->settingsScrollY : 0);
     for (int i = 0; i < index; ++i) {
         top += SettingsToolCardHeight(state, i) + kSettingsCardGap;
     }
     const int cardHeight = SettingsToolCardHeight(state, index);
     return {content.left, top, content.right, top + cardHeight};
+}
+
+int SettingsToolsContentHeight(const DialogState* state) {
+    int height = kSettingsContentTop;
+    for (int i = 0; i < 4; ++i) {
+        height += SettingsToolCardHeight(state, i);
+        if (i != 3) {
+            height += kSettingsCardGap;
+        }
+    }
+    return height;
+}
+
+int SettingsMaxScroll(const DialogState* state, int width, int height) {
+    if (!state || state->settingsSection != SettingsSection::Tools) {
+        return 0;
+    }
+    const RECT content = SettingsContentRect(state, width, height);
+    return std::max(0, SettingsToolsContentHeight(state) - static_cast<int>(content.bottom - content.top));
+}
+
+bool ClampSettingsScroll(DialogState* state, int width, int height) {
+    if (!state) {
+        return false;
+    }
+    const int previous = state->settingsScrollY;
+    state->settingsScrollY = std::clamp(state->settingsScrollY, 0, SettingsMaxScroll(state, width, height));
+    return state->settingsScrollY != previous;
+}
+
+bool IsRegularFile(const std::filesystem::path& path);
+std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state);
+std::wstring WrapPathText(std::wstring text, size_t maxLine);
+RECT GetScrollbarThumb(const RECT& client, int contentHeight, int scrollY);
+
+bool RectInside(const RECT& inner, const RECT& outer) {
+    return inner.left >= outer.left && inner.right <= outer.right &&
+        inner.top >= outer.top && inner.bottom <= outer.bottom;
+}
+
+RECT WhisperStatusCardRect(const RECT& client) {
+    return {24, 78, client.right - 24, client.bottom - 86};
+}
+
+RECT WhisperPathViewportRect(const RECT& statusCard) {
+    return {statusCard.left + 18, statusCard.top + 54, statusCard.right - 18, statusCard.bottom - 42};
+}
+
+int WrappedLineCount(const std::wstring& text) {
+    return 1 + static_cast<int>(std::count(text.begin(), text.end(), L'\n'));
+}
+
+std::wstring WrappedPathForStatus(const std::filesystem::path& path) {
+    return path.empty() ? L"-" : WrapPathText(path.wstring(), 76);
+}
+
+int WhisperPathBlockHeight(const std::filesystem::path& path) {
+    return 22 + std::max(24, WrappedLineCount(WrappedPathForStatus(path)) * 22);
+}
+
+int WhisperPathContentHeight(const std::filesystem::path& executable, const std::filesystem::path& model) {
+    return WhisperPathBlockHeight(executable) + 12 + WhisperPathBlockHeight(model);
+}
+
+int WhisperStatusMaxScroll(const DialogState* state, const RECT& client) {
+    if (!state || state->type != DialogType::Whisper) {
+        return 0;
+    }
+    const ToolInstallStatus status = state->paths && state->config
+        ? WhisperManager::Resolve(*state->paths, *state->config)
+        : ToolInstallStatus{};
+    const std::filesystem::path modelPath = ResolveDialogWhisperModelPath(state);
+    const std::filesystem::path model = IsRegularFile(modelPath) ? modelPath : std::filesystem::path{};
+    const RECT viewport = WhisperPathViewportRect(WhisperStatusCardRect(client));
+    return std::max(0, WhisperPathContentHeight(status.executable, model) - static_cast<int>(viewport.bottom - viewport.top));
+}
+
+RECT WhisperScrollbarThumb(const RECT& viewport, int contentHeight, int scrollY) {
+    RECT local = {0, 0, viewport.right - viewport.left, viewport.bottom - viewport.top};
+    RECT thumb = GetScrollbarThumb(local, contentHeight, scrollY);
+    OffsetRect(&thumb, viewport.left, viewport.top);
+    return thumb;
+}
+
+RECT PaddedRect(RECT rect, int padding) {
+    InflateRect(&rect, padding, padding);
+    return rect;
 }
 
 RECT SettingsParallelValueRect(const DialogState* state, int width, int height) {
@@ -452,7 +543,17 @@ void PaintBuffered(HWND window, const std::function<void(HDC, const RECT&)>& pai
     DeleteObject(background);
 
     paintContent(bufferDc, client);
-    BitBlt(screenDc, 0, 0, width, height, bufferDc, 0, 0, SRCCOPY);
+    BitBlt(
+        screenDc,
+        paint.rcPaint.left,
+        paint.rcPaint.top,
+        paint.rcPaint.right - paint.rcPaint.left,
+        paint.rcPaint.bottom - paint.rcPaint.top,
+        bufferDc,
+        paint.rcPaint.left,
+        paint.rcPaint.top,
+        SRCCOPY
+    );
 
     SelectObject(bufferDc, oldBitmap);
     DeleteObject(bitmap);
@@ -685,6 +786,14 @@ void AddDialogTooltip(DialogState* state, HWND tool, std::wstring text) {
     AddDialogTooltip(state, tool, state->tooltipTexts.back().c_str());
 }
 
+const WhisperModelInfo* RecommendedWhisperModel(const std::vector<WhisperModelInfo>& catalog);
+std::optional<std::filesystem::path> FindWhisperModelNear(
+    const std::filesystem::path& folder,
+    const std::filesystem::path& executable,
+    const WhisperModelInfo& selected,
+    const std::vector<WhisperModelInfo>& catalog
+);
+
 bool ApplySelectedFfmpegPath(HWND owner, HINSTANCE instance, AppConfig& config, const std::filesystem::path& path) {
     const FfmpegStatus status = FfmpegManager::ResolveUserPath(path);
     if (!status.available) {
@@ -718,6 +827,12 @@ bool ApplySelectedWhisperPath(HWND owner, HINSTANCE instance, AppConfig& config,
     }
     config.whisperPath = executable;
     config.whisperBackend = WhisperBackend::Custom;
+    const std::vector<WhisperModelInfo> catalog = WhisperManager::ModelCatalog();
+    if (const WhisperModelInfo* recommended = RecommendedWhisperModel(catalog)) {
+        if (auto modelPath = FindWhisperModelNear(path, executable, *recommended, catalog)) {
+            config.whisperModelPath = *modelPath;
+        }
+    }
     return true;
 }
 
@@ -845,6 +960,82 @@ std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state) {
 bool IsRegularFile(const std::filesystem::path& path) {
     std::error_code ec;
     return !path.empty() && std::filesystem::is_regular_file(path, ec);
+}
+
+std::wstring ToLower(std::wstring text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return text;
+}
+
+std::wstring InferCustomWhisperBackendText(const std::filesystem::path& executable) {
+    const std::wstring pathText = ToLower(executable.wstring());
+    if (pathText.find(L"cuda") != std::wstring::npos || pathText.find(L"cublas") != std::wstring::npos) {
+        return L"GPU";
+    }
+    if (pathText.find(L"cpu") != std::wstring::npos) {
+        return L"CPU";
+    }
+
+    const std::filesystem::path dir = executable.parent_path();
+    const std::array<const wchar_t*, 3> gpuDlls = {L"cublas64_12.dll", L"cudart64_12.dll", L"ggml-cuda.dll"};
+    for (const wchar_t* dll : gpuDlls) {
+        if (IsRegularFile(dir / dll)) {
+            return L"GPU";
+        }
+    }
+    return L"Свой";
+}
+
+std::wstring WhisperStatusPillText(
+    const AppConfig& config,
+    const ToolInstallStatus& status,
+    bool cudaAvailable
+) {
+    if (status.whisperBackend == WhisperBackend::Custom) {
+        return InferCustomWhisperBackendText(status.executable);
+    }
+    return WhisperBackendStatusText(config.whisperBackend, status.whisperBackend, cudaAvailable);
+}
+
+std::optional<std::filesystem::path> FindWhisperModelInFolder(
+    const std::filesystem::path& folder,
+    const WhisperModelInfo& selected,
+    const std::vector<WhisperModelInfo>& catalog
+) {
+    const std::filesystem::path selectedPath = folder / selected.fileName;
+    if (IsRegularFile(selectedPath)) {
+        return selectedPath;
+    }
+    for (const WhisperModelInfo& model : catalog) {
+        const std::filesystem::path path = folder / model.fileName;
+        if (IsRegularFile(path)) {
+            return path;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindWhisperModelNear(
+    const std::filesystem::path& folder,
+    const std::filesystem::path& executable,
+    const WhisperModelInfo& selected,
+    const std::vector<WhisperModelInfo>& catalog
+) {
+    std::vector<std::filesystem::path> folders = {folder, folder / L"models"};
+    if (!executable.empty()) {
+        const std::filesystem::path exeDir = executable.parent_path();
+        folders.push_back(exeDir);
+        folders.push_back(exeDir / L"models");
+        folders.push_back(exeDir.parent_path() / L"models");
+    }
+    for (const auto& candidate : folders) {
+        if (auto model = FindWhisperModelInFolder(candidate, selected, catalog)) {
+            return model;
+        }
+    }
+    return std::nullopt;
 }
 
 bool IsWhisperReady(const DialogState* state) {
@@ -1167,6 +1358,13 @@ void RunModal(HWND owner, HWND window) {
     while (IsWindow(window) && GetMessageW(&message, nullptr, 0, 0) > 0) {
         DialogState* state = reinterpret_cast<DialogState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
         RelayDialogTooltipMessage(state, message);
+        if (state &&
+            (state->type == DialogType::Whisper ||
+                (state->type == DialogType::Settings && state->settingsSection == SettingsSection::Tools)) &&
+            message.message == WM_MOUSEWHEEL) {
+            SendMessageW(window, WM_MOUSEWHEEL, message.wParam, message.lParam);
+            continue;
+        }
         if (!IsDialogMessageW(window, &message)) {
             TranslateMessage(&message);
             DispatchMessageW(&message);
@@ -1220,6 +1418,7 @@ void LayoutMessageDialog(DialogState* state, int width, int height) {
     HWND cancelButton = GetDlgItem(state->window, IdCancel);
     HWND okButton = GetDlgItem(state->window, IdOk);
     HWND updateButton = GetDlgItem(state->window, IdCheckUpdates);
+    const int okButtonWidth = state->primaryButtonText == L"Открыть Инструменты" ? 172 : 112;
     if (updateButton) {
         MoveWindow(updateButton, kDialogPanelInset + kDialogButtonInset, buttonY, 190, kDialogButtonHeight, TRUE);
     }
@@ -1236,7 +1435,7 @@ void LayoutMessageDialog(DialogState* state, int width, int height) {
     if (cancelButton) {
         MoveWindow(
             cancelButton,
-            panelRight - kDialogButtonInset - 112 - kDialogButtonGap - 112,
+            panelRight - kDialogButtonInset - okButtonWidth - kDialogButtonGap - 112,
             buttonY,
             112,
             kDialogButtonHeight,
@@ -1244,7 +1443,7 @@ void LayoutMessageDialog(DialogState* state, int width, int height) {
         );
     }
     if (okButton) {
-        MoveWindow(okButton, panelRight - kDialogButtonInset - 112, buttonY, 112, kDialogButtonHeight, TRUE);
+        MoveWindow(okButton, panelRight - kDialogButtonInset - okButtonWidth, buttonY, okButtonWidth, kDialogButtonHeight, TRUE);
     }
 }
 
@@ -1324,9 +1523,13 @@ void LayoutWhisperModelDialog(DialogState* state, int width, int height) {
 
     const int buttonY = panelBottom - kDialogButtonInset - kDialogButtonHeight;
     HWND download = GetDlgItem(state->window, IdWhisperModelDownloadSelected);
+    HWND chooseFolder = GetDlgItem(state->window, IdWhisperModelChooseFolder);
     HWND cancel = GetDlgItem(state->window, IdCancel);
     if (download) {
-        MoveWindow(download, panelRight - sidePadding - 170 - kDialogButtonGap - 126, buttonY, 170, kDialogButtonHeight, TRUE);
+        MoveWindow(download, panelRight - sidePadding - 170 - kDialogButtonGap - 142 - kDialogButtonGap - 126, buttonY, 170, kDialogButtonHeight, TRUE);
+    }
+    if (chooseFolder) {
+        MoveWindow(chooseFolder, panelRight - sidePadding - 142 - kDialogButtonGap - 126, buttonY, 142, kDialogButtonHeight, TRUE);
     }
     if (cancel) {
         MoveWindow(cancel, panelRight - sidePadding - 126, buttonY, 126, kDialogButtonHeight, TRUE);
@@ -1414,6 +1617,7 @@ void LayoutLogsDialog(DialogState* state, int width, int height) {
 
 void LayoutSettingsDialog(DialogState* state, int width, int height) {
     RefreshSettingsButtons(state);
+    ClampSettingsScroll(state, width, height);
 
     const RECT sidebar = SettingsSidebarRect(state, width, height);
     const RECT content = SettingsContentRect(state, width, height);
@@ -1653,6 +1857,19 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
         IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
     }, state->settingsSection == SettingsSection::Tools);
+    if (state->settingsSection == SettingsSection::Tools) {
+        const RECT viewport = {content.left, content.top + kSettingsContentTop, content.right, content.bottom};
+        for (int id : {IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder, IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails}) {
+            HWND control = GetDlgItem(state->window, id);
+            if (!control) {
+                continue;
+            }
+            RECT rect = {};
+            GetWindowRect(control, &rect);
+            MapWindowPoints(HWND_DESKTOP, state->window, reinterpret_cast<POINT*>(&rect), 2);
+            ShowWindow(control, RectInside(rect, viewport) ? SW_SHOW : SW_HIDE);
+        }
+    }
     SetControlsVisible(state->window, {IdCheckUpdates}, state->settingsSection == SettingsSection::About);
 }
 
@@ -1736,6 +1953,13 @@ void DrawUtilityStatusLine(
     int right,
     HFONT textFont
 );
+void DrawUtilityStatusWrapped(
+    HDC dc,
+    const std::wstring& label,
+    const std::filesystem::path& path,
+    const RECT& rect,
+    HFONT textFont
+);
 void DrawRoundedPanel(HDC dc, const RECT& rect, Gdiplus::Color fill, Gdiplus::Color border, int radius);
 void DrawToolStatusPill(HDC dc, const RECT& rect, const std::wstring& text, bool ok, HFONT smallFont);
 
@@ -1750,7 +1974,7 @@ void DrawFfmpegDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawTextBlock(dc, state->title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
     if (state->type == DialogType::Whisper) {
-        RECT statusCard = {24, 78, client.right - 24, client.bottom - 86};
+        RECT statusCard = WhisperStatusCardRect(client);
         DrawRoundedPanel(dc, statusCard, Gdiplus::Color(255, 32, 32, 35), Gdiplus::Color(255, 48, 48, 54), 8);
         const ToolInstallStatus status = state->paths && state->config
             ? WhisperManager::Resolve(*state->paths, *state->config)
@@ -1759,12 +1983,62 @@ void DrawFfmpegDialog(DialogState* state, HDC dc, const RECT& client) {
         const bool modelReady = IsRegularFile(modelPath);
         DrawToolStatusPill(dc, {statusCard.left + 18, statusCard.top + 18, statusCard.left + 112, statusCard.top + 42}, status.installed ? L"Готов" : L"Нет", status.installed, smallFont);
         DrawToolStatusPill(dc, {statusCard.left + 122, statusCard.top + 18, statusCard.left + 232, statusCard.top + 42}, modelReady ? L"Модель" : L"Нет модели", modelReady, smallFont);
-        DrawUtilityStatusLine(dc, L"whisper-cli.exe:", status.executable, statusCard.left + 18, statusCard.top + 58, statusCard.right - 18, textFont);
-        DrawUtilityStatusLine(dc, L"Модель:", modelReady ? modelPath : std::filesystem::path{}, statusCard.left + 18, statusCard.top + 86, statusCard.right - 18, textFont);
+        if (state->config) {
+            const bool cudaAvailable = IsWhisperCudaCandidateAvailable();
+            DrawToolStatusPill(
+                dc,
+                {statusCard.left + 242, statusCard.top + 18, statusCard.left + 352, statusCard.top + 42},
+                WhisperStatusPillText(*state->config, status, cudaAvailable),
+                status.installed,
+                smallFont
+            );
+        }
+        const std::filesystem::path visibleModelPath = modelReady ? modelPath : std::filesystem::path{};
+        const int pathContentHeight = WhisperPathContentHeight(status.executable, visibleModelPath);
+        state->whisperStatusScrollY = std::clamp(state->whisperStatusScrollY, 0, WhisperStatusMaxScroll(state, client));
+        const RECT pathViewport = WhisperPathViewportRect(statusCard);
+        RECT textViewport = pathViewport;
+        if (pathContentHeight > static_cast<int>(pathViewport.bottom - pathViewport.top)) {
+            textViewport.right -= 24;
+        }
+        const int clipState = SaveDC(dc);
+        IntersectClipRect(dc, textViewport.left, textViewport.top, textViewport.right, textViewport.bottom);
+        int pathTop = textViewport.top - state->whisperStatusScrollY;
+        auto drawPathBlock = [&](const std::wstring& label, const std::filesystem::path& path) {
+            const std::wstring text = WrappedPathForStatus(path);
+            const int textHeight = std::max(24, WrappedLineCount(text) * 22);
+            DrawTextBlock(dc, label, {textViewport.left, pathTop, textViewport.right, pathTop + 22}, kMutedTextColor, textFont, DT_LEFT | DT_SINGLELINE);
+            DrawTextBlock(dc, text, {textViewport.left, pathTop + 22, textViewport.right, pathTop + 22 + textHeight}, kMutedTextColor, textFont, DT_LEFT | DT_WORDBREAK);
+            pathTop += 22 + textHeight + 12;
+        };
+        drawPathBlock(L"whisper-cli.exe:", status.executable);
+        drawPathBlock(L"Модель:", visibleModelPath);
+        RestoreDC(dc, clipState);
+        if (pathContentHeight > static_cast<int>(pathViewport.bottom - pathViewport.top)) {
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            const RECT thumb = WhisperScrollbarThumb(pathViewport, pathContentHeight, state->whisperStatusScrollY);
+            Gdiplus::SolidBrush trackBrush(Gdiplus::Color(255, 39, 39, 43));
+            Gdiplus::SolidBrush thumbBrush(Gdiplus::Color(255, 86, 86, 92));
+            graphics.FillRectangle(
+                &trackBrush,
+                static_cast<INT>(pathViewport.right - 14),
+                static_cast<INT>(pathViewport.top + 8),
+                6,
+                static_cast<INT>(pathViewport.bottom - pathViewport.top - 16)
+            );
+            graphics.FillRectangle(
+                &thumbBrush,
+                static_cast<INT>(thumb.left),
+                static_cast<INT>(thumb.top),
+                static_cast<INT>(thumb.right - thumb.left),
+                static_cast<INT>(thumb.bottom - thumb.top)
+            );
+        }
         DrawTextBlock(
             dc,
             L"Установите Whisper.cpp, затем выберите или скачайте модель распознавания.",
-            {statusCard.left + 18, statusCard.top + 116, statusCard.right - 18, statusCard.top + 142},
+            {statusCard.left + 18, statusCard.bottom - 34, statusCard.right - 18, statusCard.bottom - 10},
             kMutedTextColor,
             smallFont,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
@@ -1953,13 +2227,26 @@ void DrawSettingsCard(
     const std::wstring& subtitle,
     HFONT labelFont,
     HFONT textFont,
-    int rightReserve = 18
+    int rightReserve = 18,
+    bool wrapSubtitle = false
 ) {
     DrawRoundedPanel(dc, rect, Gdiplus::Color(255, 35, 35, 38), Gdiplus::Color(255, 48, 48, 52), 8);
     RECT titleRect = {rect.left + kSettingsCardPadding, rect.top + 14, rect.right - rightReserve, rect.top + 38};
     DrawTextBlock(dc, title, titleRect, kTextColor, labelFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    RECT subtitleRect = {rect.left + kSettingsCardPadding, rect.top + 40, rect.right - rightReserve, rect.top + 64};
-    DrawTextBlock(dc, subtitle, subtitleRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    RECT subtitleRect = {
+        rect.left + kSettingsCardPadding,
+        rect.top + 40,
+        rect.right - rightReserve,
+        wrapSubtitle ? rect.bottom - 12 : rect.top + 64
+    };
+    DrawTextBlock(
+        dc,
+        subtitle,
+        subtitleRect,
+        kMutedTextColor,
+        textFont,
+        wrapSubtitle ? DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS : DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+    );
 }
 
 void DrawToolStatusPill(HDC dc, const RECT& rect, const std::wstring& text, bool ok, HFONT smallFont) {
@@ -2014,6 +2301,38 @@ void DrawUtilityStatusLine(
         textFont,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
     );
+}
+
+std::wstring WrapPathText(std::wstring text, size_t maxLine = 76) {
+    size_t lineStart = 0;
+    size_t lastSeparator = std::wstring::npos;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == L'\\' || text[i] == L'/') {
+            lastSeparator = i;
+        }
+        if (i - lineStart < maxLine) {
+            continue;
+        }
+        const size_t breakAt = lastSeparator != std::wstring::npos && lastSeparator >= lineStart
+            ? lastSeparator + 1
+            : i;
+        text.insert(text.begin() + static_cast<std::ptrdiff_t>(breakAt), L'\n');
+        lineStart = breakAt + 1;
+        lastSeparator = std::wstring::npos;
+        ++i;
+    }
+    return text;
+}
+
+void DrawUtilityStatusWrapped(
+    HDC dc,
+    const std::wstring& label,
+    const std::filesystem::path& path,
+    const RECT& rect,
+    HFONT textFont
+) {
+    const std::wstring text = label + L" " + (path.empty() ? L"-" : WrapPathText(path.wstring()));
+    DrawTextBlock(dc, text, rect, kMutedTextColor, textFont, DT_LEFT | DT_WORDBREAK | DT_END_ELLIPSIS);
 }
 
 void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
@@ -2113,7 +2432,8 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
                 MissingToolsText(state, true),
                 labelFont,
                 textFont,
-                220
+                220,
+                true
             );
         }
     } else if (state->settingsSection == SettingsSection::Translation) {
@@ -2150,10 +2470,14 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
                 MissingToolsText(state, false),
                 labelFont,
                 textFont,
-                220
+                220,
+                true
             );
         }
     } else if (state->settingsSection == SettingsSection::Tools) {
+        const int clipState = SaveDC(dc);
+        IntersectClipRect(dc, content.left, content.top + kSettingsContentTop, content.right, content.bottom);
+
         const ToolInstallStatus ytDlpStatus = state->paths ? YtDlpManager(*state->paths).Status() : ToolInstallStatus{};
         RECT toolCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
         DrawSettingsCard(dc, toolCard, L"yt-dlp", ytDlpStatus.installed ? L"Основной загрузчик найден." : L"Основной загрузчик не найден.", labelFont, textFont, 280);
@@ -2188,14 +2512,26 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         DrawToolStatusPill(
             dc,
             {toolCard.left + 242, toolCard.top + 68, toolCard.left + 352, toolCard.top + 92},
-            WhisperBackendStatusText(state->workingConfig.whisperBackend, whisperStatus.whisperBackend, cudaAvailable),
+            WhisperStatusPillText(state->workingConfig, whisperStatus, cudaAvailable),
             state->workingConfig.whisperBackend != WhisperBackend::Cuda ||
                 (cudaAvailable && whisperStatus.whisperBackend == WhisperBackend::Cuda),
             smallFont
         );
         if (state->whisperDetailsExpanded) {
-            DrawUtilityStatusLine(dc, L"whisper-cli.exe:", whisperStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
-            DrawUtilityStatusLine(dc, L"Модель:", modelPath, toolCard.left + 18, toolCard.top + 120, toolCard.right - 18, textFont);
+            DrawUtilityStatusWrapped(
+                dc,
+                L"whisper-cli.exe:",
+                whisperStatus.executable,
+                {toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, toolCard.top + 150},
+                textFont
+            );
+            DrawUtilityStatusWrapped(
+                dc,
+                L"Модель:",
+                modelReady ? modelPath : std::filesystem::path{},
+                {toolCard.left + 18, toolCard.top + 154, toolCard.right - 18, toolCard.top + 206},
+                textFont
+            );
         }
 
         const VotExeStatus votStatus = state->paths
@@ -2208,6 +2544,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         if (state->votDetailsExpanded) {
             DrawUtilityStatusLine(dc, L"vot-helper.exe:", votStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
         }
+        RestoreDC(dc, clipState);
     } else {
         const RECT aboutCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
         DrawSettingsCard(dc, aboutCard, L"YouTube Downloader", L"Портативный Win32-загрузчик с yt-dlp, FFmpeg, Whisper.cpp и VOT.", labelFont, textFont);
@@ -2280,11 +2617,11 @@ void InvalidateProgressContent(HWND window) {
 
 void CreateWhisperControls(DialogState* state) {
     HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true, false);
-    HWND modelButton = CreateDarkButton(state->window, state->instance, L"Скачать модель", IdWhisperDownloadModel, false, false);
+    HWND modelButton = CreateDarkButton(state->window, state->instance, L"Выбрать модель", IdWhisperDownloadModel, false, false);
     HWND folderButton = CreateDarkButton(state->window, state->instance, L"Выбрать папку", IdChooseFolder, false, false);
     HWND skipButton = CreateDarkButton(state->window, state->instance, L"Закрыть", IdSkip, false, false);
-    AddDialogTooltip(state, installButton, L"Скачивает и настраивает whisper.cpp CPU.");
-    AddDialogTooltip(state, modelButton, L"Скачивает рекомендуемую модель Whisper.");
+    AddDialogTooltip(state, installButton, L"Скачивает и настраивает Whisper.cpp: GPU-версию при доступности, иначе CPU.");
+    AddDialogTooltip(state, modelButton, L"Открывает выбор модели Whisper: скачать выбранную или указать папку с готовой моделью.");
     AddDialogTooltip(state, folderButton, L"Выберите папку, где находится whisper-cli.exe.");
     AddDialogTooltip(state, skipButton, L"Закрывает окно без изменений.");
 }
@@ -2326,8 +2663,10 @@ void CreateWhisperModelControls(DialogState* state) {
         AddDialogTooltip(state, button, state->whisperModels[i].description.c_str());
     }
     HWND downloadButton = CreateDarkButton(state->window, state->instance, L"Скачать выбранную", IdWhisperModelDownloadSelected, true, false);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"Указать папку", IdWhisperModelChooseFolder, false, false);
     HWND cancelButton = CreateDarkButton(state->window, state->instance, L"Отмена", IdCancel, false, false);
     AddDialogTooltip(state, downloadButton, L"Скачивает выбранную модель Whisper.");
+    AddDialogTooltip(state, folderButton, L"Выберите папку с уже скачанными моделями Whisper.");
     AddDialogTooltip(state, cancelButton, L"Закрывает окно без скачивания.");
 }
 
@@ -2950,6 +3289,47 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         }
         return 0;
 
+    case WM_MOUSEWHEEL:
+        if (state && state->type == DialogType::Whisper) {
+            RECT client = {};
+            GetClientRect(window, &client);
+            const int maxScroll = WhisperStatusMaxScroll(state, client);
+            if (maxScroll > 0) {
+                const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                const int nextScroll = std::clamp(
+                    state->whisperStatusScrollY - ((delta / WHEEL_DELTA) * 44),
+                    0,
+                    maxScroll
+                );
+                if (nextScroll != state->whisperStatusScrollY) {
+                    state->whisperStatusScrollY = nextScroll;
+                    RECT dirty = PaddedRect(WhisperPathViewportRect(WhisperStatusCardRect(client)), 2);
+                    InvalidateRect(window, &dirty, FALSE);
+                }
+                return 0;
+            }
+        }
+        if (state && state->type == DialogType::Settings && state->settingsSection == SettingsSection::Tools) {
+            RECT client = {};
+            GetClientRect(window, &client);
+            const int maxScroll = SettingsMaxScroll(state, client.right, client.bottom);
+            if (maxScroll > 0) {
+                const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+                const int nextScroll = std::clamp(
+                    state->settingsScrollY - ((delta / WHEEL_DELTA) * 44),
+                    0,
+                    maxScroll
+                );
+                if (nextScroll != state->settingsScrollY) {
+                    state->settingsScrollY = nextScroll;
+                    LayoutDialog(state, client.right, client.bottom);
+                    InvalidateRect(window, nullptr, FALSE);
+                }
+                return 0;
+            }
+        }
+        break;
+
     case WM_COMMAND:
         if (state) {
             const int commandId = LOWORD(wParam);
@@ -2974,6 +3354,35 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                         }
                         DestroyWindow(window);
                     }
+                    return 0;
+                }
+                if (commandId == IdWhisperModelChooseFolder && state->config && !state->whisperModels.empty()) {
+                    const std::optional<std::filesystem::path> selectedFolder = PickFolder(window, L"Выберите папку с моделями Whisper");
+                    if (!selectedFolder) {
+                        return 0;
+                    }
+                    const int selectedIndex = std::clamp(
+                        state->selectedWhisperModelIndex,
+                        0,
+                        static_cast<int>(state->whisperModels.size()) - 1
+                    );
+                    const WhisperModelInfo selected = state->whisperModels[static_cast<size_t>(selectedIndex)];
+                    const std::optional<std::filesystem::path> modelPath =
+                        FindWhisperModelNear(*selectedFolder, {}, selected, state->whisperModels);
+                    if (!modelPath) {
+                        ShowErrorDialog(
+                            window,
+                            state->instance,
+                            L"Модель Whisper не найдена",
+                            L"В выбранной папке и её подпапке models не найдены известные модели Whisper."
+                        );
+                        return 0;
+                    }
+                    state->config->whisperModelPath = *modelPath;
+                    if (state->savedResult) {
+                        *state->savedResult = true;
+                    }
+                    DestroyWindow(window);
                     return 0;
                 }
             }
@@ -4528,7 +4937,7 @@ bool ShowWhisperDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, Ap
     state->message = WhisperDialogMessage(status, modelPath, modelReady);
     bool saved = false;
     state->savedResult = &saved;
-    ShowModal(state, 680, 360);
+    ShowModal(state, 680, 400);
     return saved;
 }
 

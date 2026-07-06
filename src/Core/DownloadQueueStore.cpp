@@ -9,6 +9,14 @@
 #include <stdexcept>
 #include <system_error>
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
 namespace {
 
 std::string PathToJsonString(const std::filesystem::path& path) {
@@ -181,6 +189,18 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     return task;
 }
 
+void ReplaceQueueStoreFile(const std::filesystem::path& tmpPath, const std::filesystem::path& storePath) {
+    if (MoveFileExW(
+            tmpPath.c_str(),
+            storePath.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return;
+    }
+
+    const std::error_code ec(static_cast<int>(GetLastError()), std::system_category());
+    throw std::runtime_error("failed to replace queue store file: " + ec.message());
+}
+
 } // namespace
 
 std::vector<DownloadTaskSnapshot> DownloadQueueStore::Load(const AppPaths& paths) {
@@ -236,13 +256,5 @@ void DownloadQueueStore::Save(const AppPaths& paths, const std::vector<DownloadT
         out << "\n";
     }
 
-    std::filesystem::rename(tmpPath, paths.downloadQueuePath(), ec);
-    if (ec) {
-        std::filesystem::remove(paths.downloadQueuePath(), ec);
-        ec.clear();
-        std::filesystem::rename(tmpPath, paths.downloadQueuePath(), ec);
-    }
-    if (ec) {
-        throw std::runtime_error("failed to replace queue store file");
-    }
+    ReplaceQueueStoreFile(tmpPath, paths.downloadQueuePath());
 }

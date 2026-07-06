@@ -607,17 +607,17 @@ std::vector<WhisperModelInfo> WhisperManager::ModelCatalog() {
     };
 
     return {
-        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"very fast / low quality / 75 MiB", L"Minimal model for weak PCs and quick drafts."),
-        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"fast / basic quality / 142 MiB", L"Small default-style model when speed matters most."),
-        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"balanced / better than base / 466 MiB", L"Good compromise for short videos."),
-        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"higher quality / slower / 1.5 GiB", L"Noticeably better than small, but slower."),
-        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"recommended / fast / high quality / 1.5 GiB", L"Practical default: close to large quality and faster.", true, false),
-        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"best quality / slower / 2.9 GiB", L"Best recognition quality, but the heaviest common model.", false, true),
-        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"smaller / faster / lower quality", L"Compressed small model for speed and disk savings."),
-        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"smaller / faster medium / lower quality", L"Compressed medium when small quality is not enough."),
-        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"compact / fast / good quality", L"Compressed turbo with modest quality loss."),
-        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"compact large / high quality / slower", L"Compressed large-v3 without the full 2.9 GiB."),
-        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"balanced compression / better than q5", L"Compressed turbo with less loss than q5.")
+        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"очень быстро / низкое качество / 75 МиБ", L"Минимальная модель для слабых ПК и быстрых черновиков."),
+        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"быстро / базовое качество / 142 МиБ", L"Небольшая модель, когда важнее всего скорость."),
+        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"баланс / лучше Base / 466 МиБ", L"Хороший компромисс для коротких видео."),
+        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"выше качество / медленнее / 1.5 ГиБ", L"Заметно лучше Small, но работает медленнее."),
+        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"рекомендуется / быстро / высокое качество / 1.5 ГиБ", L"Практичный вариант по умолчанию: близко к Large по качеству и быстрее.", true, false),
+        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"лучшее качество / медленнее / 2.9 ГиБ", L"Лучшее качество распознавания, но самая тяжелая обычная модель.", false, true),
+        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"меньше / быстрее / ниже качество", L"Сжатая Small для скорости и экономии места."),
+        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"меньше / быстрый Medium / ниже качество", L"Сжатая Medium, когда качества Small недостаточно."),
+        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"компактно / быстро / хорошее качество", L"Сжатая Turbo с умеренной потерей качества."),
+        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"компактная Large / высокое качество / медленнее", L"Сжатая Large v3 без полного размера 2.9 ГиБ."),
+        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"сбалансированное сжатие / лучше q5", L"Сжатая Turbo с меньшей потерей качества, чем q5.")
     };
 }
 
