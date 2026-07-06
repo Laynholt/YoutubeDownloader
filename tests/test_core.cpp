@@ -151,31 +151,6 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
 }
 
-void TestConfigDropsLegacyFfmpegPromptFlag() {
-    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_LegacyFfmpegPromptFlag");
-    const AppPaths paths(root);
-
-    fs::create_directories(paths.configPath().parent_path());
-    {
-        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"ffmpeg_prompt_dismissed":true,"quality":"720p"})json";
-    }
-
-    const AppConfig loaded = ConfigStore::Load(paths);
-    Require(loaded.quality == L"720p", "quality should load alongside the legacy ffmpeg prompt flag");
-
-    ConfigStore::Save(paths, loaded);
-    std::ifstream savedConfig(paths.configPath(), std::ios::binary);
-    const std::string savedText{
-        std::istreambuf_iterator<char>(savedConfig),
-        std::istreambuf_iterator<char>()
-    };
-    Require(
-        savedText.find("ffmpeg_prompt_dismissed") == std::string::npos,
-        "saved config should drop the legacy ffmpeg prompt flag"
-    );
-}
-
 void TestConfigNormalizesPostProcessingLanguageOptions() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_PostProcessingLanguages");
     const AppPaths paths(root);
@@ -191,14 +166,6 @@ void TestConfigNormalizesPostProcessingLanguageOptions() {
     Require(loaded.votSubtitleLanguage == L"ru", "unknown VOT subtitle language should normalize to ru");
     Require(loaded.voiceOverLanguage == L"ru", "unknown voice-over language should normalize to ru");
     Require(loaded.voiceOverOriginalVolumePercent == 100, "voice-over original volume should clamp high values");
-
-    {
-        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"voice_over_language":"DE"})json";
-    }
-    loaded = ConfigStore::Load(paths);
-    Require(loaded.votSubtitleLanguage == L"ru", "legacy unsupported VOT subtitle language should normalize to ru");
-    Require(loaded.voiceOverLanguage == L"ru", "legacy unsupported voice-over language should normalize to ru");
 
     loaded.whisperLanguage = L"FR";
     loaded.votSubtitleLanguage = L"EN";
@@ -1397,15 +1364,19 @@ void TestGitHubReleaseParsing() {
   "tag_name": "v1.0.4",
   "html_url": "https://github.com/Laynholt/YoutubeDownloader/releases/tag/v1.0.4",
   "assets": [
+    {"name": "SHA256SUMS.txt", "browser_download_url": "https://example.invalid/SHA256SUMS.txt"},
     {"name": "YoutubeDownloader.exe", "browser_download_url": "https://example.invalid/YoutubeDownloader.exe"}
   ]
 }
 )json";
 
-    const ReleaseAssetInfo app = ParseGitHubReleaseAsset(appRelease, "YoutubeDownloader.exe");
+    const ReleaseAssetInfo app = ParseGitHubReleaseAsset(appRelease, AppUpdateService::ExeAssetName());
     Require(app.found, "app update asset not found");
     Require(app.version == L"1.0.4", "app release version should be normalized");
     Require(app.downloadUrl == L"https://example.invalid/YoutubeDownloader.exe", "app asset url mismatch");
+    const ReleaseAssetInfo appSums = ParseGitHubReleaseAsset(appRelease, AppUpdateService::Sha256SumsAssetName());
+    Require(appSums.found, "app update checksum asset not found");
+    Require(appSums.downloadUrl == L"https://example.invalid/SHA256SUMS.txt", "app checksum asset url mismatch");
 
     const ReleaseAssetInfo missing = ParseGitHubReleaseAsset(appRelease, "missing.exe");
     Require(!missing.found, "missing asset should not be found");
@@ -1457,6 +1428,45 @@ void TestAppUpdatePromptMessage() {
     Require(message.find(L"Доступна новая версия: 9.8.7") != std::wstring::npos, "new version missing from update prompt");
     Require(message.find(L"Текущая версия: " YTD_APP_VERSION_WIDE) != std::wstring::npos, "current version missing from update prompt");
     Require(message.find(L"закрыто и запущено заново") != std::wstring::npos, "restart warning missing from update prompt");
+}
+
+void TestAppUpdateLocalSha256SumsCreation() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_AppSha256Sums");
+    const AppPaths paths(root);
+    const fs::path sumsPath = paths.stuffDir() / L"SHA256SUMS.txt";
+
+    AppUpdateService::EnsureLocalSha256Sums(paths);
+
+    std::ifstream in(sumsPath, std::ios::binary);
+    const std::string text{
+        std::istreambuf_iterator<char>(in),
+        std::istreambuf_iterator<char>()
+    };
+    Require(text.size() >= 86, "local app checksum file should include hash and filename");
+    for (size_t index = 0; index < 64; ++index) {
+        const char ch = text[index];
+        Require(
+            (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'),
+            "local app checksum should be lowercase hex"
+        );
+    }
+    Require(
+        text.find("  YoutubeDownloader.exe\n") == 64,
+        "local app checksum should use release asset filename"
+    );
+
+    {
+        std::ofstream out(sumsPath, std::ios::binary | std::ios::trunc);
+        out << "sentinel\n";
+    }
+    AppUpdateService::EnsureLocalSha256Sums(paths);
+
+    std::ifstream preserved(sumsPath, std::ios::binary);
+    const std::string preservedText{
+        std::istreambuf_iterator<char>(preserved),
+        std::istreambuf_iterator<char>()
+    };
+    Require(preservedText == "sentinel\n", "existing local checksum file should not be overwritten");
 }
 
 void TestFfmpegResolutionPrecedence() {
@@ -3451,7 +3461,6 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreRoundTripSnapshots();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
-    TestConfigDropsLegacyFfmpegPromptFlag();
     TestConfigNormalizesPostProcessingLanguageOptions();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
@@ -3493,6 +3502,7 @@ int main(int argc, char** argv) {
     TestYtDlpExecutableVersionValidation();
     TestAppUpdateDecision();
     TestAppUpdatePromptMessage();
+    TestAppUpdateLocalSha256SumsCreation();
     TestFfmpegResolutionPrecedence();
     TestFfmpegUserPathAndExtractedTreeResolution();
     TestWhisperModelCatalogAndPaths();

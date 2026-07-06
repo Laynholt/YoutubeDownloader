@@ -150,7 +150,11 @@ private:
 
 class AppUpdateService {
 public:
+    static const char* ExeAssetName();
+    static const char* Sha256SumsAssetName();
     static ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
+    static ReleaseAssetInfo CheckLatestSha256Sums(HANDLE cancelEvent = nullptr);
+    static void EnsureLocalSha256Sums(const AppPaths& paths);
     static std::filesystem::path DownloadUpdateExe(
         const AppPaths& paths,
         const ReleaseAssetInfo& release,

@@ -2,6 +2,12 @@
 
 #include "BackendText.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <windows.h>
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -24,6 +30,18 @@ std::filesystem::path PathFromJsonString(const nlohmann::json& json, const char*
         return fallback;
     }
     return PathFromUtf8(it->get<std::string>());
+}
+
+void ReplaceConfigFile(const std::filesystem::path& tmpPath, const std::filesystem::path& configPath) {
+    if (MoveFileExW(
+            tmpPath.c_str(),
+            configPath.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return;
+    }
+
+    const std::error_code ec(static_cast<int>(GetLastError()), std::system_category());
+    throw std::runtime_error("failed to replace config file: " + ec.message());
 }
 
 std::wstring WStringFromJson(const nlohmann::json& json, const char* key, const std::wstring& fallback = L"") {
@@ -272,14 +290,14 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
         config.whisperPath = PathFromJsonString(json, "whisper_path", config.whisperPath);
         config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
-        config.votExePath = PathFromJsonString(json, "vot_exe_path", PathFromJsonString(json, "vot_cli_path", config.votExePath));
+        config.votExePath = PathFromJsonString(json, "vot_exe_path", config.votExePath);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
         config.transcriptionEngine = TranscriptionEngineFromJson(json, "transcription_engine", config.transcriptionEngine);
         config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
         config.whisperLanguage = NormalizeWhisperLanguage(WStringFromJson(json, "whisper_language", config.whisperLanguage));
         config.votSubtitleLanguage = NormalizeVotLanguage(
-            WStringFromJson(json, "vot_subtitle_language", WStringFromJson(json, "voice_over_language", config.votSubtitleLanguage)),
+            WStringFromJson(json, "vot_subtitle_language", config.votSubtitleLanguage),
             L"ru"
         );
         config.voiceOverLanguage = NormalizeVoiceOverLanguage(WStringFromJson(json, "voice_over_language", config.voiceOverLanguage));
@@ -341,13 +359,5 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
         out << "\n";
     }
 
-    std::filesystem::rename(tmpPath, paths.configPath(), ec);
-    if (ec) {
-        std::filesystem::remove(paths.configPath(), ec);
-        ec.clear();
-        std::filesystem::rename(tmpPath, paths.configPath(), ec);
-    }
-    if (ec) {
-        throw std::runtime_error("failed to replace config file");
-    }
+    ReplaceConfigFile(tmpPath, paths.configPath());
 }

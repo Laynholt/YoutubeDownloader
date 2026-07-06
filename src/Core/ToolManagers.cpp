@@ -1257,12 +1257,39 @@ ToolInstallStatus YtDlpManager::InstallOrUpdate(const ReleaseAssetInfo& release,
     return Status();
 }
 
+const char* AppUpdateService::ExeAssetName() {
+    return "YoutubeDownloader.exe";
+}
+
+const char* AppUpdateService::Sha256SumsAssetName() {
+    return "SHA256SUMS.txt";
+}
+
 ReleaseAssetInfo AppUpdateService::CheckLatestRelease(HANDLE cancelEvent) {
     const std::string json = WinHttpClient::GetString(
         L"https://api.github.com/repos/Laynholt/YoutubeDownloader/releases/latest",
         cancelEvent
     );
-    return ParseGitHubReleaseAsset(json, "YoutubeDownloader.exe");
+    return ParseGitHubReleaseAsset(json, ExeAssetName());
+}
+
+ReleaseAssetInfo AppUpdateService::CheckLatestSha256Sums(HANDLE cancelEvent) {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/Laynholt/YoutubeDownloader/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, Sha256SumsAssetName());
+}
+
+void AppUpdateService::EnsureLocalSha256Sums(const AppPaths& paths) {
+    const std::filesystem::path target = paths.stuffDir() / AsciiToWide(Sha256SumsAssetName());
+    std::error_code ec;
+    if (std::filesystem::exists(target, ec)) {
+        return;
+    }
+
+    const std::wstring sha256 = FileSha256Hex(CurrentExecutablePath());
+    WriteTextFile(target, sha256 + L"  " + AsciiToWide(ExeAssetName()) + L"\n");
 }
 
 std::filesystem::path AppUpdateService::DownloadUpdateExe(
@@ -1279,6 +1306,25 @@ std::filesystem::path AppUpdateService::DownloadUpdateExe(
     std::error_code ec;
     std::filesystem::remove(target, ec);
     WinHttpClient::DownloadFile(release.downloadUrl, target, onProgress, cancelEvent);
+
+    const ReleaseAssetInfo sumsAsset = CheckLatestSha256Sums(cancelEvent);
+    if (!sumsAsset.found || sumsAsset.downloadUrl.empty()) {
+        std::filesystem::remove(target, ec);
+        throw std::runtime_error("app update checksum asset was not found");
+    }
+
+    const std::string sumsText = WinHttpClient::GetString(sumsAsset.downloadUrl, cancelEvent);
+    const std::wstring expectedSha256 = VotExeManager::Sha256ForFile(sumsText, ExeAssetName());
+    if (expectedSha256.empty()) {
+        std::filesystem::remove(target, ec);
+        throw std::runtime_error("app update checksum was not found");
+    }
+
+    const std::wstring actualSha256 = FileSha256Hex(target);
+    if (actualSha256 != expectedSha256) {
+        std::filesystem::remove(target, ec);
+        throw std::runtime_error("app update checksum validation failed");
+    }
     return target;
 }
 

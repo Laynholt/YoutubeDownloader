@@ -2452,6 +2452,16 @@ void Application::InitializeBackend() {
 
     m_logger = std::make_unique<Logger>(*m_paths);
     m_logger->Info(L"Application started: root=" + m_paths->root().wstring());
+    try {
+        AppUpdateService::EnsureLocalSha256Sums(*m_paths);
+    } catch (const std::exception& ex) {
+        m_logger->Error(
+            L"Local SHA256SUMS creation failed: " +
+            std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+        );
+    } catch (...) {
+        m_logger->Error(L"Local SHA256SUMS creation failed: unknown error");
+    }
     m_config = ConfigStore::Load(*m_paths);
     if (m_folderEdit && !m_config.downloadDir.empty()) {
         SetWindowTextW(m_folderEdit, m_config.downloadDir.wstring().c_str());
