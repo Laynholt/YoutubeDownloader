@@ -86,6 +86,44 @@ std::wstring TranscriptionEngineSuffix(TranscriptionEngine engine) {
     return engine == TranscriptionEngine::Vot ? L"vot" : L"whisper";
 }
 
+std::wstring SubtitleLanguageTitle(const std::wstring& language) {
+    const std::wstring lang = SafeLanguageForArgument(language, L"auto");
+    if (lang == L"ru" || lang == L"rus") {
+        return L"Russian";
+    }
+    if (lang == L"en" || lang == L"eng") {
+        return L"English";
+    }
+    if (lang == L"de" || lang == L"ger" || lang == L"deu") {
+        return L"German";
+    }
+    if (lang == L"auto") {
+        return L"Auto";
+    }
+    return lang;
+}
+
+std::wstring SubtitleLanguageCode(const std::wstring& language) {
+    const std::wstring lang = SafeLanguageForArgument(language, L"und");
+    if (lang == L"ru" || lang == L"rus") {
+        return L"rus";
+    }
+    if (lang == L"en" || lang == L"eng") {
+        return L"eng";
+    }
+    if (lang == L"de" || lang == L"ger" || lang == L"deu") {
+        return L"deu";
+    }
+    if (lang == L"auto") {
+        return L"und";
+    }
+    return lang;
+}
+
+std::wstring SubtitleTrackTitle(TranscriptionEngine engine, const std::wstring& language) {
+    return (engine == TranscriptionEngine::Vot ? L"VOT " : L"Whisper ") + SubtitleLanguageTitle(language);
+}
+
 std::wstring SuggestedVotSubtitleSourceLanguage(
     const ProcessRunResult& result,
     const std::wstring& targetLanguage
@@ -332,7 +370,9 @@ std::vector<std::wstring> BuildVotHelperSubtitlesArguments(
 std::vector<std::wstring> BuildSubtitleTrackArguments(
     const std::filesystem::path& mediaPath,
     const std::filesystem::path& srtPath,
-    const std::filesystem::path& outputVideoPath
+    const std::filesystem::path& outputVideoPath,
+    TranscriptionEngine engine,
+    const std::wstring& language
 ) {
     return {
         L"-y",
@@ -350,6 +390,10 @@ std::vector<std::wstring> BuildSubtitleTrackArguments(
         L"copy",
         L"-c:s",
         SubtitleCodecForOutput(outputVideoPath),
+        L"-metadata:s:s:0",
+        L"title=" + SubtitleTrackTitle(engine, language),
+        L"-metadata:s:s:0",
+        L"language=" + SubtitleLanguageCode(language),
         outputVideoPath.wstring()
     };
 }
@@ -642,7 +686,13 @@ TranscriptionResult TranscriptionClient::Transcribe(
         embedFfmpeg.executable = request.ffmpegExePath;
         embedFfmpeg.arguments = request.subtitleMode == SubtitleFfmpegMode::BurnIn
             ? BuildSubtitleBurnInArguments(request.mediaPath, paths.finalSrtPath, paths.tempVideoPath)
-            : BuildSubtitleTrackArguments(request.mediaPath, paths.finalSrtPath, paths.tempVideoPath);
+            : BuildSubtitleTrackArguments(
+                request.mediaPath,
+                paths.finalSrtPath,
+                paths.tempVideoPath,
+                request.engine,
+                outputLanguage
+            );
         embedFfmpeg.timeoutMs = INFINITE;
         embedFfmpeg.cancelEvent = cancelEvent;
 

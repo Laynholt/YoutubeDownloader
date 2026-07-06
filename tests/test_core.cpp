@@ -1874,6 +1874,20 @@ void TestSubtitleFfmpegArguments() {
     Require(ContainsArg(trackArgs, L"-c:s"), "subtitle track codec argument missing");
     Require(trackArgs.back() == tempVideo.wstring(), "subtitle track output should be temporary video");
 
+    const std::vector<std::wstring> namedTrackArgs = BuildSubtitleTrackArguments(
+        media,
+        srt,
+        tempVideo,
+        TranscriptionEngine::Vot,
+        L"ru"
+    );
+    Require(ContainsArg(namedTrackArgs, L"-metadata:s:s:0"), "subtitle track title metadata argument missing");
+    Require(
+        namedTrackArgs.at(ArgIndex(namedTrackArgs, L"-metadata:s:s:0") + 1) == L"title=VOT Russian",
+        "subtitle track title metadata mismatch"
+    );
+    Require(ContainsArg(namedTrackArgs, L"language=rus"), "subtitle track language metadata mismatch");
+
     const std::vector<std::wstring> burnArgs = BuildSubtitleBurnInArguments(media, srt, tempVideo);
     Require(ContainsArg(burnArgs, L"-vf"), "subtitle burn-in video filter argument missing");
     Require(

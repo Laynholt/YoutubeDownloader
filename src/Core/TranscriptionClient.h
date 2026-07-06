@@ -81,7 +81,9 @@ std::vector<std::wstring> BuildVotHelperSubtitlesArguments(
 std::vector<std::wstring> BuildSubtitleTrackArguments(
     const std::filesystem::path& mediaPath,
     const std::filesystem::path& srtPath,
-    const std::filesystem::path& outputVideoPath
+    const std::filesystem::path& outputVideoPath,
+    TranscriptionEngine engine = TranscriptionEngine::Whisper,
+    const std::wstring& language = L"auto"
 );
 std::vector<std::wstring> BuildSubtitleBurnInArguments(
     const std::filesystem::path& mediaPath,
