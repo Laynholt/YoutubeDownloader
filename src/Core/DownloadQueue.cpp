@@ -23,6 +23,17 @@ void AddUniquePath(std::vector<std::filesystem::path>& paths, const std::filesys
     }
 }
 
+void AddPreferredPath(std::vector<std::filesystem::path>& paths, const std::filesystem::path& path) {
+    if (path.empty()) {
+        return;
+    }
+    const auto it = std::ranges::find(paths, path);
+    if (it != paths.end()) {
+        paths.erase(it);
+    }
+    paths.insert(paths.begin(), path);
+}
+
 std::uint64_t FileSizeIfExists(const std::filesystem::path& path) {
     std::error_code ec;
     if (path.empty() || !std::filesystem::is_regular_file(path, ec)) {
@@ -699,8 +710,8 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
         it->second.snapshot.state = DownloadTaskState::Completed;
         it->second.snapshot.percent = 100.0;
         it->second.snapshot.statusText = L"Готово";
-        for (const std::filesystem::path& path : result.outputFiles) {
-            AddUniquePath(it->second.snapshot.outputFiles, path);
+        for (auto path = result.outputFiles.rbegin(); path != result.outputFiles.rend(); ++path) {
+            AddPreferredPath(it->second.snapshot.outputFiles, *path);
         }
         if (m_logger) {
             m_logger->Info(L"Download task completed: id=" + std::to_wstring(id));
@@ -727,6 +738,10 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     std::stop_token stopToken,
     const DownloadTaskCallbacks& callbacks
 ) {
+    const std::vector<OutputDirectoryFile> beforeDownload = SnapshotOutputDirectory(task.request.outputDirectory);
+    std::vector<std::filesystem::path> reportedOutputFiles;
+    std::mutex reportedOutputMutex;
+
     ProcessRunOptions options;
     options.executable = task.request.ytDlpExePath.empty() ? std::filesystem::path(L"yt-dlp.exe") : task.request.ytDlpExePath;
     options.arguments = BuildDownloadArguments(task.request);
@@ -736,7 +751,12 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
         throw std::runtime_error("failed to create download cancellation event");
     }
     options.cancelEvent = cancelEvent;
-    options.onStdoutLine = [callbacks](const std::wstring& line) {
+    auto handleOutputLine = [&](const std::wstring& line) {
+        const std::filesystem::path outputPath = ExtractYtDlpOutputPath(line);
+        if (!outputPath.empty()) {
+            std::lock_guard lock(reportedOutputMutex);
+            AddUniquePath(reportedOutputFiles, outputPath);
+        }
         if (callbacks.onOutputLine) {
             callbacks.onOutputLine(line);
         }
@@ -745,7 +765,8 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
             callbacks.onProgressDetails(progress);
         }
     };
-    options.onStderrLine = callbacks.onOutputLine;
+    options.onStdoutLine = handleOutputLine;
+    options.onStderrLine = handleOutputLine;
 
     ProcessRunResult result;
     try {
@@ -764,5 +785,15 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     if (result.exitCode != 0) {
         return {false, result.stderrText.empty() ? result.stdoutText : result.stderrText, {}};
     }
-    return {true, L"", {}};
+    std::vector<std::filesystem::path> reportedOutputSnapshot;
+    {
+        std::lock_guard lock(reportedOutputMutex);
+        reportedOutputSnapshot = reportedOutputFiles;
+    }
+    const std::filesystem::path mediaFile = FindDownloadedMediaFile(
+        reportedOutputSnapshot,
+        task.request.outputDirectory,
+        beforeDownload
+    );
+    return {true, L"", mediaFile.empty() ? std::vector<std::filesystem::path>{} : std::vector<std::filesystem::path>{mediaFile}};
 }

@@ -115,6 +115,30 @@ void UiRenderer::DrawProgressBar(HDC dc, const RECT& rect, double percent) {
     graphics.FillPath(&fillBrush, &fillPath);
 }
 
+void UiRenderer::DrawIndeterminateProgressBar(HDC dc, const RECT& rect, double phase) {
+    Graphics graphics(dc);
+    graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+
+    GraphicsPath trackPath;
+    AddRoundedRect(trackPath, rect, 4);
+    SolidBrush trackBrush(Color(255, 26, 26, 29));
+    graphics.FillPath(&trackBrush, &trackPath);
+
+    const int width = std::max(1, static_cast<int>(rect.right - rect.left));
+    const int blockWidth = std::max(18, width / 3);
+    const int travel = std::max(0, width - blockWidth);
+    phase = std::clamp(phase, 0.0, 1.0);
+
+    RECT blockRect = rect;
+    blockRect.left = rect.left + static_cast<LONG>(travel * phase);
+    blockRect.right = blockRect.left + blockWidth;
+
+    GraphicsPath blockPath;
+    AddRoundedRect(blockPath, blockRect, 4);
+    SolidBrush blockBrush(kAccent);
+    graphics.FillPath(&blockBrush, &blockPath);
+}
+
 void UiRenderer::DrawButton(
     HDC dc,
     const RECT& rect,

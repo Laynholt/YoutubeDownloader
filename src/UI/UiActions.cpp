@@ -1,7 +1,9 @@
 #include "UiActions.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <cwctype>
 #include <system_error>
 
 namespace {
@@ -14,6 +16,46 @@ int EditMenuItemHeight(const EditContextMenuItem& item) {
     return item.separator ? kEditMenuSeparatorHeight : kEditMenuItemHeight;
 }
 
+std::wstring LowerCopy(std::wstring value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return value;
+}
+
+bool IsAudioOnlyMedia(const std::wstring& mediaKind, const std::filesystem::path& mediaPath, const std::wstring& quality) {
+    if (quality == L"audio") {
+        return true;
+    }
+    const std::wstring extension = LowerCopy(mediaPath.extension().wstring());
+    static constexpr std::array<std::wstring_view, 8> kVideoExtensions = {
+        L".mp4",
+        L".mkv",
+        L".webm",
+        L".mov",
+        L".avi",
+        L".m4v",
+        L".mpg",
+        L".mpeg"
+    };
+    if (std::ranges::find(kVideoExtensions, extension) != kVideoExtensions.end()) {
+        return false;
+    }
+    static constexpr std::array<std::wstring_view, 10> kAudioExtensions = {
+        L".mp3",
+        L".m4a",
+        L".opus",
+        L".ogg",
+        L".wav",
+        L".flac",
+        L".aac",
+        L".wma",
+        L".weba",
+        L".mp2"
+    };
+    return std::ranges::find(kAudioExtensions, extension) != kAudioExtensions.end() || mediaKind == L"audio";
+}
+
 } // namespace
 
 DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoading) {
@@ -24,6 +66,25 @@ DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoadin
         return DownloadAttemptAction::ShowPreviewLoading;
     }
     return DownloadAttemptAction::Enqueue;
+}
+
+bool ShouldStartPreviewFetchForText(const std::wstring& text) {
+    if (text.size() < 8) {
+        return false;
+    }
+    return text.find_first_of(L"\r\n") == std::wstring::npos;
+}
+
+double PingPongProgressPhase(std::uint64_t elapsedMs, std::uint64_t periodMs) {
+    if (periodMs == 0) {
+        return 0.0;
+    }
+    const std::uint64_t position = elapsedMs % periodMs;
+    const double half = static_cast<double>(periodMs) / 2.0;
+    if (static_cast<double>(position) <= half) {
+        return static_cast<double>(position) / half;
+    }
+    return (static_cast<double>(periodMs - position) / half);
 }
 
 std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input) {
@@ -296,6 +357,24 @@ std::vector<std::filesystem::path> BuildVoiceOverAffectedFiles(
         affected.push_back(paths.finalVideoPath);
     }
     return affected;
+}
+
+SubtitleFfmpegMode EffectiveSubtitleFfmpegModeForMedia(
+    SubtitleFfmpegMode mode,
+    const std::wstring& mediaKind,
+    const std::filesystem::path& mediaPath,
+    const std::wstring& quality
+) {
+    return IsAudioOnlyMedia(mediaKind, mediaPath, quality) ? SubtitleFfmpegMode::Off : mode;
+}
+
+VoiceOverFfmpegMode EffectiveVoiceOverFfmpegModeForMedia(
+    VoiceOverFfmpegMode mode,
+    const std::wstring& mediaKind,
+    const std::filesystem::path& mediaPath,
+    const std::wstring& quality
+) {
+    return IsAudioOnlyMedia(mediaKind, mediaPath, quality) ? VoiceOverFfmpegMode::Off : mode;
 }
 
 std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(

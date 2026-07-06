@@ -930,8 +930,12 @@ void SetDarkButtonState(HWND parent, int id, bool primary, const std::wstring& t
     if (!state) {
         return;
     }
+    const bool textChanged = !text.empty() && state->text != text;
+    if (state->primary == primary && !textChanged) {
+        return;
+    }
     state->primary = primary;
-    if (!text.empty()) {
+    if (textChanged) {
         state->text = text;
     }
     InvalidateRect(button, nullptr, TRUE);
@@ -2133,6 +2137,13 @@ void CreateFfmpegControls(DialogState* state) {
     }
 }
 
+void InvalidateProgressContent(HWND window) {
+    RECT client = {};
+    GetClientRect(window, &client);
+    RECT progressContent = {20, 68, client.right - 20, 154};
+    InvalidateRect(window, &progressContent, FALSE);
+}
+
 void CreateWhisperControls(DialogState* state) {
     HWND installButton = CreateDarkButton(state->window, state->instance, L"Установить", IdInstall, true, false);
     HWND modelButton = CreateDarkButton(state->window, state->instance, L"Скачать модель", IdWhisperDownloadModel, false, false);
@@ -3086,6 +3097,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 }
                 if (state->type == DialogType::Whisper && state->paths && state->config) {
                     if (ShowWhisperInstallProgress(window, state->instance, *state->paths, *state->config)) {
+                        if (!IsRegularFile(ResolveDialogWhisperModelPath(state))) {
+                            ShowWhisperModelDialog(window, state->instance, *state->paths, *state->config);
+                        }
                         if (state->savedResult) {
                             *state->savedResult = true;
                         }
@@ -3169,7 +3183,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                         SetEvent(state->cancelEvent);
                     }
                     state->message = L"Отмена...";
-                    InvalidateRect(window, nullptr, FALSE);
+                    InvalidateProgressContent(window);
                     return 0;
                 }
                 DestroyWindow(window);
@@ -3211,7 +3225,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             state->message = update->status;
             state->progressDownloaded = update->downloaded;
             state->progressTotal = update->total;
-            InvalidateRect(window, nullptr, FALSE);
+            InvalidateProgressContent(window);
         }
         return 0;
 
@@ -3231,7 +3245,10 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 } else if (state->progressMode == ProgressMode::AppUpdate) {
                     state->message = L"Обновление скачано. Приложение будет закрыто и запущено заново.";
                 } else if (state->progressMode == ProgressMode::WhisperInstall) {
-                    state->message = L"Whisper.cpp установлен.";
+                    const bool modelReady = IsRegularFile(ResolveDialogWhisperModelPath(state));
+                    state->message = modelReady
+                        ? L"Whisper.cpp установлен."
+                        : L"Whisper.cpp установлен. Теперь скачайте модель; далее откроется окно моделей.";
                 } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
                     state->message = L"Модель Whisper скачана.";
                 } else if (state->progressMode == ProgressMode::VotInstall) {
@@ -3265,8 +3282,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                                     ? L"Не удалось установить Whisper.cpp."
                                     : L"Не удалось установить FFmpeg."))));
             }
-            SetDarkButtonState(window, IdCancel, state->progressSuccess, L"OK");
-            InvalidateRect(window, nullptr, FALSE);
+            const std::wstring doneButtonText =
+                state->progressSuccess &&
+                state->progressMode == ProgressMode::WhisperInstall &&
+                !IsRegularFile(ResolveDialogWhisperModelPath(state))
+                    ? L"Модели"
+                    : L"OK";
+            SetDarkButtonState(window, IdCancel, state->progressSuccess, doneButtonText);
+            InvalidateProgressContent(window);
         }
         return 0;
 
@@ -3276,7 +3299,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 SetEvent(state->cancelEvent);
             }
             state->message = L"Отмена...";
-            InvalidateRect(window, nullptr, FALSE);
+            InvalidateProgressContent(window);
             return 0;
         }
         DestroyWindow(window);

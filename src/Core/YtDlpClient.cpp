@@ -37,13 +37,27 @@ std::optional<int> HeightFromQuality(const std::wstring& quality) {
     return value;
 }
 
-std::wstring BuildFormatString(const std::wstring& quality, bool ffmpegAvailable) {
+std::wstring HeightSelector(const std::optional<int>& height) {
+    if (!height.has_value()) {
+        return L"";
+    }
+    return L"[height<=" + std::to_wstring(*height) + L"]";
+}
+
+std::wstring BuildFormatString(const std::wstring& quality, bool ffmpegAvailable, const std::wstring& container) {
     if (quality == L"audio") {
         return L"bestaudio/best";
     }
 
     const std::optional<int> height = HeightFromQuality(quality);
     if (ffmpegAvailable) {
+        const std::wstring heightSelector = HeightSelector(height);
+        if (container == L"webm") {
+            return L"bestvideo" + heightSelector + L"[ext=webm]+bestaudio[ext=webm]/best" + heightSelector + L"[ext=webm]";
+        }
+        if (container == L"mp4") {
+            return L"bestvideo" + heightSelector + L"[ext=mp4]+bestaudio[ext=m4a]/best" + heightSelector + L"[ext=mp4]";
+        }
         if (!height.has_value()) {
             return L"bestvideo+bestaudio/best";
         }
@@ -213,6 +227,84 @@ const OutputDirectoryFile* FindSnapshotEntry(
     return it == snapshot.end() ? nullptr : &(*it);
 }
 
+std::wstring ExtractQueryValue(const std::wstring& url, std::wstring_view key) {
+    const std::wstring needle = std::wstring(key) + L"=";
+    size_t pos = url.find(needle);
+    if (pos == std::wstring::npos) {
+        return {};
+    }
+    pos += needle.size();
+    const size_t end = url.find_first_of(L"&#?", pos);
+    return url.substr(pos, end == std::wstring::npos ? std::wstring::npos : end - pos);
+}
+
+std::wstring ExtractVideoIdFromUrl(const std::wstring& url) {
+    std::wstring id = ExtractQueryValue(url, L"v");
+    if (!id.empty()) {
+        return id;
+    }
+
+    const std::array<std::wstring_view, 3> markers = {
+        L"youtu.be/",
+        L"/shorts/",
+        L"/embed/"
+    };
+    for (std::wstring_view marker : markers) {
+        const size_t markerPos = url.find(marker);
+        if (markerPos == std::wstring::npos) {
+            continue;
+        }
+        const size_t idStart = markerPos + marker.size();
+        const size_t idEnd = url.find_first_of(L"/?&#", idStart);
+        id = url.substr(idStart, idEnd == std::wstring::npos ? std::wstring::npos : idEnd - idStart);
+        if (!id.empty()) {
+            return id;
+        }
+    }
+    return {};
+}
+
+std::filesystem::path FindMediaFileByVideoId(
+    const std::filesystem::path& outputDirectory,
+    const std::wstring& videoId
+) {
+    if (outputDirectory.empty() || videoId.empty()) {
+        return {};
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::is_directory(outputDirectory, ec)) {
+        return {};
+    }
+
+    std::filesystem::path bestPath;
+    std::filesystem::file_time_type bestWriteTime = {};
+    const std::wstring bracketedId = L"[" + videoId + L"]";
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(outputDirectory, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || !IsLikelyMediaFile(entry.path())) {
+            ec.clear();
+            continue;
+        }
+        const std::wstring fileName = entry.path().filename().wstring();
+        if (fileName.find(bracketedId) == std::wstring::npos && fileName.find(videoId) == std::wstring::npos) {
+            continue;
+        }
+        const std::filesystem::file_time_type lastWriteTime = entry.last_write_time(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (bestPath.empty() || lastWriteTime > bestWriteTime) {
+            bestPath = entry.path();
+            bestWriteTime = lastWriteTime;
+        }
+    }
+    return bestPath;
+}
+
 bool LooksGdiFriendlyImageUrl(const std::wstring& url) {
     const std::wstring lower = LowerCopy(url);
     return lower.find(L".jpg") != std::wstring::npos ||
@@ -324,7 +416,7 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     args.push_back(L"10");
 
     args.push_back(L"--format");
-    args.push_back(BuildFormatString(request.quality, request.ffmpegAvailable));
+    args.push_back(BuildFormatString(request.quality, request.ffmpegAvailable, request.container));
 
     args.push_back(L"--output");
     args.push_back((request.outputDirectory / kOutputTemplate).wstring());
@@ -479,6 +571,34 @@ std::filesystem::path FindDownloadedMediaFile(
         }
     }
     return bestPath;
+}
+
+std::filesystem::path FindExistingMediaFileForTask(
+    const std::vector<std::filesystem::path>& reportedOutputFiles,
+    const std::filesystem::path& outputDirectory,
+    const std::wstring& sourceUrl
+) {
+    std::error_code ec;
+    for (const std::filesystem::path& path : reportedOutputFiles) {
+        if (IsLikelyMediaFile(path) && std::filesystem::is_regular_file(path, ec)) {
+            return path;
+        }
+        ec.clear();
+    }
+
+    const std::wstring videoId = ExtractVideoIdFromUrl(sourceUrl);
+    std::filesystem::path found = FindMediaFileByVideoId(outputDirectory, videoId);
+    if (!found.empty()) {
+        return found;
+    }
+
+    for (const std::filesystem::path& path : reportedOutputFiles) {
+        found = FindMediaFileByVideoId(path.parent_path(), videoId);
+        if (!found.empty()) {
+            return found;
+        }
+    }
+    return {};
 }
 
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {

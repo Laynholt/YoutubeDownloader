@@ -4,6 +4,8 @@
 #include "PostProcessingFileOps.h"
 #include "ProcessRunner.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cwctype>
@@ -78,6 +80,87 @@ std::wstring SafeLanguageForArgument(const std::wstring& language, const std::ws
         }
     }
     return out.empty() ? fallback : out;
+}
+
+std::wstring SuggestedVotSubtitleSourceLanguage(
+    const ProcessRunResult& result,
+    const std::wstring& targetLanguage
+) {
+    const std::wstring diagnostic = result.stdoutText + L"\n" + result.stderrText;
+    if (diagnostic.find(L"Subtitle track selection is ambiguous") == std::wstring::npos) {
+        return {};
+    }
+
+    const std::wstring safeTarget = SafeLanguageForArgument(targetLanguage, L"ru");
+    std::wstring firstLanguage;
+
+    try {
+        const std::wstring& jsonText = result.stdoutText;
+        const size_t jsonBegin = jsonText.find(L'{');
+        const size_t jsonEnd = jsonText.rfind(L'}');
+        if (jsonBegin == std::wstring::npos || jsonEnd == std::wstring::npos || jsonEnd < jsonBegin) {
+            return {};
+        }
+        const nlohmann::json json = nlohmann::json::parse(
+            WideToUtf8(jsonText.substr(jsonBegin, jsonEnd - jsonBegin + 1)),
+            nullptr,
+            false
+        );
+        if (json.is_discarded()) {
+            return {};
+        }
+        const auto tracks = json.find("error") != json.end()
+            ? json["error"].value("details", nlohmann::json::object()).value("availableTracks", nlohmann::json::array())
+            : nlohmann::json::array();
+        if (!tracks.is_array()) {
+            return {};
+        }
+        for (const nlohmann::json& track : tracks) {
+            if (!track.is_object()) {
+                continue;
+            }
+            const std::wstring language = SafeLanguageForArgument(
+                Utf8ToWide(track.value("language", std::string{})),
+                L""
+            );
+            if (!language.empty() && firstLanguage.empty()) {
+                firstLanguage = language;
+            }
+            const std::wstring translated = SafeLanguageForArgument(
+                Utf8ToWide(track.value("translatedLanguage", std::string{})),
+                L""
+            );
+            if (!language.empty() && translated == safeTarget) {
+                return language;
+            }
+        }
+    } catch (...) {
+        return {};
+    }
+
+    return firstLanguage;
+}
+
+std::wstring SubtitleCodecForOutput(const std::filesystem::path& outputVideoPath) {
+    std::wstring extension = outputVideoPath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    if (extension == L".mkv") {
+        return L"srt";
+    }
+    if (extension == L".webm") {
+        return L"webvtt";
+    }
+    return L"mov_text";
+}
+
+std::wstring AudioCodecForSubtitleBurnInOutput(const std::filesystem::path& outputVideoPath) {
+    std::wstring extension = outputVideoPath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return extension == L".webm" ? L"libopus" : L"copy";
 }
 
 bool WriteUtf8TextFile(const std::filesystem::path& path, const std::wstring& text) {
@@ -202,16 +285,17 @@ std::vector<std::wstring> BuildWhisperArguments(
     return args;
 }
 
-std::vector<std::wstring> BuildVotHelperSubtitlesArguments(
+std::vector<std::wstring> BuildVotHelperSubtitlesArgumentsForSource(
     const TranscriptionRequest& request,
-    const std::filesystem::path& outputSrtPath
+    const std::filesystem::path& outputSrtPath,
+    const std::wstring& sourceLanguage
 ) {
     return {
         L"subtitles",
         L"--url",
         request.youtubeUrl,
         L"--source-lang",
-        SafeLanguageForArgument(request.language.empty() ? L"auto" : request.language, L"auto"),
+        SafeLanguageForArgument(sourceLanguage.empty() ? L"auto" : sourceLanguage, L"auto"),
         L"--target-lang",
         SafeLanguageForArgument(request.votTargetLanguage, L"ru"),
         L"--format",
@@ -220,6 +304,17 @@ std::vector<std::wstring> BuildVotHelperSubtitlesArguments(
         outputSrtPath.wstring(),
         L"--force"
     };
+}
+
+std::vector<std::wstring> BuildVotHelperSubtitlesArguments(
+    const TranscriptionRequest& request,
+    const std::filesystem::path& outputSrtPath
+) {
+    return BuildVotHelperSubtitlesArgumentsForSource(
+        request,
+        outputSrtPath,
+        request.language.empty() ? L"auto" : request.language
+    );
 }
 
 std::vector<std::wstring> BuildSubtitleTrackArguments(
@@ -240,7 +335,7 @@ std::vector<std::wstring> BuildSubtitleTrackArguments(
         L"-c",
         L"copy",
         L"-c:s",
-        L"mov_text",
+        SubtitleCodecForOutput(outputVideoPath),
         outputVideoPath.wstring()
     };
 }
@@ -257,7 +352,7 @@ std::vector<std::wstring> BuildSubtitleBurnInArguments(
         L"-vf",
         L"subtitles='" + EscapeSubtitleFilterPath(srtPath.wstring()) + L"'",
         L"-c:a",
-        L"copy",
+        AudioCodecForSubtitleBurnInOutput(outputVideoPath),
         outputVideoPath.wstring()
     };
 }
@@ -466,7 +561,24 @@ TranscriptionResult TranscriptionClient::Transcribe(
         vot.onStdoutLine = handleVotLine;
         vot.onStderrLine = handleVotLine;
 
-        const ProcessRunResult subtitles = ProcessRunner::Run(vot);
+        ProcessRunResult subtitles = ProcessRunner::Run(vot);
+        const std::wstring requestedSourceLanguage =
+            SafeLanguageForArgument(request.language.empty() ? L"auto" : request.language, L"auto");
+        if (!subtitles.canceled && subtitles.exitCode != 0 && requestedSourceLanguage == L"auto") {
+            const std::wstring retrySourceLanguage =
+                SuggestedVotSubtitleSourceLanguage(subtitles, request.votTargetLanguage);
+            if (!retrySourceLanguage.empty() && retrySourceLanguage != L"auto") {
+                EmitTranscriptionProgress(callbacks, 45.0, L"Уточнение языка субтитров VOT");
+                std::filesystem::remove(paths.tempSrtPath, ec);
+                ec.clear();
+                vot.arguments = BuildVotHelperSubtitlesArgumentsForSource(
+                    request,
+                    paths.tempSrtPath,
+                    retrySourceLanguage
+                );
+                subtitles = ProcessRunner::Run(vot);
+            }
+        }
         if (subtitles.canceled) {
             std::filesystem::remove(paths.tempSrtPath, ec);
             TranscriptionResult result;

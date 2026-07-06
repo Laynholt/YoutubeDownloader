@@ -226,6 +226,25 @@ void TestDownloadAttemptResolution() {
     );
 }
 
+void TestPreviewFetchInputValidation() {
+    Require(
+        ShouldStartPreviewFetchForText(L"https://youtu.be/aircAruvnKk?si=G3fqpLGT_bWn82cN"),
+        "valid URL should schedule preview"
+    );
+    Require(
+        !ShouldStartPreviewFetchForText(L"Не удалось найти скачанный медиафайл\n\nПроверенные пути:\n- C:/Video.webm"),
+        "multiline error text should not schedule preview"
+    );
+    Require(!ShouldStartPreviewFetchForText(L"https:/"), "short URL-like text should not schedule preview");
+}
+
+void TestPingPongProgressPhase() {
+    Require(PingPongProgressPhase(0, 1000) == 0.0, "ping-pong phase should start at left edge");
+    Require(PingPongProgressPhase(500, 1000) == 1.0, "ping-pong phase should reach right edge halfway");
+    Require(PingPongProgressPhase(1000, 1000) == 0.0, "ping-pong phase should return to left edge at period end");
+    Require(PingPongProgressPhase(1250, 1000) == 0.5, "ping-pong phase should repeat smoothly");
+}
+
 void TestQueueTaskActionsForPostProcessing() {
     QueueTaskActionInput completed;
     completed.completed = true;
@@ -1142,8 +1161,29 @@ void TestYtDlpDownloadArguments() {
     Require(ContainsArg(args, L"--progress-template"), "progress template missing");
     Require(ContainsArg(args, L"--output"), "output template missing");
     Require(args.at(ArgIndex(args, L"--output") + 1).find(L"%(title).200s [%(id)s].%(ext)s") != std::wstring::npos, "output template mismatch");
-    Require(args.at(ArgIndex(args, L"--format") + 1).find(L"height<=720") != std::wstring::npos, "720p format mismatch");
+    Require(
+        args.at(ArgIndex(args, L"--format") + 1) ==
+            L"bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]",
+        "mp4 container should request mp4-compatible streams"
+    );
     Require(args.back() == request.url, "url should be last argument");
+
+    request.container = L"webm";
+    const std::vector<std::wstring> webmArgs = BuildDownloadArguments(request);
+    Require(
+        webmArgs.at(ArgIndex(webmArgs, L"--format") + 1) ==
+            L"bestvideo[height<=720][ext=webm]+bestaudio[ext=webm]/best[height<=720][ext=webm]",
+        "webm container should request webm-compatible streams"
+    );
+    Require(webmArgs.at(ArgIndex(webmArgs, L"--merge-output-format") + 1) == L"webm", "webm merge format mismatch");
+
+    request.container = L"mkv";
+    const std::vector<std::wstring> mkvArgs = BuildDownloadArguments(request);
+    Require(
+        mkvArgs.at(ArgIndex(mkvArgs, L"--format") + 1) ==
+            L"bestvideo[height<=720]+bestaudio/best[height<=720]/best[height<=720]",
+        "mkv container should keep flexible stream selection"
+    );
 
     request.quality = L"audio";
     request.container = L"auto";
@@ -1216,6 +1256,58 @@ void TestYtDlpOutputFileFallbackFindsNewMedia() {
     Require(
         FindDownloadedMediaFile({reportedAudio, note}, root, before) == reportedAudio,
         "reported media output should take precedence over directory fallback"
+    );
+}
+
+void TestYtDlpExistingMediaFallbackFindsFileByVideoId() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ExistingById");
+    const fs::path storedPath = root / L"But what is a neural network  Deep learning chapter 1 [aircAruvnKk].webm";
+    const fs::path actualPath = root / L"But what is a neural network？ ｜ Deep learning chapter 1 [aircAruvnKk].webm";
+    {
+        std::ofstream out(actualPath, std::ios::binary);
+        out << "actual media";
+    }
+
+    const fs::path resolved = FindExistingMediaFileForTask(
+        {storedPath},
+        root,
+        L"https://youtu.be/aircAruvnKk?si=Rq6hEfYBGzeGnJul"
+    );
+
+    Require(resolved == actualPath, "existing media fallback should find file by video id");
+}
+
+void TestDownloadQueueDefaultExecutorRecordsMergedOutputFallback() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_MergedFallback");
+    const fs::path fakeYtDlp = root / L"fake-yt-dlp.cmd";
+    const fs::path videoPart = root / L"But what is a neural network  Deep learning chapter 1 [aircAruvnKk].f396.mp4";
+    const fs::path audioPart = root / L"But what is a neural network  Deep learning chapter 1 [aircAruvnKk].f251.webm";
+    const fs::path merged = root / L"But what is a neural network  Deep learning chapter 1 [aircAruvnKk].webm";
+
+    {
+        std::ofstream script(fakeYtDlp);
+        script << "@echo off\n";
+        script << "echo [download] Destination: \"" << videoPart.string() << "\"\n";
+        script << "echo [download] Destination: \"" << audioPart.string() << "\"\n";
+        script << "echo merged>\"" << merged.string() << "\"\n";
+        script << "exit /b 0\n";
+    }
+
+    DownloadQueue queue(1);
+    YtDlpDownloadRequest request;
+    request.ytDlpExePath = fakeYtDlp;
+    request.url = L"https://youtu.be/aircAruvnKk";
+    request.outputDirectory = root;
+    request.ffmpegAvailable = true;
+
+    const int id = queue.Enqueue(request, L"But what is a neural network? | Deep learning chapter 1");
+    queue.WaitForIdle();
+
+    const DownloadTaskSnapshot task = queue.GetTask(id);
+    Require(task.state == DownloadTaskState::Completed, "fake yt-dlp task should complete");
+    Require(
+        !task.outputFiles.empty() && task.outputFiles.front() == merged,
+        "merged output fallback should be the preferred output file"
     );
 }
 
@@ -1767,6 +1859,25 @@ void TestSubtitleFfmpegArguments() {
     Require(ContainsArg(burnArgs, L"-c:a"), "subtitle burn-in audio codec argument missing");
     Require(ContainsArg(burnArgs, L"copy"), "subtitle burn-in should copy audio");
     Require(burnArgs.back() == tempVideo.wstring(), "subtitle burn-in output should be temporary video");
+
+    const fs::path mkvOutput = root / L"stuff" / L"transcription_tmp" / L"transcript-42.mkv";
+    const std::vector<std::wstring> mkvTrackArgs = BuildSubtitleTrackArguments(media, srt, mkvOutput);
+    Require(
+        mkvTrackArgs.at(ArgIndex(mkvTrackArgs, L"-c:s") + 1) == L"srt",
+        "MKV subtitle track should use an MKV-compatible subtitle codec"
+    );
+
+    const fs::path webmOutput = root / L"stuff" / L"transcription_tmp" / L"transcript-42.webm";
+    const std::vector<std::wstring> webmTrackArgs = BuildSubtitleTrackArguments(media, srt, webmOutput);
+    Require(
+        webmTrackArgs.at(ArgIndex(webmTrackArgs, L"-c:s") + 1) == L"webvtt",
+        "WebM subtitle track should use WebVTT"
+    );
+    const std::vector<std::wstring> webmBurnArgs = BuildSubtitleBurnInArguments(media, srt, webmOutput);
+    Require(
+        webmBurnArgs.at(ArgIndex(webmBurnArgs, L"-c:a") + 1) == L"libopus",
+        "WebM subtitle burn-in should use an audio codec supported by WebM"
+    );
 }
 
 void TestWhisperProgressAndErrorParsing() {
@@ -1841,6 +1952,10 @@ void TestVoiceOverPathsAndVotHelperArguments() {
     Require(ContainsArg(args, L"--output"), "vot-helper output argument missing");
     Require(args.at(ArgIndex(args, L"--output") + 1) == paths.tempAudioPath.wstring(), "vot-helper output path mismatch");
     Require(ContainsArg(args, L"--force"), "vot-helper force argument missing");
+
+    const fs::path webm = root / L"Downloads" / L"Video One.webm";
+    const VoiceOverTranslationPaths webmPaths = BuildVoiceOverPaths(webm, temp, L"RU");
+    Require(webmPaths.tempVideoPath == temp / L"Video One.vot.ru.webm", "temporary WebM voice-over video path mismatch");
 }
 
 void TestVoiceOverFfmpegArguments() {
@@ -1854,7 +1969,10 @@ void TestVoiceOverFfmpegArguments() {
     Require(ContainsArg(trackArgs, L"0:v"), "voice-over track should map original video");
     Require(ContainsArg(trackArgs, L"0:a?"), "voice-over track should keep optional original audio");
     Require(ContainsArg(trackArgs, L"1:a"), "voice-over track should map translated audio");
-    Require(ContainsArg(trackArgs, L"-metadata:s:a:1"), "voice-over track language metadata missing");
+    const size_t firstTrackMap = ArgIndex(trackArgs, L"0:a?");
+    const size_t translatedTrackMap = ArgIndex(trackArgs, L"1:a");
+    Require(firstTrackMap < translatedTrackMap, "voice-over track should keep original audio before translated audio");
+    Require(ContainsArg(trackArgs, L"-metadata:s:a:1"), "voice-over translated track metadata missing");
     Require(ContainsArg(trackArgs, L"language=rus"), "voice-over track language code mismatch");
     Require(trackArgs.back() == tempVideo.wstring(), "voice-over track output should be temporary video");
 
@@ -1866,6 +1984,39 @@ void TestVoiceOverFfmpegArguments() {
     );
     Require(ContainsArg(mixArgs, L"[a]"), "voice-over mix output audio map missing");
     Require(mixArgs.back() == tempVideo.wstring(), "voice-over mix output should be temporary video");
+
+    const fs::path webmOutput = root / L"stuff" / L"voiceover_tmp" / L"Video One.vot.ru.webm";
+    const std::vector<std::wstring> webmTrackArgs = BuildVoiceOverAudioTrackArguments(media, audio, webmOutput, L"ru");
+    Require(
+        webmTrackArgs.at(ArgIndex(webmTrackArgs, L"-c:a") + 1) == L"libopus",
+        "WebM voice-over track should use an audio codec supported by WebM"
+    );
+    const std::vector<std::wstring> webmMixArgs = BuildVoiceOverMixArguments(media, audio, webmOutput, 25);
+    Require(
+        webmMixArgs.at(ArgIndex(webmMixArgs, L"-c:a") + 1) == L"libopus",
+        "WebM voice-over mix should use an audio codec supported by WebM"
+    );
+}
+
+void TestPostProcessingFfmpegModesAreDisabledForAudioOnlyMedia() {
+    const fs::path audioPath = L"C:/Downloads/Song.webm";
+
+    Require(
+        EffectiveSubtitleFfmpegModeForMedia(SubtitleFfmpegMode::BurnIn, L"audio", audioPath, L"audio") == SubtitleFfmpegMode::Off,
+        "audio-only transcription should not try to write subtitles into media"
+    );
+    Require(
+        EffectiveVoiceOverFfmpegModeForMedia(VoiceOverFfmpegMode::Mix, L"audio", audioPath, L"audio") == VoiceOverFfmpegMode::Off,
+        "audio-only voice-over should be saved as a separate MP3"
+    );
+    Require(
+        EffectiveSubtitleFfmpegModeForMedia(SubtitleFfmpegMode::BurnIn, L"video", L"C:/Downloads/Video.mp4", L"720p") == SubtitleFfmpegMode::BurnIn,
+        "video transcription should keep the selected subtitle mode"
+    );
+    Require(
+        EffectiveVoiceOverFfmpegModeForMedia(VoiceOverFfmpegMode::AudioTrack, L"audio", L"C:/Downloads/Video.webm", L"720p") == VoiceOverFfmpegMode::AudioTrack,
+        "video downloads must keep voice-over audio track mode even when the last yt-dlp progress segment was audio"
+    );
 }
 
 void TestProcessRunnerCapturesOutputAndExitCode() {
@@ -2152,11 +2303,27 @@ int RunProcessTreeChildFixture() {
 
 int RunVotSubtitlesFixture(int argc, char** argv) {
     fs::path outputPath;
+    std::string sourceLanguage = "auto";
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--output") {
             outputPath = fs::path(argv[i + 1]);
-            break;
+        } else if (std::string(argv[i]) == "--source-lang") {
+            sourceLanguage = argv[i + 1];
         }
+    }
+    if (sourceLanguage == "auto") {
+        std::cout
+            << "{\"schemaVersion\":1,\"ok\":false,\"operation\":\"subtitles\","
+            << "\"error\":{\"code\":\"subtitles\",\"message\":\"Subtitle track selection is ambiguous.\","
+            << "\"details\":{\"availableTracks\":["
+            << "{\"language\":\"en\",\"translatedLanguage\":\"kk\"},"
+            << "{\"language\":\"it\",\"translatedLanguage\":\"ru\"}]}}}\n";
+        std::cerr << "Subtitle track selection is ambiguous.\n";
+        return 6;
+    }
+    if (sourceLanguage != "it") {
+        std::cerr << "unexpected source language: " << sourceLanguage << "\n";
+        return 7;
     }
     if (outputPath.empty()) {
         return 2;
@@ -2170,6 +2337,33 @@ int RunVotSubtitlesFixture(int argc, char** argv) {
     }
     out << "1\n00:00:00,000 --> 00:00:01,000\nTest subtitle\n";
     return 0;
+}
+
+void TestTranscriptionRetriesAmbiguousVotSubtitleTrack() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TranscriptionVotAmbiguous");
+    const fs::path media = root / L"Downloads" / L"Video One.mp4";
+    const fs::path tempDir = root / L"tmp";
+    fs::create_directories(media.parent_path());
+    {
+        std::ofstream out(media, std::ios::binary | std::ios::trunc);
+        out << "media";
+    }
+
+    TranscriptionRequest request;
+    request.engine = TranscriptionEngine::Vot;
+    request.mediaPath = media;
+    request.tempDirectory = tempDir;
+    request.votExePath = CurrentTestExecutablePath();
+    request.youtubeUrl = L"https://example.invalid/video";
+    request.language = L"auto";
+    request.votTargetLanguage = L"ru";
+    request.subtitleMode = SubtitleFfmpegMode::Off;
+
+    const TranscriptionResult result = TranscriptionClient::Transcribe(request);
+
+    Require(result.success, "VOT transcription should retry ambiguous subtitle selection with a concrete source language");
+    Require(fs::is_regular_file(result.srtPath), "VOT retry should create an SRT sidecar");
+    Require(fs::is_regular_file(result.textPath), "VOT retry should create a TXT sidecar");
 }
 
 void TestProcessRunnerCancelKillsChildProcessTree() {
@@ -3220,6 +3414,8 @@ int main(int argc, char** argv) {
     TestConfigNormalizesPostProcessingLanguageOptions();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
+    TestPreviewFetchInputValidation();
+    TestPingPongProgressPhase();
     TestQueueTaskActionsForPostProcessing();
     TestCompletedQueueTaskActionsDoNotDependOnOutputProbe();
     TestWhisperInstallBackendSelection();
@@ -3247,6 +3443,8 @@ int main(int argc, char** argv) {
     TestYtDlpDownloadArguments();
     TestYtDlpOutputPathParsing();
     TestYtDlpOutputFileFallbackFindsNewMedia();
+    TestYtDlpExistingMediaFallbackFindsFileByVideoId();
+    TestDownloadQueueDefaultExecutorRecordsMergedOutputFallback();
     TestYtDlpProcessLineParsing();
     TestYtDlpProgressParsing();
     TestGitHubReleaseParsing();
@@ -3265,12 +3463,14 @@ int main(int argc, char** argv) {
     TestVotExeReleaseParsing();
     TestVotExecutableSelfTest();
     TestWhisperExecutableSelfTest();
+    TestTranscriptionRetriesAmbiguousVotSubtitleTrack();
     TestTranscriptionFailsWhenOnlyOneSidecarCanBeCommitted();
     TestTranscriptionPathsAndArguments();
     TestSubtitleFfmpegArguments();
     TestWhisperProgressAndErrorParsing();
     TestVoiceOverPathsAndVotHelperArguments();
     TestVoiceOverFfmpegArguments();
+    TestPostProcessingFfmpegModesAreDisabledForAudioOnlyMedia();
     TestProcessRunnerCapturesOutputAndExitCode();
     TestProcessRunnerEmitsEachOutputLineOnce();
     TestProcessRunnerCancelKillsChildProcessTree();

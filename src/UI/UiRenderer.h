@@ -23,6 +23,7 @@ public:
     static void DrawPreviewCard(HDC dc, const RECT& rect);
     static void DrawInputFrame(HDC dc, const RECT& rect);
     static void DrawProgressBar(HDC dc, const RECT& rect, double percent);
+    static void DrawIndeterminateProgressBar(HDC dc, const RECT& rect, double phase);
     static void DrawButton(
         HDC dc,
         const RECT& rect,

@@ -185,6 +185,14 @@ VoiceOverTranslationPaths BuildVoiceOverPaths(
     return paths;
 }
 
+std::wstring VoiceOverAudioCodecForOutput(const std::filesystem::path& outputVideoPath) {
+    std::wstring extension = outputVideoPath.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return extension == L".webm" ? L"libopus" : L"aac";
+}
+
 std::vector<std::wstring> BuildVotHelperTranslateArguments(
     const VoiceOverTranslationRequest& request,
     const std::filesystem::path& outputAudioPath
@@ -230,7 +238,7 @@ std::vector<std::wstring> BuildVoiceOverAudioTrackArguments(
         L"-c:v",
         L"copy",
         L"-c:a",
-        L"aac",
+        VoiceOverAudioCodecForOutput(outputVideoPath),
         L"-metadata:s:a:1",
         L"language=" + LanguageMetadataCode(language),
         L"-metadata:s:a:1",
@@ -260,7 +268,7 @@ std::vector<std::wstring> BuildVoiceOverMixArguments(
         L"-c:v",
         L"copy",
         L"-c:a",
-        L"aac",
+        VoiceOverAudioCodecForOutput(outputVideoPath),
         outputVideoPath.wstring()
     };
 }

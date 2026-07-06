@@ -6,6 +6,7 @@
 #include "TranscriptionClient.h"
 #include "VoiceOverTranslationClient.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -73,6 +74,8 @@ struct EditContextMenuItem {
 };
 
 DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoading);
+bool ShouldStartPreviewFetchForText(const std::wstring& text);
+double PingPongProgressPhase(std::uint64_t elapsedMs, std::uint64_t periodMs);
 std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input);
 ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue issue);
 std::wstring VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode mode);
@@ -121,6 +124,18 @@ std::vector<std::filesystem::path> BuildTranscriptionAffectedFiles(
 std::vector<std::filesystem::path> BuildVoiceOverAffectedFiles(
     const VoiceOverTranslationPaths& paths,
     VoiceOverFfmpegMode ffmpegMode
+);
+SubtitleFfmpegMode EffectiveSubtitleFfmpegModeForMedia(
+    SubtitleFfmpegMode mode,
+    const std::wstring& mediaKind,
+    const std::filesystem::path& mediaPath,
+    const std::wstring& quality
+);
+VoiceOverFfmpegMode EffectiveVoiceOverFfmpegModeForMedia(
+    VoiceOverFfmpegMode mode,
+    const std::wstring& mediaKind,
+    const std::filesystem::path& mediaPath,
+    const std::wstring& quality
 );
 std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(
     const std::vector<std::filesystem::path>& currentAffectedFiles,

@@ -74,6 +74,11 @@ std::filesystem::path FindDownloadedMediaFile(
     const std::filesystem::path& outputDirectory,
     const std::vector<OutputDirectoryFile>& beforeDownload
 );
+std::filesystem::path FindExistingMediaFileForTask(
+    const std::vector<std::filesystem::path>& reportedOutputFiles,
+    const std::filesystem::path& outputDirectory,
+    const std::wstring& sourceUrl
+);
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line);
 YtDlpProcessLine ParseYtDlpProcessLine(const std::wstring& line);
 VideoPreview ParseVideoPreviewJson(const std::string& jsonText);

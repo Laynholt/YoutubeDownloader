@@ -197,32 +197,8 @@ bool IsRunningTaskState(DownloadTaskState state) {
            state == DownloadTaskState::Downloading;
 }
 
-bool IsMediaFilePath(const std::filesystem::path& path) {
-    std::wstring extension = path.extension().wstring();
-    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t ch) {
-        return static_cast<wchar_t>(std::towlower(ch));
-    });
-    return extension == L".mp4" ||
-           extension == L".mkv" ||
-           extension == L".webm" ||
-           extension == L".mov" ||
-           extension == L".avi" ||
-           extension == L".m4v" ||
-           extension == L".mp3" ||
-           extension == L".m4a" ||
-           extension == L".opus" ||
-           extension == L".wav";
-}
-
 std::filesystem::path FirstExistingMediaOutput(const DownloadTaskSnapshot& task) {
-    std::error_code ec;
-    for (const std::filesystem::path& path : task.outputFiles) {
-        if (IsMediaFilePath(path) && std::filesystem::is_regular_file(path, ec)) {
-            return path;
-        }
-        ec.clear();
-    }
-    return {};
+    return FindExistingMediaFileForTask(task.outputFiles, task.request.outputDirectory, task.request.url);
 }
 
 std::wstring BuildMissingMediaFileMessage(const DownloadTaskSnapshot& task) {
@@ -2000,26 +1976,47 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         RECT progressBack = {textLeft, row.bottom - 13, row.right - 84, row.bottom - 5};
         double percent = task.percent;
         if (postProcessingActive) {
-            percent = m_postProcessingIndeterminate
-                ? static_cast<double>((GetTickCount() / 35) % 100)
-                : m_postProcessingPercent;
+            if (m_postProcessingIndeterminate) {
+                const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
+                UiRenderer::DrawIndeterminateProgressBar(
+                    dc,
+                    progressBack,
+                    PingPongProgressPhase(elapsedMs, 1800)
+                );
+            } else {
+                percent = m_postProcessingPercent;
+                percent = std::clamp(percent, 0.0, 100.0);
+                UiRenderer::DrawProgressBar(dc, progressBack, percent);
+            }
         } else if (postProcessingBusy) {
-            percent = static_cast<double>((GetTickCount() / 35) % 100);
+            UiRenderer::DrawIndeterminateProgressBar(
+                dc,
+                progressBack,
+                PingPongProgressPhase(GetTickCount(), 1800)
+            );
         } else if (task.state == DownloadTaskState::Completed) {
             percent = 100.0;
+            UiRenderer::DrawProgressBar(dc, progressBack, percent);
+        } else {
+            percent = std::clamp(percent, 0.0, 100.0);
+            UiRenderer::DrawProgressBar(dc, progressBack, percent);
         }
-        percent = std::clamp(percent, 0.0, 100.0);
-        UiRenderer::DrawProgressBar(dc, progressBack, percent);
 
         RECT percentRect = {row.right - 74, row.bottom - 19, row.right - 14, row.bottom - 1};
-        DrawTextBlock(
-            dc,
-            std::to_wstring(static_cast<int>(percent)) + L"%",
-            percentRect,
-            kMutedTextColor,
-            smallFont,
-            DT_RIGHT | DT_VCENTER | DT_SINGLELINE
-        );
+        if (postProcessingActive && m_postProcessingIndeterminate) {
+            DrawTextBlock(dc, L"...", percentRect, kMutedTextColor, smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        } else if (postProcessingBusy) {
+            DrawTextBlock(dc, L"...", percentRect, kMutedTextColor, smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        } else {
+            DrawTextBlock(
+                dc,
+                std::to_wstring(static_cast<int>(percent)) + L"%",
+                percentRect,
+                kMutedTextColor,
+                smallFont,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE
+            );
+        }
 
         for (const QueueActionRect& action : actionRects) {
             DrawSmallActionButton(
@@ -2462,7 +2459,7 @@ void Application::InitializeBackend() {
     m_downloadQueue = std::make_unique<DownloadQueue>(m_config.maxParallelDownloads, m_logger.get());
     LoadDownloadQueue();
 
-    SetTimer(m_window, kQueueRefreshTimer, 500, nullptr);
+    SetTimer(m_window, kQueueRefreshTimer, 80, nullptr);
     SetStatus(L"Проверка yt-dlp...");
     StartToolCheck();
 }
@@ -2631,7 +2628,7 @@ void Application::StartPreviewFetch() {
     }
 
     const std::wstring url = GetWindowTextString(m_urlEdit);
-    if (url.size() < 8) {
+    if (!ShouldStartPreviewFetchForText(url)) {
         ++m_previewRequestId;
         StopPreviewLoadingText();
         {
@@ -2814,6 +2811,16 @@ void Application::StartPostProcessing(int taskId, int action) {
     std::vector<std::filesystem::path> approvedAffectedFiles;
     std::error_code ec;
     if (action == kQueueActionTranscribe) {
+        const SubtitleFfmpegMode requestedSubtitleMode = config.subtitleFfmpegMode;
+        config.subtitleFfmpegMode = EffectiveSubtitleFfmpegModeForMedia(
+            config.subtitleFfmpegMode,
+            task.mediaKind,
+            mediaPath,
+            task.request.quality
+        );
+        if (requestedSubtitleMode != config.subtitleFfmpegMode) {
+            SetTransientStatus(L"Аудиофайл: субтитры будут сохранены отдельными TXT/SRT");
+        }
         if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
             ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
             const std::filesystem::path modelPath = config.whisperModelPath.empty()
@@ -2892,6 +2899,16 @@ void Application::StartPostProcessing(int taskId, int action) {
         }
         approvedAffectedFiles = affectedFiles;
     } else if (action == kQueueActionTranslate) {
+        const VoiceOverFfmpegMode requestedVoiceMode = config.voiceOverFfmpegMode;
+        config.voiceOverFfmpegMode = EffectiveVoiceOverFfmpegModeForMedia(
+            config.voiceOverFfmpegMode,
+            task.mediaKind,
+            mediaPath,
+            task.request.quality
+        );
+        if (requestedVoiceMode != config.voiceOverFfmpegMode) {
+            SetTransientStatus(L"Аудиофайл: перевод будет сохранён отдельным MP3");
+        }
         const VotExeStatus vot = VotExeManager::Resolve(paths, config);
         if (!vot.available) {
             if (ShowToolReadinessDialog(m_window, m_instance, ToolReadinessIssue::MissingVotExe)) {
@@ -2946,7 +2963,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
     m_postProcessingTaskId = operation.taskId;
     m_postProcessingAction = operation.action;
     m_postProcessingPercent = 0.0;
-    m_postProcessingIndeterminate = operation.action == kQueueActionTranslate;
+    m_postProcessingIndeterminate = true;
     m_postProcessingStatus = operation.action == kQueueActionTranscribe ? L"Транскрибация..." : L"Перевод...";
     m_postProcessingStartedTick = GetTickCount();
     ClearQueueHover();
@@ -2982,7 +2999,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
             progress.taskId = task.id;
             progress.action = action;
             progress.percent = percent;
-            progress.indeterminate = action == kQueueActionTranslate && percent < 70.0;
+            progress.indeterminate = percent < 70.0;
             progress.status = status;
             {
                 std::lock_guard lock(m_asyncResultMutex);
