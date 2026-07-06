@@ -53,11 +53,17 @@ struct TranscriptionPaths {
     std::filesystem::path finalVideoPath;
 };
 
-std::filesystem::path TranscriptOutputBaseFor(const std::filesystem::path& mediaPath);
+std::filesystem::path TranscriptOutputBaseFor(
+    const std::filesystem::path& mediaPath,
+    TranscriptionEngine engine = TranscriptionEngine::Whisper,
+    const std::wstring& language = L"auto"
+);
 TranscriptionPaths BuildTranscriptionPaths(
     const std::filesystem::path& mediaPath,
     const std::filesystem::path& tempDirectory,
-    long long nonce
+    long long nonce,
+    TranscriptionEngine engine = TranscriptionEngine::Whisper,
+    const std::wstring& language = L"auto"
 );
 std::vector<std::wstring> BuildFfmpegAudioExtractionArguments(
     const std::filesystem::path& mediaPath,

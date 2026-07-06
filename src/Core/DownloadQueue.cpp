@@ -146,7 +146,12 @@ bool IsPlaceholderTitle(const DownloadTaskSnapshot& task) {
     return task.title.empty() || task.title == task.request.url;
 }
 
-bool EnrichTaskMetadata(DownloadTaskSnapshot& task, std::wstring title, std::filesystem::path thumbnailPath) {
+bool EnrichTaskMetadata(
+    DownloadTaskSnapshot& task,
+    std::wstring title,
+    std::filesystem::path thumbnailPath,
+    std::uint64_t durationSeconds
+) {
     bool changed = false;
     if (!title.empty() && title != task.request.url && IsPlaceholderTitle(task)) {
         task.title = std::move(title);
@@ -154,6 +159,10 @@ bool EnrichTaskMetadata(DownloadTaskSnapshot& task, std::wstring title, std::fil
     }
     if (!thumbnailPath.empty() && task.thumbnailPath.empty()) {
         task.thumbnailPath = std::move(thumbnailPath);
+        changed = true;
+    }
+    if (durationSeconds != 0 && task.durationSeconds == 0) {
+        task.durationSeconds = durationSeconds;
         changed = true;
     }
     return changed;
@@ -245,11 +254,16 @@ void DownloadQueue::SetMaxParallelDownloads(int maxParallelDownloads) {
     m_cv.notify_all();
 }
 
-int DownloadQueue::Enqueue(const YtDlpDownloadRequest& request, std::wstring title, std::filesystem::path thumbnailPath) {
+int DownloadQueue::Enqueue(
+    const YtDlpDownloadRequest& request,
+    std::wstring title,
+    std::filesystem::path thumbnailPath,
+    std::uint64_t durationSeconds
+) {
     std::lock_guard lock(m_mutex);
     for (auto& [id, task] : m_tasks) {
         if (task.snapshot.request.url == request.url && ShouldReuseExistingTask(task.snapshot.state)) {
-            if (EnrichTaskMetadata(task.snapshot, std::move(title), std::move(thumbnailPath))) {
+            if (EnrichTaskMetadata(task.snapshot, std::move(title), std::move(thumbnailPath), durationSeconds)) {
                 ++m_revision;
             }
             return id;
@@ -262,6 +276,7 @@ int DownloadQueue::Enqueue(const YtDlpDownloadRequest& request, std::wstring tit
     record.snapshot.request = request;
     record.snapshot.title = std::move(title);
     record.snapshot.thumbnailPath = std::move(thumbnailPath);
+    record.snapshot.durationSeconds = durationSeconds;
     record.snapshot.state = DownloadTaskState::Queued;
     record.snapshot.statusText = L"В очереди";
     m_tasks[id] = std::move(record);
@@ -273,14 +288,19 @@ int DownloadQueue::Enqueue(const YtDlpDownloadRequest& request, std::wstring tit
     return id;
 }
 
-bool DownloadQueue::EnrichMetadata(const std::wstring& url, std::wstring title, std::filesystem::path thumbnailPath) {
+bool DownloadQueue::EnrichMetadata(
+    const std::wstring& url,
+    std::wstring title,
+    std::filesystem::path thumbnailPath,
+    std::uint64_t durationSeconds
+) {
     std::lock_guard lock(m_mutex);
     for (auto& [id, task] : m_tasks) {
         UNREFERENCED_PARAMETER(id);
         if (task.snapshot.request.url != url) {
             continue;
         }
-        if (EnrichTaskMetadata(task.snapshot, std::move(title), std::move(thumbnailPath))) {
+        if (EnrichTaskMetadata(task.snapshot, std::move(title), std::move(thumbnailPath), durationSeconds)) {
             ++m_revision;
             return true;
         }

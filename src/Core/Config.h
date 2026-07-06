@@ -52,6 +52,7 @@ struct AppConfig {
     std::wstring whisperLanguage = L"auto";
     std::wstring votSubtitleLanguage = L"ru";
     std::wstring voiceOverLanguage = L"ru";
+    int voiceOverOriginalVolumePercent = 25;
     VoiceOverFfmpegMode voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
     SubtitleFfmpegMode subtitleFfmpegMode = SubtitleFfmpegMode::Off;
     int maxParallelDownloads = 3;

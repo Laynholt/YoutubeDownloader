@@ -157,6 +157,8 @@ enum DialogCommand {
     IdVotCandidateSelect = 151,
     IdChooseVotExecutable = 152,
     IdVotSubtitleLanguageEdit = 153,
+    IdVoiceVolumeMinus = 154,
+    IdVoiceVolumePlus = 155,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -352,7 +354,7 @@ RECT SettingsTranscriptionToolsCardRect(const DialogState* state, int width, int
 }
 
 RECT SettingsTranslationWorkflowCardRect(const DialogState* state, int width, int height) {
-    return SettingsStackCardRect(state, width, height, 0, kSettingsWorkflowLanguageCardHeight);
+    return SettingsStackCardRect(state, width, height, 0, kSettingsBehaviorCardHeight);
 }
 
 RECT SettingsTranslationToolsCardRect(const DialogState* state, int width, int height) {
@@ -1437,6 +1439,8 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND voiceOff = GetDlgItem(state->window, IdVoiceModeOff);
     HWND voiceTrack = GetDlgItem(state->window, IdVoiceModeTrack);
     HWND voiceMix = GetDlgItem(state->window, IdVoiceModeMix);
+    HWND voiceVolumeMinus = GetDlgItem(state->window, IdVoiceVolumeMinus);
+    HWND voiceVolumePlus = GetDlgItem(state->window, IdVoiceVolumePlus);
     HWND transcriptionTools = GetDlgItem(state->window, IdTranscriptionOpenTools);
     HWND translationTools = GetDlgItem(state->window, IdTranslationOpenTools);
     HWND chooseWhisperDetails = GetDlgItem(state->window, IdWhisperDetails);
@@ -1499,6 +1503,13 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     }
     if (voiceMix) {
         MoveWindow(voiceMix, card.left + kSettingsCardPadding + 418, translationModeTop, 118, 34, TRUE);
+    }
+    const int voiceVolumeTop = card.top + 108;
+    if (voiceVolumeMinus) {
+        MoveWindow(voiceVolumeMinus, card.left + kSettingsCardPadding, voiceVolumeTop, 46, 34, TRUE);
+    }
+    if (voiceVolumePlus) {
+        MoveWindow(voiceVolumePlus, card.left + kSettingsCardPadding + 118, voiceVolumeTop, 46, 34, TRUE);
     }
     card = SettingsTranslationToolsCardRect(state, width, height);
     if (translationTools) {
@@ -1568,7 +1579,8 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn, IdTranscriptionOpenTools
     }, state->settingsSection == SettingsSection::Transcription);
     SetControlsVisible(state->window, {
-        IdVoiceLanguageEdit, IdVoiceModeOff, IdVoiceModeTrack, IdVoiceModeMix, IdTranslationOpenTools
+        IdVoiceLanguageEdit, IdVoiceModeOff, IdVoiceModeTrack, IdVoiceModeMix,
+        IdVoiceVolumeMinus, IdVoiceVolumePlus, IdTranslationOpenTools
     }, state->settingsSection == SettingsSection::Translation);
     SetControlsVisible(state->window, {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
@@ -2035,6 +2047,23 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             ffmpegReady ? L"MP3 создается всегда; FFmpeg может встроить или смешать озвучку." : L"MP3 создается всегда; режимы видео требуют FFmpeg.",
             labelFont,
             textFont
+        );
+        const RECT translationCard = SettingsTranslationWorkflowCardRect(state, client.right, client.bottom);
+        DrawTextBlock(
+            dc,
+            std::to_wstring(std::clamp(state->workingConfig.voiceOverOriginalVolumePercent, 0, 100)) + L"%",
+            {translationCard.left + kSettingsCardPadding + 54, translationCard.top + 108, translationCard.left + kSettingsCardPadding + 110, translationCard.top + 142},
+            kTextColor,
+            labelFont,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE
+        );
+        DrawTextBlock(
+            dc,
+            L"Громкость оригинала при смешивании",
+            {translationCard.left + kSettingsCardPadding + 180, translationCard.top + 108, translationCard.right - kSettingsCardPadding, translationCard.top + 142},
+            kMutedTextColor,
+            textFont,
+            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
         );
         DrawSettingsCard(dc, SettingsTranslationToolsCardRect(state, client.right, client.bottom), L"Инструменты", L"Путь vot-helper.exe задается в разделе Инструменты.", labelFont, textFont, 220);
     } else if (state->settingsSection == SettingsSection::Tools) {
@@ -2568,6 +2597,8 @@ void CreateSettingsControls(DialogState* state) {
     HWND voiceOffButton = CreateDarkButton(state->window, state->instance, L"Выкл", IdVoiceModeOff, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off);
     HWND voiceTrackButton = CreateDarkButton(state->window, state->instance, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack).c_str(), IdVoiceModeTrack, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack);
     HWND voiceMixButton = CreateDarkButton(state->window, state->instance, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Mix).c_str(), IdVoiceModeMix, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Mix);
+    HWND voiceVolumeMinusButton = CreateDarkButton(state->window, state->instance, L"-", IdVoiceVolumeMinus, false);
+    HWND voiceVolumePlusButton = CreateDarkButton(state->window, state->instance, L"+", IdVoiceVolumePlus, false);
     HWND transcriptionToolsButton = CreateDarkButton(state->window, state->instance, L"Открыть Инструменты", IdTranscriptionOpenTools, false);
     HWND translationToolsButton = CreateDarkButton(state->window, state->instance, L"Открыть Инструменты", IdTranslationOpenTools, false);
     HWND ytDlpDetailsButton = CreateDarkButton(state->window, state->instance, L"Подробно", IdYtDlpDetails, false);
@@ -2609,6 +2640,8 @@ void CreateSettingsControls(DialogState* state) {
     const std::wstring voiceMixTooltip = FfmpegGatedOptionTooltip(L"Смешивать перевод с оригинальной аудиодорожкой.");
     AddDialogTooltip(state, voiceTrackButton, voiceTrackTooltip);
     AddDialogTooltip(state, voiceMixButton, voiceMixTooltip);
+    AddDialogTooltip(state, voiceVolumeMinusButton, L"Уменьшает громкость оригинальной дорожки при смешивании.");
+    AddDialogTooltip(state, voiceVolumePlusButton, L"Увеличивает громкость оригинальной дорожки при смешивании.");
     AddDialogTooltip(state, transcriptionToolsButton, L"Переходит к выбору и установке инструментов.");
     AddDialogTooltip(state, translationToolsButton, L"Переходит к выбору и установке инструментов.");
     AddDialogTooltip(state, ytDlpDetailsButton, L"Показывает или скрывает путь yt-dlp.");
@@ -3008,6 +3041,22 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Mix;
                 RefreshSettingsButtons(state);
                 return 0;
+            case IdVoiceVolumeMinus:
+                state->workingConfig.voiceOverOriginalVolumePercent = std::clamp(
+                    state->workingConfig.voiceOverOriginalVolumePercent - 5,
+                    0,
+                    100
+                );
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
+            case IdVoiceVolumePlus:
+                state->workingConfig.voiceOverOriginalVolumePercent = std::clamp(
+                    state->workingConfig.voiceOverOriginalVolumePercent + 5,
+                    0,
+                    100
+                );
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
             case IdSubtitleModeOff:
                 state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::Off;
                 RefreshSettingsButtons(state);
@@ -3227,6 +3276,11 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     if (state->workingConfig.voiceOverLanguage.empty()) {
                         state->workingConfig.voiceOverLanguage = L"ru";
                     }
+                    state->workingConfig.voiceOverOriginalVolumePercent = std::clamp(
+                        state->workingConfig.voiceOverOriginalVolumePercent,
+                        0,
+                        100
+                    );
                     *state->config = state->workingConfig;
                     if (state->savedResult) {
                         *state->savedResult = true;

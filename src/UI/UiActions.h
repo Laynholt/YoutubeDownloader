@@ -137,6 +137,7 @@ VoiceOverFfmpegMode EffectiveVoiceOverFfmpegModeForMedia(
     const std::filesystem::path& mediaPath,
     const std::wstring& quality
 );
+bool ShouldBlockVoiceOverTranslationForDuration(std::uint64_t durationSeconds);
 std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(
     const std::vector<std::filesystem::path>& currentAffectedFiles,
     const std::vector<std::filesystem::path>& approvedAffectedFiles

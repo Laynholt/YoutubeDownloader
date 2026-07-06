@@ -38,6 +38,7 @@ struct DownloadTaskSnapshot {
     std::uint64_t totalBytes = 0;
     std::uint64_t speedBytesPerSecond = 0;
     std::uint64_t etaSeconds = 0;
+    std::uint64_t durationSeconds = 0;
     std::wstring mediaKind;
     std::wstring formatId;
     std::wstring extension;
@@ -72,8 +73,18 @@ public:
 
     void SetExecutor(DownloadTaskExecutor executor);
     void SetMaxParallelDownloads(int maxParallelDownloads);
-    int Enqueue(const YtDlpDownloadRequest& request, std::wstring title, std::filesystem::path thumbnailPath = {});
-    bool EnrichMetadata(const std::wstring& url, std::wstring title, std::filesystem::path thumbnailPath = {});
+    int Enqueue(
+        const YtDlpDownloadRequest& request,
+        std::wstring title,
+        std::filesystem::path thumbnailPath = {},
+        std::uint64_t durationSeconds = 0
+    );
+    bool EnrichMetadata(
+        const std::wstring& url,
+        std::wstring title,
+        std::filesystem::path thumbnailPath = {},
+        std::uint64_t durationSeconds = 0
+    );
     bool Cancel(int id);
     bool Retry(int id);
     bool DeleteFiles(int id);

@@ -82,6 +82,10 @@ std::wstring SafeLanguageForArgument(const std::wstring& language, const std::ws
     return out.empty() ? fallback : out;
 }
 
+std::wstring TranscriptionEngineSuffix(TranscriptionEngine engine) {
+    return engine == TranscriptionEngine::Vot ? L"vot" : L"whisper";
+}
+
 std::wstring SuggestedVotSubtitleSourceLanguage(
     const ProcessRunResult& result,
     const std::wstring& targetLanguage
@@ -216,14 +220,22 @@ void EmitTranscriptionProgress(
 
 } // namespace
 
-std::filesystem::path TranscriptOutputBaseFor(const std::filesystem::path& mediaPath) {
-    return mediaPath.parent_path() / mediaPath.stem();
+std::filesystem::path TranscriptOutputBaseFor(
+    const std::filesystem::path& mediaPath,
+    TranscriptionEngine engine,
+    const std::wstring& language
+) {
+    const std::wstring suffix =
+        L"." + TranscriptionEngineSuffix(engine) + L"." + SafeLanguageForArgument(language, L"auto");
+    return mediaPath.parent_path() / (mediaPath.stem().wstring() + suffix);
 }
 
 TranscriptionPaths BuildTranscriptionPaths(
     const std::filesystem::path& mediaPath,
     const std::filesystem::path& tempDirectory,
-    long long nonce
+    long long nonce,
+    TranscriptionEngine engine,
+    const std::wstring& language
 ) {
     const std::wstring nonceText = std::to_wstring(nonce);
     TranscriptionPaths paths;
@@ -232,7 +244,7 @@ TranscriptionPaths BuildTranscriptionPaths(
     paths.tempTextPath = PathWithExtension(paths.whisperOutputBase, L".txt");
     paths.tempSrtPath = PathWithExtension(paths.whisperOutputBase, L".srt");
 
-    const std::filesystem::path finalBase = TranscriptOutputBaseFor(mediaPath);
+    const std::filesystem::path finalBase = TranscriptOutputBaseFor(mediaPath, engine, language);
     paths.finalTextPath = PathWithExtension(finalBase, L".txt");
     paths.finalSrtPath = PathWithExtension(finalBase, L".srt");
     paths.tempVideoPath = tempDirectory / (L"transcript-" + nonceText + mediaPath.extension().wstring());
@@ -481,7 +493,16 @@ TranscriptionResult TranscriptionClient::Transcribe(
     }
 
     const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
-    const TranscriptionPaths paths = BuildTranscriptionPaths(request.mediaPath, request.tempDirectory, ticks);
+    const std::wstring outputLanguage = request.engine == TranscriptionEngine::Vot
+        ? request.votTargetLanguage
+        : request.language;
+    const TranscriptionPaths paths = BuildTranscriptionPaths(
+        request.mediaPath,
+        request.tempDirectory,
+        ticks,
+        request.engine,
+        outputLanguage
+    );
 
     bool textMoved = false;
     bool srtMoved = false;

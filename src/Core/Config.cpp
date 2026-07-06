@@ -283,6 +283,11 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
             L"ru"
         );
         config.voiceOverLanguage = NormalizeVoiceOverLanguage(WStringFromJson(json, "voice_over_language", config.voiceOverLanguage));
+        config.voiceOverOriginalVolumePercent = std::clamp(
+            IntFromJson(json, "voice_over_original_volume_percent", config.voiceOverOriginalVolumePercent),
+            0,
+            100
+        );
         config.voiceOverFfmpegMode = VoiceOverFfmpegModeFromJson(json, "voice_over_ffmpeg_mode", config.voiceOverFfmpegMode);
         config.subtitleFfmpegMode = SubtitleFfmpegModeFromJson(json, "subtitle_ffmpeg_mode", config.subtitleFfmpegMode);
         config.maxParallelDownloads = IntFromJson(json, "max_parallel_downloads", config.maxParallelDownloads);
@@ -318,6 +323,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["whisper_language"] = WideToUtf8(NormalizeWhisperLanguage(config.whisperLanguage));
     json["vot_subtitle_language"] = WideToUtf8(NormalizeVotLanguage(config.votSubtitleLanguage, L"ru"));
     json["voice_over_language"] = WideToUtf8(NormalizeVoiceOverLanguage(config.voiceOverLanguage));
+    json["voice_over_original_volume_percent"] = std::clamp(config.voiceOverOriginalVolumePercent, 0, 100);
     json["voice_over_ffmpeg_mode"] = WideToUtf8(VoiceOverFfmpegModeToConfigValue(config.voiceOverFfmpegMode));
     json["subtitle_ffmpeg_mode"] = WideToUtf8(SubtitleFfmpegModeToConfigValue(config.subtitleFfmpegMode));
     json["max_parallel_downloads"] = config.maxParallelDownloads;

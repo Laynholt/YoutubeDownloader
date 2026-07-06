@@ -377,6 +377,10 @@ VoiceOverFfmpegMode EffectiveVoiceOverFfmpegModeForMedia(
     return IsAudioOnlyMedia(mediaKind, mediaPath, quality) ? VoiceOverFfmpegMode::Off : mode;
 }
 
+bool ShouldBlockVoiceOverTranslationForDuration(std::uint64_t durationSeconds) {
+    return durationSeconds > 14400;
+}
+
 std::vector<std::filesystem::path> FindUnapprovedAffectedFiles(
     const std::vector<std::filesystem::path>& currentAffectedFiles,
     const std::vector<std::filesystem::path>& approvedAffectedFiles

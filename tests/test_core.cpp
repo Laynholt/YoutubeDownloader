@@ -95,6 +95,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.whisperLanguage == L"auto", "default whisper language mismatch");
     Require(defaults.votSubtitleLanguage == L"ru", "default VOT subtitle language mismatch");
     Require(defaults.voiceOverLanguage == L"ru", "default voice-over language mismatch");
+    Require(defaults.voiceOverOriginalVolumePercent == 25, "default voice-over original volume mismatch");
     Require(defaults.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off, "default voice-over ffmpeg mode mismatch");
     Require(defaults.subtitleFfmpegMode == SubtitleFfmpegMode::Off, "default subtitle ffmpeg mode mismatch");
     Require(defaults.whisperPath.empty(), "default whisper path should be empty");
@@ -114,6 +115,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
     saved.votSubtitleLanguage = L"en";
     saved.voiceOverLanguage = L"en";
+    saved.voiceOverOriginalVolumePercent = 40;
     saved.voiceOverFfmpegMode = VoiceOverFfmpegMode::AudioTrack;
     saved.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
     saved.quality = L"720p";
@@ -138,6 +140,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.votExePath == saved.votExePath, "vot path round-trip mismatch");
     Require(loaded.votSubtitleLanguage == L"en", "VOT subtitle language round-trip mismatch");
     Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
+    Require(loaded.voiceOverOriginalVolumePercent == 40, "voice-over original volume round-trip mismatch");
     Require(loaded.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack, "voice-over ffmpeg mode round-trip mismatch");
     Require(loaded.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, "subtitle ffmpeg mode round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
@@ -180,13 +183,14 @@ void TestConfigNormalizesPostProcessingLanguageOptions() {
     fs::create_directories(paths.configPath().parent_path());
     {
         std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"whisper_language":"XX","vot_subtitle_language":"ZZ","voice_over_language":"ZZ"})json";
+        out << R"json({"whisper_language":"XX","vot_subtitle_language":"ZZ","voice_over_language":"ZZ","voice_over_original_volume_percent":150})json";
     }
 
     AppConfig loaded = ConfigStore::Load(paths);
     Require(loaded.whisperLanguage == L"auto", "unknown transcription source language should normalize to auto");
     Require(loaded.votSubtitleLanguage == L"ru", "unknown VOT subtitle language should normalize to ru");
     Require(loaded.voiceOverLanguage == L"ru", "unknown voice-over language should normalize to ru");
+    Require(loaded.voiceOverOriginalVolumePercent == 100, "voice-over original volume should clamp high values");
 
     {
         std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
@@ -1797,13 +1801,13 @@ void TestTranscriptionPathsAndArguments() {
     const fs::path media = root / L"Downloads" / L"Video One.mp4";
     const fs::path temp = root / L"stuff" / L"transcription_tmp";
 
-    const TranscriptionPaths paths = BuildTranscriptionPaths(media, temp, 42);
+    const TranscriptionPaths paths = BuildTranscriptionPaths(media, temp, 42, TranscriptionEngine::Whisper, L"auto");
     Require(paths.wavPath == temp / L"audio-42.wav", "temporary transcription wav path mismatch");
     Require(paths.whisperOutputBase == temp / L"transcript-42", "temporary whisper output base should be ASCII");
     Require(paths.tempTextPath == temp / L"transcript-42.txt", "temporary transcription txt path mismatch");
     Require(paths.tempSrtPath == temp / L"transcript-42.srt", "temporary transcription srt path mismatch");
-    Require(paths.finalTextPath == root / L"Downloads" / L"Video One.txt", "final transcription txt path mismatch");
-    Require(paths.finalSrtPath == root / L"Downloads" / L"Video One.srt", "final transcription srt path mismatch");
+    Require(paths.finalTextPath == root / L"Downloads" / L"Video One.whisper.auto.txt", "final transcription txt path mismatch");
+    Require(paths.finalSrtPath == root / L"Downloads" / L"Video One.whisper.auto.srt", "final transcription srt path mismatch");
     Require(paths.tempVideoPath == temp / L"transcript-42.mp4", "temporary transcription video path mismatch");
     Require(paths.finalVideoPath == media, "transcription final video should be the original media path");
 
@@ -1847,6 +1851,10 @@ void TestTranscriptionPathsAndArguments() {
     Require(ContainsArg(votArgs, L"--output"), "vot-helper subtitles output argument missing");
     Require(votArgs.at(ArgIndex(votArgs, L"--output") + 1) == paths.tempSrtPath.wstring(), "vot-helper subtitles output path mismatch");
     Require(ContainsArg(votArgs, L"--force"), "vot-helper subtitles force argument missing");
+
+    const TranscriptionPaths votPaths = BuildTranscriptionPaths(media, temp, 43, TranscriptionEngine::Vot, L"RU");
+    Require(votPaths.finalTextPath == root / L"Downloads" / L"Video One.vot.ru.txt", "final VOT transcription txt path mismatch");
+    Require(votPaths.finalSrtPath == root / L"Downloads" / L"Video One.vot.ru.srt", "final VOT transcription srt path mismatch");
 }
 
 void TestSubtitleFfmpegArguments() {
@@ -2031,6 +2039,9 @@ void TestPostProcessingFfmpegModesAreDisabledForAudioOnlyMedia() {
         EffectiveVoiceOverFfmpegModeForMedia(VoiceOverFfmpegMode::AudioTrack, L"audio", L"C:/Downloads/Video.webm", L"720p") == VoiceOverFfmpegMode::AudioTrack,
         "video downloads must keep voice-over audio track mode even when the last yt-dlp progress segment was audio"
     );
+    Require(!ShouldBlockVoiceOverTranslationForDuration(0), "unknown duration should not block VOT translation");
+    Require(!ShouldBlockVoiceOverTranslationForDuration(14400), "4 hour video should still be allowed for VOT translation");
+    Require(ShouldBlockVoiceOverTranslationForDuration(14401), "videos longer than 4 hours should be blocked before VOT translation");
 }
 
 void TestProcessRunnerCapturesOutputAndExitCode() {
@@ -2189,7 +2200,7 @@ void TestTranscriptionFailsWhenOnlyOneSidecarCanBeCommitted() {
         out << "media";
     }
 
-    const TranscriptionPaths expectedPaths = BuildTranscriptionPaths(media, tempDir, 0);
+    const TranscriptionPaths expectedPaths = BuildTranscriptionPaths(media, tempDir, 0, TranscriptionEngine::Vot, L"ru");
     {
         std::ofstream out(expectedPaths.finalTextPath, std::ios::binary | std::ios::trunc);
         out << "previous transcript";

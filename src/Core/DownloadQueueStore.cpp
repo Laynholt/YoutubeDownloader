@@ -132,6 +132,7 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["total_bytes"] = task.totalBytes;
     json["speed_bytes_per_second"] = task.speedBytesPerSecond;
     json["eta_seconds"] = task.etaSeconds;
+    json["duration_seconds"] = task.durationSeconds;
     json["media_kind"] = WideToUtf8(task.mediaKind);
     json["format_id"] = WideToUtf8(task.formatId);
     json["extension"] = WideToUtf8(task.extension);
@@ -171,6 +172,7 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     task.totalBytes = UInt64FromJson(json, "total_bytes");
     task.speedBytesPerSecond = UInt64FromJson(json, "speed_bytes_per_second");
     task.etaSeconds = UInt64FromJson(json, "eta_seconds");
+    task.durationSeconds = UInt64FromJson(json, "duration_seconds");
     task.mediaKind = WStringFromJson(json, "media_kind");
     task.formatId = WStringFromJson(json, "format_id");
     task.extension = WStringFromJson(json, "extension");

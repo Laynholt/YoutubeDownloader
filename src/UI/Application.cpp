@@ -1642,13 +1642,15 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     bool enriched = m_downloadQueue->EnrichMetadata(
                         result.url,
                         result.preview.title,
-                        result.preview.cachedThumbnailPath
+                        result.preview.cachedThumbnailPath,
+                        result.preview.durationSeconds
                     );
                     if (!result.preview.webpageUrl.empty() && result.preview.webpageUrl != result.url) {
                         enriched = m_downloadQueue->EnrichMetadata(
                             result.preview.webpageUrl,
                             result.preview.title,
-                            result.preview.cachedThumbnailPath
+                            result.preview.cachedThumbnailPath,
+                            result.preview.durationSeconds
                         ) || enriched;
                     }
                     if (enriched) {
@@ -2742,7 +2744,12 @@ void Application::EnqueueCurrentUrl() {
         size_t remaining = preview.entries.size();
         for (const VideoPreview& entry : preview.entries) {
             const std::wstring itemUrl = entry.webpageUrl.empty() ? url : entry.webpageUrl;
-            m_downloadQueue->Enqueue(makeRequest(itemUrl), entry.title.empty() ? itemUrl : entry.title, entry.cachedThumbnailPath);
+            m_downloadQueue->Enqueue(
+                makeRequest(itemUrl),
+                entry.title.empty() ? itemUrl : entry.title,
+                entry.cachedThumbnailPath,
+                entry.durationSeconds
+            );
             --remaining;
             if (remaining > 0) {
                 SetTransientStatus(L"Добавление элементов плейлиста: осталось " + std::to_wstring(remaining));
@@ -2751,7 +2758,12 @@ void Application::EnqueueCurrentUrl() {
         KillTimer(m_window, kStatusRestoreTimer);
         m_transientStatusActive = false;
     } else {
-        m_downloadQueue->Enqueue(makeRequest(url), preview.title.empty() ? url : preview.title, preview.cachedThumbnailPath);
+        m_downloadQueue->Enqueue(
+            makeRequest(url),
+            preview.title.empty() ? url : preview.title,
+            preview.cachedThumbnailPath,
+            preview.durationSeconds
+        );
     }
     RefreshQueueText();
 }
@@ -2889,7 +2901,16 @@ void Application::StartPostProcessing(int taskId, int action) {
                 SetTransientStatus(L"FFmpeg не найден: субтитры будут сохранены отдельными файлами");
             }
         }
-        const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(mediaPath, paths.transcriptionTempDir(), 0);
+        const std::wstring transcriptLanguage = config.transcriptionEngine == TranscriptionEngine::Vot
+            ? config.votSubtitleLanguage
+            : config.whisperLanguage;
+        const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(
+            mediaPath,
+            paths.transcriptionTempDir(),
+            0,
+            config.transcriptionEngine,
+            transcriptLanguage
+        );
         const std::vector<std::filesystem::path> affectedFiles = BuildTranscriptionAffectedFiles(
             transcriptPaths,
             config.subtitleFfmpegMode
@@ -2899,6 +2920,15 @@ void Application::StartPostProcessing(int taskId, int action) {
         }
         approvedAffectedFiles = affectedFiles;
     } else if (action == kQueueActionTranslate) {
+        if (ShouldBlockVoiceOverTranslationForDuration(task.durationSeconds)) {
+            ShowErrorDialog(
+                m_window,
+                m_instance,
+                L"Видео слишком длинное",
+                L"Voice Over Translation не переводит видео длиннее 4 часов."
+            );
+            return;
+        }
         const VoiceOverFfmpegMode requestedVoiceMode = config.voiceOverFfmpegMode;
         config.voiceOverFfmpegMode = EffectiveVoiceOverFfmpegModeForMedia(
             config.voiceOverFfmpegMode,
@@ -3024,10 +3054,15 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
 
             requireRegularFile(mediaPath, "media file is no longer available");
             if (action == kQueueActionTranscribe) {
+                const std::wstring transcriptLanguage = config.transcriptionEngine == TranscriptionEngine::Vot
+                    ? config.votSubtitleLanguage
+                    : config.whisperLanguage;
                 const TranscriptionPaths transcriptPaths = BuildTranscriptionPaths(
                     mediaPath,
                     paths.transcriptionTempDir(),
-                    0
+                    0,
+                    config.transcriptionEngine,
+                    transcriptLanguage
                 );
                 requireApprovedAffectedFiles(BuildTranscriptionAffectedFiles(
                     transcriptPaths,
@@ -3116,6 +3151,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                 request.youtubeUrl = task.request.url;
                 request.targetLanguage = config.voiceOverLanguage;
                 request.ffmpegMode = config.voiceOverFfmpegMode;
+                request.originalVolumePercent = config.voiceOverOriginalVolumePercent;
 
                 VoiceOverTranslationCallbacks callbacks;
                 callbacks.onProgress = [&](double percent, const std::wstring& status) {
