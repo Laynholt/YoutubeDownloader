@@ -1867,7 +1867,9 @@ void TestSubtitleFfmpegArguments() {
     Require(ContainsArg(trackArgs, L"-i"), "subtitle track input argument missing");
     Require(trackArgs.at(ArgIndex(trackArgs, L"-i") + 1) == media.wstring(), "subtitle track media path mismatch");
     Require(ContainsArg(trackArgs, L"-map"), "subtitle track map argument missing");
-    Require(ContainsArg(trackArgs, L"0"), "subtitle track should map original streams");
+    Require(!ContainsArg(trackArgs, L"0"), "subtitle track should not copy old subtitle streams");
+    Require(ContainsArg(trackArgs, L"0:v?"), "subtitle track should map original video streams");
+    Require(ContainsArg(trackArgs, L"0:a?"), "subtitle track should map original audio streams");
     Require(ContainsArg(trackArgs, L"1:0"), "subtitle track should map subtitle stream");
     Require(ContainsArg(trackArgs, L"-c:s"), "subtitle track codec argument missing");
     Require(trackArgs.back() == tempVideo.wstring(), "subtitle track output should be temporary video");
