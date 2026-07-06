@@ -847,6 +847,45 @@ bool IsRegularFile(const std::filesystem::path& path) {
     return !path.empty() && std::filesystem::is_regular_file(path, ec);
 }
 
+bool IsWhisperReady(const DialogState* state) {
+    return state && state->paths &&
+        WhisperManager::Resolve(*state->paths, state->workingConfig).installed;
+}
+
+bool IsVotReady(const DialogState* state) {
+    return state && state->paths &&
+        VotExeManager::Resolve(*state->paths, state->workingConfig).available;
+}
+
+bool ShowTranscriptionToolsCard(const DialogState* state) {
+    return !IsFfmpegReady(state) || !IsWhisperReady(state) || !IsVotReady(state);
+}
+
+bool ShowTranslationToolsCard(const DialogState* state) {
+    return !IsFfmpegReady(state) || !IsVotReady(state);
+}
+
+void AppendMissingTool(std::wstring& text, const wchar_t* tool) {
+    if (!text.empty()) {
+        text += L", ";
+    }
+    text += tool;
+}
+
+std::wstring MissingToolsText(const DialogState* state, bool includeWhisper) {
+    std::wstring missing;
+    if (!IsFfmpegReady(state)) {
+        AppendMissingTool(missing, L"FFmpeg");
+    }
+    if (includeWhisper && !IsWhisperReady(state)) {
+        AppendMissingTool(missing, L"Whisper.cpp");
+    }
+    if (!IsVotReady(state)) {
+        AppendMissingTool(missing, L"VOT");
+    }
+    return L"Не хватает: " + missing + L". Установите или укажите путь в Инструментах.";
+}
+
 std::wstring FormatModelSize(std::uint64_t bytes) {
     if (bytes == 0) {
         return L"";
@@ -1047,12 +1086,30 @@ void RefreshSettingsButtons(DialogState* state) {
     SetDarkButtonState(state->window, IdVotDetails, state->votDetailsExpanded, state->votDetailsExpanded ? L"Скрыть" : L"Подробно");
 
     const bool ffmpegReady = IsFfmpegReady(state);
-    SetDarkButtonEnabled(state->window, IdSubtitleModeOff, true);
-    SetDarkButtonEnabled(state->window, IdSubtitleModeTrack, ffmpegReady);
-    SetDarkButtonEnabled(state->window, IdSubtitleModeBurn, ffmpegReady);
-    SetDarkButtonEnabled(state->window, IdVoiceModeOff, true);
-    SetDarkButtonEnabled(state->window, IdVoiceModeTrack, ffmpegReady);
-    SetDarkButtonEnabled(state->window, IdVoiceModeMix, ffmpegReady);
+    const bool whisperReady = IsWhisperReady(state);
+    const bool votReady = IsVotReady(state);
+    const bool selectedTranscriptionReady =
+        state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper
+            ? ffmpegReady && whisperReady
+            : votReady;
+    SetDarkButtonEnabled(state->window, 111, true);
+    SetDarkButtonEnabled(state->window, 112, ffmpegReady);
+    SetDarkButtonEnabled(state->window, 113, ffmpegReady);
+    SetDarkButtonEnabled(state->window, 114, ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdTranscriptionWhisper, ffmpegReady && whisperReady);
+    SetDarkButtonEnabled(state->window, IdTranscriptionVot, votReady);
+    SetDarkButtonEnabled(state->window, IdVotSubtitleLanguageEdit, votReady);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeOff, selectedTranscriptionReady);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeTrack, selectedTranscriptionReady && ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdSubtitleModeBurn, selectedTranscriptionReady && ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdVoiceLanguageEdit, votReady);
+    SetDarkButtonEnabled(state->window, IdVoiceModeOff, votReady);
+    SetDarkButtonEnabled(state->window, IdVoiceModeTrack, votReady && ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdVoiceModeMix, votReady && ffmpegReady);
+    SetDarkButtonEnabled(state->window, IdVoiceVolumeMinus, votReady && ffmpegReady && state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Mix);
+    SetDarkButtonEnabled(state->window, IdVoiceVolumePlus, votReady && ffmpegReady && state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Mix);
+    SetDarkButtonEnabled(state->window, IdTranscriptionOpenTools, ShowTranscriptionToolsCard(state));
+    SetDarkButtonEnabled(state->window, IdTranslationOpenTools, ShowTranslationToolsCard(state));
 }
 
 HWND CreateScrollText(HWND parent, HINSTANCE instance, const std::wstring& text) {
@@ -1486,7 +1543,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 150, 34, TRUE);
     }
     card = SettingsTranscriptionToolsCardRect(state, width, height);
-    if (transcriptionTools) {
+    if (transcriptionTools && ShowTranscriptionToolsCard(state)) {
         MoveWindow(transcriptionTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
     }
 
@@ -1512,7 +1569,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         MoveWindow(voiceVolumePlus, card.left + kSettingsCardPadding + 118, voiceVolumeTop, 46, 34, TRUE);
     }
     card = SettingsTranslationToolsCardRect(state, width, height);
-    if (translationTools) {
+    if (translationTools && ShowTranslationToolsCard(state)) {
         MoveWindow(translationTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
     }
 
@@ -1576,12 +1633,22 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     }, state->settingsSection == SettingsSection::Downloads);
     SetControlsVisible(state->window, {
         IdTranscriptionWhisper, IdTranscriptionVot, IdVotSubtitleLanguageEdit,
-        IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn, IdTranscriptionOpenTools
+        IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn
     }, state->settingsSection == SettingsSection::Transcription);
+    SetControlsVisible(
+        state->window,
+        {IdTranscriptionOpenTools},
+        state->settingsSection == SettingsSection::Transcription && ShowTranscriptionToolsCard(state)
+    );
     SetControlsVisible(state->window, {
         IdVoiceLanguageEdit, IdVoiceModeOff, IdVoiceModeTrack, IdVoiceModeMix,
-        IdVoiceVolumeMinus, IdVoiceVolumePlus, IdTranslationOpenTools
+        IdVoiceVolumeMinus, IdVoiceVolumePlus
     }, state->settingsSection == SettingsSection::Translation);
+    SetControlsVisible(
+        state->window,
+        {IdTranslationOpenTools},
+        state->settingsSection == SettingsSection::Translation && ShowTranslationToolsCard(state)
+    );
     SetControlsVisible(state->window, {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
         IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
@@ -2038,7 +2105,17 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             labelFont,
             textFont
         );
-        DrawSettingsCard(dc, SettingsTranscriptionToolsCardRect(state, client.right, client.bottom), L"Инструменты", L"Пути и установка доступны в разделе Инструменты.", labelFont, textFont, 220);
+        if (ShowTranscriptionToolsCard(state)) {
+            DrawSettingsCard(
+                dc,
+                SettingsTranscriptionToolsCardRect(state, client.right, client.bottom),
+                L"Инструменты",
+                MissingToolsText(state, true),
+                labelFont,
+                textFont,
+                220
+            );
+        }
     } else if (state->settingsSection == SettingsSection::Translation) {
         DrawSettingsCard(
             dc,
@@ -2065,7 +2142,17 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             textFont,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
         );
-        DrawSettingsCard(dc, SettingsTranslationToolsCardRect(state, client.right, client.bottom), L"Инструменты", L"Путь vot-helper.exe задается в разделе Инструменты.", labelFont, textFont, 220);
+        if (ShowTranslationToolsCard(state)) {
+            DrawSettingsCard(
+                dc,
+                SettingsTranslationToolsCardRect(state, client.right, client.bottom),
+                L"Инструменты",
+                MissingToolsText(state, false),
+                labelFont,
+                textFont,
+                220
+            );
+        }
     } else if (state->settingsSection == SettingsSection::Tools) {
         const ToolInstallStatus ytDlpStatus = state->paths ? YtDlpManager(*state->paths).Status() : ToolInstallStatus{};
         RECT toolCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
@@ -2942,14 +3029,23 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 RefreshSettingsButtons(state);
                 return 0;
             case 112:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.container = L"mp4";
                 RefreshSettingsButtons(state);
                 return 0;
             case 113:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.container = L"mkv";
                 RefreshSettingsButtons(state);
                 return 0;
             case 114:
+                if (!IsFfmpegReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.container = L"webm";
                 RefreshSettingsButtons(state);
                 return 0;
@@ -3010,38 +3106,56 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 InvalidateRect(state->window, nullptr, FALSE);
                 return 0;
             case IdTranscriptionWhisper:
+                if (!IsFfmpegReady(state) || !IsWhisperReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.transcriptionEngine = TranscriptionEngine::Whisper;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdTranscriptionVot:
+                if (!IsVotReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.transcriptionEngine = TranscriptionEngine::Vot;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdVotSubtitleLanguageEdit:
+                if (!IsVotReady(state)) {
+                    return 0;
+                }
                 ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVotSubtitleLanguageEdit), SettingsLanguageTarget::VotSubtitle);
                 return 0;
             case IdVoiceLanguageEdit:
+                if (!IsVotReady(state)) {
+                    return 0;
+                }
                 ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), SettingsLanguageTarget::VoiceOver);
                 return 0;
             case IdVoiceModeOff:
+                if (!IsVotReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdVoiceModeTrack:
-                if (!IsFfmpegReady(state)) {
+                if (!IsVotReady(state) || !IsFfmpegReady(state)) {
                     return 0;
                 }
                 state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::AudioTrack;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdVoiceModeMix:
-                if (!IsFfmpegReady(state)) {
+                if (!IsVotReady(state) || !IsFfmpegReady(state)) {
                     return 0;
                 }
                 state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Mix;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdVoiceVolumeMinus:
+                if (!IsVotReady(state) || !IsFfmpegReady(state) || state->workingConfig.voiceOverFfmpegMode != VoiceOverFfmpegMode::Mix) {
+                    return 0;
+                }
                 state->workingConfig.voiceOverOriginalVolumePercent = std::clamp(
                     state->workingConfig.voiceOverOriginalVolumePercent - 5,
                     0,
@@ -3050,6 +3164,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdVoiceVolumePlus:
+                if (!IsVotReady(state) || !IsFfmpegReady(state) || state->workingConfig.voiceOverFfmpegMode != VoiceOverFfmpegMode::Mix) {
+                    return 0;
+                }
                 state->workingConfig.voiceOverOriginalVolumePercent = std::clamp(
                     state->workingConfig.voiceOverOriginalVolumePercent + 5,
                     0,
@@ -3058,18 +3175,31 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdSubtitleModeOff:
+                if (state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper) {
+                    if (!IsFfmpegReady(state) || !IsWhisperReady(state)) {
+                        return 0;
+                    }
+                } else if (!IsVotReady(state)) {
+                    return 0;
+                }
                 state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::Off;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdSubtitleModeTrack:
-                if (!IsFfmpegReady(state)) {
+                if (!IsFfmpegReady(state) ||
+                    (state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper
+                        ? !IsWhisperReady(state)
+                        : !IsVotReady(state))) {
                     return 0;
                 }
                 state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::SubtitleTrack;
                 RefreshSettingsButtons(state);
                 return 0;
             case IdSubtitleModeBurn:
-                if (!IsFfmpegReady(state)) {
+                if (!IsFfmpegReady(state) ||
+                    (state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper
+                        ? !IsWhisperReady(state)
+                        : !IsVotReady(state))) {
                     return 0;
                 }
                 state->workingConfig.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
