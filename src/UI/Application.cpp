@@ -2468,6 +2468,30 @@ void Application::InitializeBackend() {
     }
 
     m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
+    bool toolVersionsChanged = false;
+    auto updateToolVersion = [&toolVersionsChanged](std::wstring& stored, const std::wstring& resolved) {
+        if (!resolved.empty() && stored != resolved) {
+            stored = resolved;
+            toolVersionsChanged = true;
+        }
+    };
+    updateToolVersion(m_config.ffmpegVersion, m_ffmpeg.version);
+    const ToolInstallStatus whisper = WhisperManager::Resolve(*m_paths, m_config);
+    updateToolVersion(m_config.whisperVersion, whisper.version);
+    const VotExeStatus vot = VotExeManager::Resolve(*m_paths, m_config);
+    updateToolVersion(m_config.votExeVersion, vot.version);
+    if (toolVersionsChanged) {
+        try {
+            ConfigStore::Save(*m_paths, m_config);
+        } catch (const std::exception& ex) {
+            m_logger->Error(
+                L"Tool version migration failed: " +
+                std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+            );
+        } catch (...) {
+            m_logger->Error(L"Tool version migration failed: unknown error");
+        }
+    }
     m_downloadQueue = std::make_unique<DownloadQueue>(m_config.maxParallelDownloads, m_logger.get());
     LoadDownloadQueue();
 

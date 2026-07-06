@@ -119,7 +119,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.whisperBackend = WhisperBackend::Cuda;
     saved.whisperLanguage = L"ru";
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
-    saved.votExeVersion = L"vot-2.4.12-r2";
+    saved.votExeVersion = L"2.4.12";
     saved.votSubtitleLanguage = L"en";
     saved.voiceOverLanguage = L"en";
     saved.voiceOverOriginalVolumePercent = 40;
@@ -1487,7 +1487,7 @@ void TestFfmpegResolutionPrecedence() {
 
     AppConfig config;
     config.ffmpegPath = root / L"chosen" / L"ffmpeg.exe";
-    config.ffmpegVersion = L"7.0-custom";
+    config.ffmpegVersion = L"ffmpeg version 7.0-custom";
     fs::create_directories(config.ffmpegPath.parent_path());
     {
         std::ofstream out(config.ffmpegPath);
@@ -1504,18 +1504,18 @@ void TestFfmpegResolutionPrecedence() {
     Require(chosen.available, "saved ffmpeg path should resolve");
     Require(chosen.source == FfmpegSource::ConfiguredPath, "saved ffmpeg path should take precedence");
     Require(chosen.ffmpegExe == config.ffmpegPath, "configured ffmpeg path mismatch");
-    Require(chosen.version == L"7.0-custom", "configured ffmpeg version mismatch");
+    Require(chosen.version == L"7.0", "configured ffmpeg version mismatch");
 
     config.ffmpegPath.clear();
     {
         std::ofstream out(paths.localFfmpegVersionPath());
-        out << "2026-07-01";
+        out << "8.0.1-essentials_build-www.gyan.dev";
     }
     const FfmpegStatus local = FfmpegManager::Resolve(paths, config);
     Require(local.available, "local ffmpeg path should resolve");
     Require(local.source == FfmpegSource::LocalTools, "local ffmpeg source mismatch");
     Require(local.ffmpegExe == paths.localFfmpegExePath(), "local ffmpeg path mismatch");
-    Require(local.version == L"2026-07-01", "local ffmpeg version mismatch");
+    Require(local.version == L"8.0.1", "local ffmpeg version mismatch");
 }
 
 void TestFfmpegUserPathAndExtractedTreeResolution() {
@@ -1674,7 +1674,7 @@ void TestWhisperBackendResolution() {
     Require(cuda.whisperBackend == WhisperBackend::Cuda, "configured local CUDA path should keep CUDA backend");
 
     config.whisperPath = root / L"custom" / L"whisper-cli.exe";
-    config.whisperVersion = L"custom-whisper";
+    config.whisperVersion = L"whisper.cpp version: 1.9.1";
     fs::create_directories(config.whisperPath.parent_path());
     {
         std::ofstream out(config.whisperPath);
@@ -1683,7 +1683,7 @@ void TestWhisperBackendResolution() {
     ToolInstallStatus custom = WhisperManager::Resolve(paths, config);
     Require(custom.installed, "custom whisper path should resolve");
     Require(custom.executable == config.whisperPath, "custom whisper path mismatch");
-    Require(custom.version == L"custom-whisper", "custom whisper version mismatch");
+    Require(custom.version == L"1.9.1", "custom whisper version mismatch");
     Require(custom.whisperBackend == WhisperBackend::Custom, "custom whisper backend mismatch");
 }
 
@@ -1737,10 +1737,10 @@ void TestVotExeResolutionAndChecksumParsing() {
     VotExeStatus local = VotExeManager::Resolve(paths, config);
     Require(local.available, "local VOT exe should resolve");
     Require(local.executable == paths.localVotExePath(), "local VOT exe path mismatch");
-    Require(local.version == L"vot-2.4.12-r2", "local VOT version mismatch");
+    Require(local.version == L"2.4.12", "local VOT version mismatch");
 
     config.votExePath = root / L"custom" / L"vot-helper.exe";
-    config.votExeVersion = L"custom-vot";
+    config.votExeVersion = L"vot-helper 0.1.0";
     fs::create_directories(config.votExePath.parent_path());
     {
         std::ofstream out(config.votExePath);
@@ -1749,7 +1749,7 @@ void TestVotExeResolutionAndChecksumParsing() {
     VotExeStatus custom = VotExeManager::Resolve(paths, config);
     Require(custom.available, "custom VOT exe should resolve");
     Require(custom.executable == config.votExePath, "custom VOT exe path mismatch");
-    Require(custom.version == L"custom-vot", "custom VOT version mismatch");
+    Require(custom.version == L"0.1.0", "custom VOT version mismatch");
 
     const fs::path selectedDir = root / L"selected";
     fs::create_directories(selectedDir);
@@ -1830,7 +1830,7 @@ void TestVotExeReleaseParsing() {
 
     const ReleaseAssetInfo zip = ParseGitHubReleaseAsset(release, VotExeManager::WindowsZipAssetName());
     Require(zip.found, "VOT helper zip asset should be found");
-    Require(zip.version == L"vot-2.4.12-r2", "VOT helper zip release version mismatch");
+    Require(zip.version == L"2.4.12", "VOT helper zip release version mismatch");
     Require(
         zip.downloadUrl == L"https://github.com/Laynholt/vot_exe/releases/download/vot-2.4.12-r2/vot-helper-windows-x64.zip",
         "VOT helper zip download URL mismatch"
@@ -2252,6 +2252,31 @@ std::filesystem::path CurrentTestExecutablePath() {
     Require(length > 0, "failed to resolve current test executable path");
     buffer.resize(length);
     return buffer;
+}
+
+void TestToolVersionBackfill() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ToolVersionBackfill");
+    const AppPaths paths(root);
+    const fs::path fixture = CurrentTestExecutablePath();
+    AppConfig config;
+
+    fs::create_directories(paths.localFfmpegBinDir());
+    fs::copy_file(fixture, paths.localFfmpegExePath(), fs::copy_options::overwrite_existing);
+    const FfmpegStatus ffmpeg = FfmpegManager::Resolve(paths, config);
+    Require(ffmpeg.version == L"7.0", "local FFmpeg version should be backfilled");
+    Require(fs::is_regular_file(paths.localFfmpegVersionPath()), "local FFmpeg version file should be written");
+
+    fs::create_directories(paths.localWhisperCpuExePath().parent_path());
+    fs::copy_file(fixture, paths.localWhisperCpuExePath(), fs::copy_options::overwrite_existing);
+    const ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
+    Require(whisper.version == L"1.9.1", "local Whisper version should be backfilled");
+    Require(fs::is_regular_file(paths.localWhisperCpuVersionPath()), "local Whisper version file should be written");
+
+    fs::create_directories(paths.localVotExePath().parent_path());
+    fs::copy_file(fixture, paths.localVotExePath(), fs::copy_options::overwrite_existing);
+    const VotExeStatus vot = VotExeManager::Resolve(paths, config);
+    Require(vot.version == L"0.1.0", "local VOT version should be backfilled");
+    Require(fs::is_regular_file(paths.localVotVersionPath()), "local VOT version file should be written");
 }
 
 void TestTranscriptionFailsWhenOnlyOneSidecarCanBeCommitted() {
@@ -3481,8 +3506,19 @@ void TestDownloadQueueDeletedTaskIsNotExported() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "-version") {
+        std::cout << "ffmpeg version 7.0-test\n";
+        return 0;
+    }
     if (argc >= 2 && std::string(argv[1]) == "--version") {
-        std::cout << "2026.06.09\n";
+        const std::string exeName = fs::path(argv[0]).filename().string();
+        if (exeName == "whisper-cli.exe") {
+            std::cout << "whisper.cpp version: 1.9.1\n";
+        } else if (exeName == "vot-helper.exe") {
+            std::cout << "vot-helper 0.1.0\n";
+        } else {
+            std::cout << "2026.06.09\n";
+        }
         return 0;
     }
     if (argc >= 2 && std::string(argv[1]) == "subtitles") {
@@ -3494,7 +3530,6 @@ int main(int argc, char** argv) {
     if (argc >= 2 && std::string(argv[1]) == "--process-tree-child-fixture") {
         return RunProcessTreeChildFixture();
     }
-
     TestAppPaths();
     TestDownloadQueueStoreRoundTripSnapshots();
     TestDownloadQueueStoreSkipsInvalidEntries();
@@ -3550,6 +3585,7 @@ int main(int argc, char** argv) {
     TestWhisperExecutableDiscovery();
     TestVotExeResolutionAndChecksumParsing();
     TestVotExeReleaseParsing();
+    TestToolVersionBackfill();
     TestVotExecutableSelfTest();
     TestWhisperExecutableSelfTest();
     TestTranscriptionRetriesAmbiguousVotSubtitleTrack();

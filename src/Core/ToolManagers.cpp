@@ -45,7 +45,18 @@ std::wstring NormalizeVersion(std::wstring version) {
         iswdigit(version[1])) {
         version.erase(version.begin());
     }
-    return version;
+    const size_t start = version.find_first_of(L"0123456789");
+    if (start == std::wstring::npos) {
+        return {};
+    }
+    size_t end = start;
+    while (end < version.size() && (iswdigit(version[end]) || version[end] == L'.')) {
+        ++end;
+    }
+    while (end > start && version[end - 1] == L'.') {
+        --end;
+    }
+    return version.substr(start, end - start);
 }
 
 bool IsExecutableFile(const std::filesystem::path& path) {
@@ -144,11 +155,15 @@ std::wstring ReadExecutableVersion(
     options.timeoutMs = 15000;
     options.cancelEvent = cancelEvent;
 
-    const ProcessRunResult result = ProcessRunner::Run(options);
-    if (result.canceled || result.timedOut || result.exitCode != 0) {
+    try {
+        const ProcessRunResult result = ProcessRunner::Run(options);
+        if (result.canceled || result.timedOut || result.exitCode != 0) {
+            return {};
+        }
+        return FirstTrimmedLine(result.stdoutText.empty() ? result.stderrText : result.stdoutText);
+    } catch (...) {
         return {};
     }
-    return FirstTrimmedLine(result.stdoutText.empty() ? result.stderrText : result.stdoutText);
 }
 
 std::wstring ReadTextFile(const std::filesystem::path& path) {
@@ -174,6 +189,26 @@ void WriteTextFile(const std::filesystem::path& path, const std::wstring& text) 
     if (out) {
         out << WideToUtf8(text);
     }
+}
+
+std::wstring CachedToolVersion(
+    const std::filesystem::path& versionPath,
+    const std::filesystem::path& executable,
+    const std::function<std::wstring(const std::filesystem::path&)>& readVersion
+) {
+    std::wstring version = ReadTextFile(versionPath);
+    if (!version.empty()) {
+        const std::wstring normalized = NormalizeVersion(version);
+        if (normalized != version) {
+            WriteTextFile(versionPath, normalized);
+        }
+        return normalized;
+    }
+    version = NormalizeVersion(readVersion(executable));
+    if (!version.empty()) {
+        WriteTextFile(versionPath, version);
+    }
+    return version;
 }
 
 void WriteUtf16LeFile(const std::filesystem::path& path, const std::wstring& text) {
@@ -466,19 +501,29 @@ FfmpegStatus FfmpegManager::Resolve(const AppPaths& paths, const AppConfig& conf
     if (configured.available) {
         FfmpegStatus status = configured;
         status.source = FfmpegSource::ConfiguredPath;
-        status.version = config.ffmpegVersion;
+        status.version = config.ffmpegVersion.empty()
+            ? ExecutableVersion(status.ffmpegExe)
+            : NormalizeVersion(config.ffmpegVersion);
         return status;
     }
 
     if (IsExecutableFile(paths.localFfmpegExePath())) {
         FfmpegStatus status = MakeFfmpegStatus(FfmpegSource::LocalTools, paths.localFfmpegExePath());
-        status.version = ReadTextFile(paths.localFfmpegVersionPath());
+        status.version = CachedToolVersion(
+            paths.localFfmpegVersionPath(),
+            status.ffmpegExe,
+            [](const std::filesystem::path& executable) { return FfmpegManager::ExecutableVersion(executable); }
+        );
         return status;
     }
 
     const std::filesystem::path pathExe = SearchPathExe(L"ffmpeg.exe");
     if (IsExecutableFile(pathExe)) {
-        return MakeFfmpegStatus(FfmpegSource::Path, pathExe);
+        FfmpegStatus status = MakeFfmpegStatus(FfmpegSource::Path, pathExe);
+        status.version = config.ffmpegVersion.empty()
+            ? ExecutableVersion(status.ffmpegExe)
+            : NormalizeVersion(config.ffmpegVersion);
+        return status;
     }
 
     return MakeMissingFfmpegStatus(L"FFmpeg не найден");
@@ -530,7 +575,7 @@ std::filesystem::path FfmpegManager::FindExtractedBinDir(const std::filesystem::
 }
 
 std::wstring FfmpegManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
-    return ParseFfmpegVersionLine(ReadExecutableVersion(executable, {L"-version"}, cancelEvent));
+    return NormalizeVersion(ParseFfmpegVersionLine(ReadExecutableVersion(executable, {L"-version"}, cancelEvent)));
 }
 
 std::wstring FfmpegManager::EssentialsDownloadUrl() {
@@ -724,7 +769,7 @@ bool WhisperManager::SelfTestExecutable(const std::filesystem::path& executable,
 }
 
 std::wstring WhisperManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
-    return ReadExecutableVersion(executable, {L"--version"}, cancelEvent);
+    return NormalizeVersion(ReadExecutableVersion(executable, {L"--version"}, cancelEvent));
 }
 
 ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperBackend backend) {
@@ -733,8 +778,10 @@ ToolInstallStatus WhisperManager::ResolveBackend(const AppPaths& paths, WhisperB
     status.executable = BackendExecutablePath(paths, backend);
     status.installed = IsExecutableFile(status.executable);
     if (status.installed) {
-        status.version = ReadTextFile(
-            backend == WhisperBackend::Cuda ? paths.localWhisperCudaVersionPath() : paths.localWhisperCpuVersionPath()
+        status.version = CachedToolVersion(
+            backend == WhisperBackend::Cuda ? paths.localWhisperCudaVersionPath() : paths.localWhisperCpuVersionPath(),
+            status.executable,
+            [](const std::filesystem::path& executable) { return WhisperManager::ExecutableVersion(executable); }
         );
     }
     return status;
@@ -751,7 +798,9 @@ ToolInstallStatus WhisperManager::Resolve(const AppPaths& paths, const AppConfig
         ToolInstallStatus status;
         status.installed = true;
         status.executable = config.whisperPath;
-        status.version = config.whisperVersion;
+        status.version = config.whisperVersion.empty()
+            ? ExecutableVersion(status.executable)
+            : NormalizeVersion(config.whisperVersion);
         status.whisperBackend = WhisperBackend::Custom;
         return status;
     }
@@ -889,9 +938,9 @@ ToolInstallStatus WhisperManager::Install(
     }
     WriteTextFile(
         installBackend == WhisperBackend::Cuda ? paths.localWhisperCudaVersionPath() : paths.localWhisperCpuVersionPath(),
-        release.version
+        NormalizeVersion(release.version)
     );
-    status.version = release.version;
+    status.version = NormalizeVersion(release.version);
     return status;
 }
 
@@ -1001,16 +1050,26 @@ VotExeStatus VotExeManager::Resolve(const AppPaths& paths, const AppConfig& conf
     VotExeStatus status = ResolveUserPath(config.votExePath);
     if (status.available) {
         if (IsSameExistingFile(status.executable, paths.localVotExePath())) {
-            status.version = ReadTextFile(paths.localVotVersionPath());
+            status.version = CachedToolVersion(
+                paths.localVotVersionPath(),
+                status.executable,
+                [](const std::filesystem::path& executable) { return VotExeManager::ExecutableVersion(executable); }
+            );
         } else {
-            status.version = config.votExeVersion;
+            status.version = config.votExeVersion.empty()
+                ? ExecutableVersion(status.executable)
+                : NormalizeVersion(config.votExeVersion);
         }
         return status;
     }
 
     status = ResolveUserPath(paths.localVotExePath());
     if (status.available) {
-        status.version = ReadTextFile(paths.localVotVersionPath());
+        status.version = CachedToolVersion(
+            paths.localVotVersionPath(),
+            status.executable,
+            [](const std::filesystem::path& executable) { return VotExeManager::ExecutableVersion(executable); }
+        );
         return status;
     }
 
@@ -1107,7 +1166,7 @@ bool VotExeManager::SelfTestExecutable(const std::filesystem::path& executable, 
 }
 
 std::wstring VotExeManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
-    return ReadExecutableVersion(executable, {L"--version"}, cancelEvent);
+    return NormalizeVersion(ReadExecutableVersion(executable, {L"--version"}, cancelEvent));
 }
 
 VotExeStatus VotExeManager::Install(
@@ -1230,8 +1289,8 @@ VotExeStatus VotExeManager::Install(
     if (!SelfTestExecutable(status.executable, cancelEvent)) {
         throw std::runtime_error("installed VOT helper self-test failed");
     }
-    WriteTextFile(paths.localVotVersionPath(), release.version);
-    status.version = release.version;
+    WriteTextFile(paths.localVotVersionPath(), NormalizeVersion(release.version));
+    status.version = NormalizeVersion(release.version);
     return status;
 }
 
