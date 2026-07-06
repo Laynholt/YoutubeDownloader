@@ -3060,7 +3060,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                     ? paths.localWhisperModelPath()
                     : config.whisperModelPath;
                 request.language = config.whisperLanguage;
-                request.votTargetLanguage = config.voiceOverLanguage;
+                request.votTargetLanguage = config.votSubtitleLanguage;
                 request.subtitleMode = config.subtitleFfmpegMode;
 
                 TranscriptionCallbacks callbacks;

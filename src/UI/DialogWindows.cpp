@@ -144,7 +144,6 @@ enum DialogCommand {
     IdSubtitleModeOff = 135,
     IdSubtitleModeTrack = 136,
     IdSubtitleModeBurn = 137,
-    IdWhisperLanguageEdit = 140,
     IdVoiceLanguageEdit = 141,
     IdChooseWhisperFolder = 142,
     IdChooseVotFolder = 143,
@@ -157,6 +156,7 @@ enum DialogCommand {
     IdWhisperModelDownloadSelected = 150,
     IdVotCandidateSelect = 151,
     IdChooseVotExecutable = 152,
+    IdVotSubtitleLanguageEdit = 153,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -202,9 +202,14 @@ struct LogCopyMenuState {
     bool hot = false;
 };
 
+enum class SettingsLanguageTarget {
+    VotSubtitle,
+    VoiceOver
+};
+
 struct SettingsComboMenuState {
     HWND owner = nullptr;
-    bool whisperLanguage = false;
+    SettingsLanguageTarget target = SettingsLanguageTarget::VotSubtitle;
     std::vector<std::wstring> values;
     int hotIndex = -1;
 };
@@ -550,12 +555,12 @@ HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
     return edit;
 }
 
-std::vector<std::wstring> WhisperLanguageOptions() {
-    return {L"auto", L"ru", L"en", L"de", L"es", L"it", L"pt", L"ja", L"ko", L"zh"};
+std::vector<std::wstring> VotSubtitleLanguageOptions() {
+    return {L"ru", L"en", L"zh", L"ko", L"lt", L"lv", L"ar", L"fr", L"it", L"es", L"de", L"ja"};
 }
 
 std::vector<std::wstring> VoiceLanguageOptions() {
-    return {L"ru", L"en", L"de", L"es", L"it", L"pt", L"ja", L"ko", L"zh"};
+    return {L"ru", L"en"};
 }
 
 std::wstring SettingsLanguageButtonText(const std::wstring& value) {
@@ -1022,7 +1027,7 @@ void RefreshSettingsButtons(DialogState* state) {
     );
     SetDarkButtonState(state->window, IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
     SetDarkButtonState(state->window, IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
-    SetDarkButtonState(state->window, IdWhisperLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.whisperLanguage));
+    SetDarkButtonState(state->window, IdVotSubtitleLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.votSubtitleLanguage));
     SetDarkButtonState(state->window, IdVoiceLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.voiceOverLanguage));
     SetDarkButtonState(state->window, IdVoiceModeOff, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Off));
     SetDarkButtonState(state->window, IdVoiceModeTrack, state->workingConfig.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack, VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack));
@@ -1418,7 +1423,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
     HWND transcriptionWhisper = GetDlgItem(state->window, IdTranscriptionWhisper);
     HWND transcriptionVot = GetDlgItem(state->window, IdTranscriptionVot);
-    HWND whisperLanguage = GetDlgItem(state->window, IdWhisperLanguageEdit);
+    HWND votSubtitleLanguage = GetDlgItem(state->window, IdVotSubtitleLanguageEdit);
     HWND chooseWhisper = GetDlgItem(state->window, IdChooseWhisperFolder);
     HWND chooseVot = GetDlgItem(state->window, IdChooseVotFolder);
     HWND subtitleOff = GetDlgItem(state->window, IdSubtitleModeOff);
@@ -1459,8 +1464,8 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     }
     card = SettingsTranscriptionLanguageCardRect(state, width, height);
     const int transcriptionModeTop = card.top + kSettingsCardControlTop;
-    if (whisperLanguage) {
-        MoveWindow(whisperLanguage, card.left + kSettingsCardPadding, transcriptionModeTop, 150, 34, TRUE);
+    if (votSubtitleLanguage) {
+        MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, transcriptionModeTop, 150, 34, TRUE);
     }
     if (subtitleOff) {
         MoveWindow(subtitleOff, card.left + kSettingsCardPadding + 166, transcriptionModeTop, 86, 34, TRUE);
@@ -1554,7 +1559,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         IdAutoUpdate, IdParallelMinus, IdParallelPlus
     }, state->settingsSection == SettingsSection::Downloads);
     SetControlsVisible(state->window, {
-        IdTranscriptionWhisper, IdTranscriptionVot, IdWhisperLanguageEdit,
+        IdTranscriptionWhisper, IdTranscriptionVot, IdVotSubtitleLanguageEdit,
         IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn, IdTranscriptionOpenTools
     }, state->settingsSection == SettingsSection::Transcription);
     SetControlsVisible(state->window, {
@@ -1955,7 +1960,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     switch (state->settingsSection) {
     case SettingsSection::Transcription:
         sectionTitle = L"Транскрибация";
-        sectionSubtitle = L"Движок, язык исходной речи и интеграция субтитров.";
+        sectionSubtitle = L"Движок, язык VOT-субтитров и интеграция.";
         break;
     case SettingsSection::Translation:
         sectionTitle = L"Перевод";
@@ -2528,11 +2533,11 @@ void CreateSettingsControls(DialogState* state) {
     HWND ffmpegButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdFfmpeg, false);
     HWND transcriptionWhisperButton = CreateDarkButton(state->window, state->instance, L"Whisper", IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
     HWND transcriptionVotButton = CreateDarkButton(state->window, state->instance, L"VOT", IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
-    HWND whisperLanguageEdit = CreateDarkButton(
+    HWND votSubtitleLanguageEdit = CreateDarkButton(
         state->window,
         state->instance,
-        SettingsLanguageButtonText(state->workingConfig.whisperLanguage.empty() ? L"auto" : state->workingConfig.whisperLanguage).c_str(),
-        IdWhisperLanguageEdit,
+        SettingsLanguageButtonText(state->workingConfig.votSubtitleLanguage.empty() ? L"ru" : state->workingConfig.votSubtitleLanguage).c_str(),
+        IdVotSubtitleLanguageEdit,
         false
     );
     HWND chooseWhisperButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdChooseWhisperFolder, false);
@@ -2577,7 +2582,7 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg и существующий поток установки.");
     AddDialogTooltip(state, transcriptionWhisperButton, L"Использовать whisper-cli.exe для транскрибации.");
     AddDialogTooltip(state, transcriptionVotButton, L"Использовать vot-helper.exe subtitles для получения SRT/TXT.");
-    AddDialogTooltip(state, whisperLanguageEdit, L"Язык исходной речи для Whisper/VOT.");
+    AddDialogTooltip(state, votSubtitleLanguageEdit, L"Целевой язык VOT-субтитров.");
     AddDialogTooltip(state, chooseWhisperButton, L"Открывает настройку Whisper.cpp, модели и выбора папки.");
     AddDialogTooltip(state, chooseVotButton, L"Открывает настройку vot-helper.exe.");
     AddDialogTooltip(state, subtitleOffButton, L"Сохранять TXT/SRT рядом с видео без изменения видеофайла.");
@@ -2664,15 +2669,25 @@ void RegisterDialogClasses(HINSTANCE instance) {
     RegisterClassExW(&comboMenuClass);
 }
 
-void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, bool whisperLanguage) {
+void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, SettingsLanguageTarget target) {
     if (!state || !state->window || !anchor) {
         return;
     }
 
     auto* menuState = new SettingsComboMenuState{};
     menuState->owner = state->window;
-    menuState->whisperLanguage = whisperLanguage;
-    menuState->values = whisperLanguage ? WhisperLanguageOptions() : VoiceLanguageOptions();
+    menuState->target = target;
+    switch (target) {
+    case SettingsLanguageTarget::VotSubtitle:
+        menuState->values = VotSubtitleLanguageOptions();
+        break;
+    case SettingsLanguageTarget::VoiceOver:
+        menuState->values = VoiceLanguageOptions();
+        break;
+    default:
+        menuState->values = VotSubtitleLanguageOptions();
+        break;
+    }
 
     RECT anchorRect = {};
     GetWindowRect(anchor, &anchorRect);
@@ -2956,11 +2971,11 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 state->workingConfig.transcriptionEngine = TranscriptionEngine::Vot;
                 RefreshSettingsButtons(state);
                 return 0;
-            case IdWhisperLanguageEdit:
-                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdWhisperLanguageEdit), true);
+            case IdVotSubtitleLanguageEdit:
+                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVotSubtitleLanguageEdit), SettingsLanguageTarget::VotSubtitle);
                 return 0;
             case IdVoiceLanguageEdit:
-                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), false);
+                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), SettingsLanguageTarget::VoiceOver);
                 return 0;
             case IdVoiceModeOff:
                 state->workingConfig.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
@@ -3192,6 +3207,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (state->type == DialogType::Settings && state->config) {
                     if (state->workingConfig.whisperLanguage.empty()) {
                         state->workingConfig.whisperLanguage = L"auto";
+                    }
+                    if (state->workingConfig.votSubtitleLanguage.empty()) {
+                        state->workingConfig.votSubtitleLanguage = L"ru";
                     }
                     if (state->workingConfig.voiceOverLanguage.empty()) {
                         state->workingConfig.voiceOverLanguage = L"ru";
@@ -3833,8 +3851,8 @@ void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, i
     }
 
     const std::wstring value = menuState->values[static_cast<size_t>(index)];
-    if (menuState->whisperLanguage) {
-        ownerState->workingConfig.whisperLanguage = value;
+    if (menuState->target == SettingsLanguageTarget::VotSubtitle) {
+        ownerState->workingConfig.votSubtitleLanguage = value;
     } else {
         ownerState->workingConfig.voiceOverLanguage = value;
     }

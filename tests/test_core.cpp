@@ -111,7 +111,8 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.whisperBackend = WhisperBackend::Cuda;
     saved.whisperLanguage = L"ru";
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
-    saved.voiceOverLanguage = L"de";
+    saved.votSubtitleLanguage = L"de";
+    saved.voiceOverLanguage = L"en";
     saved.voiceOverFfmpegMode = VoiceOverFfmpegMode::AudioTrack;
     saved.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
     saved.quality = L"720p";
@@ -134,7 +135,8 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.whisperBackend == WhisperBackend::Cuda, "whisper backend round-trip mismatch");
     Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
     Require(loaded.votExePath == saved.votExePath, "vot path round-trip mismatch");
-    Require(loaded.voiceOverLanguage == L"de", "voice-over language round-trip mismatch");
+    Require(loaded.votSubtitleLanguage == L"de", "VOT subtitle language round-trip mismatch");
+    Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
     Require(loaded.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack, "voice-over ffmpeg mode round-trip mismatch");
     Require(loaded.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, "subtitle ffmpeg mode round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
@@ -177,19 +179,30 @@ void TestConfigNormalizesPostProcessingLanguageOptions() {
     fs::create_directories(paths.configPath().parent_path());
     {
         std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
-        out << R"json({"whisper_language":"XX","voice_over_language":"ZZ"})json";
+        out << R"json({"whisper_language":"XX","vot_subtitle_language":"ZZ","voice_over_language":"ZZ"})json";
     }
 
     AppConfig loaded = ConfigStore::Load(paths);
     Require(loaded.whisperLanguage == L"auto", "unknown transcription source language should normalize to auto");
+    Require(loaded.votSubtitleLanguage == L"ru", "unknown VOT subtitle language should normalize to ru");
     Require(loaded.voiceOverLanguage == L"ru", "unknown voice-over language should normalize to ru");
 
-    loaded.whisperLanguage = L"EN";
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"voice_over_language":"DE"})json";
+    }
+    loaded = ConfigStore::Load(paths);
+    Require(loaded.votSubtitleLanguage == L"de", "legacy voice-over language should migrate to VOT subtitles");
+    Require(loaded.voiceOverLanguage == L"ru", "legacy unsupported voice-over language should normalize to ru");
+
+    loaded.whisperLanguage = L"FR";
+    loaded.votSubtitleLanguage = L"DE";
     loaded.voiceOverLanguage = L"DE";
     ConfigStore::Save(paths, loaded);
     loaded = ConfigStore::Load(paths);
-    Require(loaded.whisperLanguage == L"en", "known transcription source language should lowercase");
-    Require(loaded.voiceOverLanguage == L"de", "known voice-over language should lowercase");
+    Require(loaded.whisperLanguage == L"fr", "known VOT source language should lowercase");
+    Require(loaded.votSubtitleLanguage == L"de", "known VOT subtitle language should lowercase");
+    Require(loaded.voiceOverLanguage == L"ru", "unsupported voice-over TTS language should normalize to ru");
 }
 
 void TestMainWindowShortcutResolution() {

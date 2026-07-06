@@ -50,6 +50,7 @@ struct AppConfig {
     TranscriptionEngine transcriptionEngine = TranscriptionEngine::Whisper;
     WhisperBackend whisperBackend = WhisperBackend::Auto;
     std::wstring whisperLanguage = L"auto";
+    std::wstring votSubtitleLanguage = L"ru";
     std::wstring voiceOverLanguage = L"ru";
     VoiceOverFfmpegMode voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
     SubtitleFfmpegMode subtitleFfmpegMode = SubtitleFfmpegMode::Off;

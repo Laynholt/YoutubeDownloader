@@ -105,16 +105,9 @@ SubtitleFfmpegMode SubtitleFfmpegModeFromJson(
 
 std::wstring NormalizeVoiceOverLanguage(const std::wstring& value) {
     const std::wstring normalized = LowerAscii(value);
-    static constexpr std::array<std::wstring_view, 9> kLanguages = {
+    static constexpr std::array<std::wstring_view, 2> kLanguages = {
         L"ru",
-        L"en",
-        L"de",
-        L"es",
-        L"it",
-        L"pt",
-        L"ja",
-        L"ko",
-        L"zh"
+        L"en"
     };
     if (std::ranges::find(kLanguages, normalized) != kLanguages.end()) {
         return normalized;
@@ -122,21 +115,34 @@ std::wstring NormalizeVoiceOverLanguage(const std::wstring& value) {
     return L"ru";
 }
 
-std::wstring NormalizeWhisperLanguage(const std::wstring& value) {
+std::wstring NormalizeVotLanguage(const std::wstring& value, std::wstring_view fallback) {
     const std::wstring normalized = LowerAscii(value);
-    static constexpr std::array<std::wstring_view, 10> kLanguages = {
-        L"auto",
+    static constexpr std::array<std::wstring_view, 12> kLanguages = {
         L"ru",
         L"en",
-        L"de",
-        L"es",
-        L"it",
-        L"pt",
-        L"ja",
+        L"zh",
         L"ko",
-        L"zh"
+        L"lt",
+        L"lv",
+        L"ar",
+        L"fr",
+        L"it",
+        L"es",
+        L"de",
+        L"ja"
     };
     if (std::ranges::find(kLanguages, normalized) != kLanguages.end()) {
+        return normalized;
+    }
+    return std::wstring(fallback);
+}
+
+std::wstring NormalizeWhisperLanguage(const std::wstring& value) {
+    const std::wstring normalized = LowerAscii(value);
+    if (normalized == L"auto") {
+        return normalized;
+    }
+    if (NormalizeVotLanguage(normalized, L"") == normalized) {
         return normalized;
     }
     return L"auto";
@@ -270,6 +276,10 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.transcriptionEngine = TranscriptionEngineFromJson(json, "transcription_engine", config.transcriptionEngine);
         config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
         config.whisperLanguage = NormalizeWhisperLanguage(WStringFromJson(json, "whisper_language", config.whisperLanguage));
+        config.votSubtitleLanguage = NormalizeVotLanguage(
+            WStringFromJson(json, "vot_subtitle_language", WStringFromJson(json, "voice_over_language", config.votSubtitleLanguage)),
+            L"ru"
+        );
         config.voiceOverLanguage = NormalizeVoiceOverLanguage(WStringFromJson(json, "voice_over_language", config.voiceOverLanguage));
         config.voiceOverFfmpegMode = VoiceOverFfmpegModeFromJson(json, "voice_over_ffmpeg_mode", config.voiceOverFfmpegMode);
         config.subtitleFfmpegMode = SubtitleFfmpegModeFromJson(json, "subtitle_ffmpeg_mode", config.subtitleFfmpegMode);
@@ -304,6 +314,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["transcription_engine"] = WideToUtf8(TranscriptionEngineToConfigValue(config.transcriptionEngine));
     json["whisper_backend"] = WideToUtf8(WhisperBackendToConfigValue(config.whisperBackend));
     json["whisper_language"] = WideToUtf8(NormalizeWhisperLanguage(config.whisperLanguage));
+    json["vot_subtitle_language"] = WideToUtf8(NormalizeVotLanguage(config.votSubtitleLanguage, L"ru"));
     json["voice_over_language"] = WideToUtf8(NormalizeVoiceOverLanguage(config.voiceOverLanguage));
     json["voice_over_ffmpeg_mode"] = WideToUtf8(VoiceOverFfmpegModeToConfigValue(config.voiceOverFfmpegMode));
     json["subtitle_ffmpeg_mode"] = WideToUtf8(SubtitleFfmpegModeToConfigValue(config.subtitleFfmpegMode));
