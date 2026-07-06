@@ -117,7 +117,20 @@ std::wstring NormalizeVoiceOverLanguage(const std::wstring& value) {
 
 std::wstring NormalizeVotLanguage(const std::wstring& value, std::wstring_view fallback) {
     const std::wstring normalized = LowerAscii(value);
-    static constexpr std::array<std::wstring_view, 12> kLanguages = {
+    static constexpr std::array<std::wstring_view, 2> kLanguages = {
+        L"ru",
+        L"en"
+    };
+    if (std::ranges::find(kLanguages, normalized) != kLanguages.end()) {
+        return normalized;
+    }
+    return std::wstring(fallback);
+}
+
+std::wstring NormalizeWhisperLanguage(const std::wstring& value) {
+    const std::wstring normalized = LowerAscii(value);
+    static constexpr std::array<std::wstring_view, 13> kLanguages = {
+        L"auto",
         L"ru",
         L"en",
         L"zh",
@@ -132,17 +145,6 @@ std::wstring NormalizeVotLanguage(const std::wstring& value, std::wstring_view f
         L"ja"
     };
     if (std::ranges::find(kLanguages, normalized) != kLanguages.end()) {
-        return normalized;
-    }
-    return std::wstring(fallback);
-}
-
-std::wstring NormalizeWhisperLanguage(const std::wstring& value) {
-    const std::wstring normalized = LowerAscii(value);
-    if (normalized == L"auto") {
-        return normalized;
-    }
-    if (NormalizeVotLanguage(normalized, L"") == normalized) {
         return normalized;
     }
     return L"auto";

@@ -93,6 +93,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(defaults.transcriptionEngine == TranscriptionEngine::Whisper, "default transcription engine mismatch");
     Require(defaults.whisperBackend == WhisperBackend::Auto, "default whisper backend mismatch");
     Require(defaults.whisperLanguage == L"auto", "default whisper language mismatch");
+    Require(defaults.votSubtitleLanguage == L"ru", "default VOT subtitle language mismatch");
     Require(defaults.voiceOverLanguage == L"ru", "default voice-over language mismatch");
     Require(defaults.voiceOverFfmpegMode == VoiceOverFfmpegMode::Off, "default voice-over ffmpeg mode mismatch");
     Require(defaults.subtitleFfmpegMode == SubtitleFfmpegMode::Off, "default subtitle ffmpeg mode mismatch");
@@ -111,7 +112,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.whisperBackend = WhisperBackend::Cuda;
     saved.whisperLanguage = L"ru";
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
-    saved.votSubtitleLanguage = L"de";
+    saved.votSubtitleLanguage = L"en";
     saved.voiceOverLanguage = L"en";
     saved.voiceOverFfmpegMode = VoiceOverFfmpegMode::AudioTrack;
     saved.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
@@ -135,7 +136,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.whisperBackend == WhisperBackend::Cuda, "whisper backend round-trip mismatch");
     Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
     Require(loaded.votExePath == saved.votExePath, "vot path round-trip mismatch");
-    Require(loaded.votSubtitleLanguage == L"de", "VOT subtitle language round-trip mismatch");
+    Require(loaded.votSubtitleLanguage == L"en", "VOT subtitle language round-trip mismatch");
     Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
     Require(loaded.voiceOverFfmpegMode == VoiceOverFfmpegMode::AudioTrack, "voice-over ffmpeg mode round-trip mismatch");
     Require(loaded.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, "subtitle ffmpeg mode round-trip mismatch");
@@ -192,16 +193,16 @@ void TestConfigNormalizesPostProcessingLanguageOptions() {
         out << R"json({"voice_over_language":"DE"})json";
     }
     loaded = ConfigStore::Load(paths);
-    Require(loaded.votSubtitleLanguage == L"de", "legacy voice-over language should migrate to VOT subtitles");
+    Require(loaded.votSubtitleLanguage == L"ru", "legacy unsupported VOT subtitle language should normalize to ru");
     Require(loaded.voiceOverLanguage == L"ru", "legacy unsupported voice-over language should normalize to ru");
 
     loaded.whisperLanguage = L"FR";
-    loaded.votSubtitleLanguage = L"DE";
+    loaded.votSubtitleLanguage = L"EN";
     loaded.voiceOverLanguage = L"DE";
     ConfigStore::Save(paths, loaded);
     loaded = ConfigStore::Load(paths);
     Require(loaded.whisperLanguage == L"fr", "known VOT source language should lowercase");
-    Require(loaded.votSubtitleLanguage == L"de", "known VOT subtitle language should lowercase");
+    Require(loaded.votSubtitleLanguage == L"en", "known VOT subtitle language should lowercase");
     Require(loaded.voiceOverLanguage == L"ru", "unsupported voice-over TTS language should normalize to ru");
 }
 

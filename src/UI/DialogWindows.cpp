@@ -339,8 +339,12 @@ RECT SettingsTranscriptionEngineCardRect(const DialogState* state, int width, in
     return SettingsStackCardRect(state, width, height, 0, kSettingsWorkflowCardHeight);
 }
 
-RECT SettingsTranscriptionLanguageCardRect(const DialogState* state, int width, int height) {
+RECT SettingsTranscriptionSubtitleCardRect(const DialogState* state, int width, int height) {
     return SettingsCardBelow(SettingsTranscriptionEngineCardRect(state, width, height), kSettingsWorkflowLanguageCardHeight);
+}
+
+RECT SettingsTranscriptionLanguageCardRect(const DialogState* state, int width, int height) {
+    return SettingsCardBelow(SettingsTranscriptionSubtitleCardRect(state, width, height), kSettingsWorkflowLanguageCardHeight);
 }
 
 RECT SettingsTranscriptionToolsCardRect(const DialogState* state, int width, int height) {
@@ -556,7 +560,7 @@ HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
 }
 
 std::vector<std::wstring> VotSubtitleLanguageOptions() {
-    return {L"ru", L"en", L"zh", L"ko", L"lt", L"lv", L"ar", L"fr", L"it", L"es", L"de", L"ja"};
+    return {L"ru", L"en"};
 }
 
 std::vector<std::wstring> VoiceLanguageOptions() {
@@ -1462,19 +1466,20 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     if (transcriptionVot) {
         MoveWindow(transcriptionVot, card.left + kSettingsCardPadding + twoButtonWidth + 12, card.top + kSettingsCardControlTop, twoButtonWidth, 34, TRUE);
     }
-    card = SettingsTranscriptionLanguageCardRect(state, width, height);
+    card = SettingsTranscriptionSubtitleCardRect(state, width, height);
     const int transcriptionModeTop = card.top + kSettingsCardControlTop;
-    if (votSubtitleLanguage) {
-        MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, transcriptionModeTop, 150, 34, TRUE);
-    }
     if (subtitleOff) {
-        MoveWindow(subtitleOff, card.left + kSettingsCardPadding + 166, transcriptionModeTop, 86, 34, TRUE);
+        MoveWindow(subtitleOff, card.left + kSettingsCardPadding, transcriptionModeTop, 86, 34, TRUE);
     }
     if (subtitleTrack) {
-        MoveWindow(subtitleTrack, card.left + kSettingsCardPadding + 264, transcriptionModeTop, 164, 34, TRUE);
+        MoveWindow(subtitleTrack, card.left + kSettingsCardPadding + 98, transcriptionModeTop, 164, 34, TRUE);
     }
     if (subtitleBurn) {
-        MoveWindow(subtitleBurn, card.left + kSettingsCardPadding + 440, transcriptionModeTop, 142, 34, TRUE);
+        MoveWindow(subtitleBurn, card.left + kSettingsCardPadding + 274, transcriptionModeTop, 142, 34, TRUE);
+    }
+    card = SettingsTranscriptionLanguageCardRect(state, width, height);
+    if (votSubtitleLanguage) {
+        MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 150, 34, TRUE);
     }
     card = SettingsTranscriptionToolsCardRect(state, width, height);
     if (transcriptionTools) {
@@ -1960,7 +1965,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     switch (state->settingsSection) {
     case SettingsSection::Transcription:
         sectionTitle = L"Транскрибация";
-        sectionSubtitle = L"Движок, язык VOT-субтитров и интеграция.";
+        sectionSubtitle = L"Движок, субтитры и перевод VOT-субтитров.";
         break;
     case SettingsSection::Translation:
         sectionTitle = L"Перевод";
@@ -2007,9 +2012,17 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         DrawSettingsCard(dc, SettingsTranscriptionEngineCardRect(state, client.right, client.bottom), L"Движок", L"Whisper.cpp или vot-helper.exe для создания TXT/SRT.", labelFont, textFont);
         DrawSettingsCard(
             dc,
-            SettingsTranscriptionLanguageCardRect(state, client.right, client.bottom),
-            L"Язык и субтитры",
+            SettingsTranscriptionSubtitleCardRect(state, client.right, client.bottom),
+            L"Субтитры",
             ffmpegReady ? L"FFmpeg-режимы доступны." : L"FFmpeg-режимы видимы, но требуют установленный FFmpeg.",
+            labelFont,
+            textFont
+        );
+        DrawSettingsCard(
+            dc,
+            SettingsTranscriptionLanguageCardRect(state, client.right, client.bottom),
+            L"Перевод VOT-субтитров",
+            L"Используется только при движке VOT.",
             labelFont,
             textFont
         );
