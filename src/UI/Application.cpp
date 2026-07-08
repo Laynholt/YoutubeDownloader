@@ -178,17 +178,17 @@ std::filesystem::path GetExecutableRoot() {
 std::wstring TaskStateText(DownloadTaskState state) {
     switch (state) {
     case DownloadTaskState::Queued:
-        return L"В очереди";
+        return L"app.queued";
     case DownloadTaskState::Preparing:
-        return L"Подготовка";
+        return L"app.preparing";
     case DownloadTaskState::Downloading:
-        return L"Скачивание";
+        return L"app.downloading";
     case DownloadTaskState::Completed:
-        return L"Готово";
+        return L"app.done";
     case DownloadTaskState::Failed:
-        return L"Ошибка";
+        return L"app.error";
     case DownloadTaskState::Canceled:
-        return L"Отменено";
+        return L"app.canceled";
     }
     return L"";
 }
@@ -205,20 +205,20 @@ std::filesystem::path FirstExistingMediaOutput(const DownloadTaskSnapshot& task)
 
 std::wstring BuildMissingMediaFileMessage(const DownloadTaskSnapshot& task) {
     std::wstring message =
-        L"Не удалось найти скачанный медиафайл для этой задачи.\n\n"
-        L"Задача: " + (task.title.empty() ? task.request.url : task.title) + L"\n";
+        L"app.failed_to_find_the_downloaded_media_file_for_this_task"
+        L"app.task" + (task.title.empty() ? task.request.url : task.title) + L"\n";
     if (!task.request.url.empty()) {
-        message += L"Ссылка: " + task.request.url + L"\n";
+        message += L"app.url" + task.request.url + L"\n";
     }
     if (task.outputFiles.empty()) {
         message +=
-            L"\nВ записи очереди нет пути к итоговому файлу. Возможно, yt-dlp завершил загрузку без передачи имени файла приложению.";
+            L"app.the_queue_entry_has_no_output_file_path_yt_dlp_may_have";
     } else {
-        message += L"\nПроверенные пути:\n";
+        message += L"app.checked_paths";
         for (const std::filesystem::path& path : task.outputFiles) {
             message += L"- " + path.wstring() + L"\n";
         }
-        message += L"\nПроверьте, что файл не был удалён, перемещён или переименован после загрузки.";
+        message += L"app.check_that_the_file_was_not_deleted_moved_or_renamed_aft";
     }
     return message;
 }
@@ -362,7 +362,7 @@ HFONT CreateUiFont(int height, int weight = FW_NORMAL) {
 std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
     std::vector<std::wstring> parts;
     if (!task.mediaKind.empty()) {
-        parts.push_back(task.mediaKind == L"audio" ? L"Аудио" : L"Видео");
+        parts.push_back(task.mediaKind == L"audio" ? L"app.audio" : L"app.video");
     }
     if (!task.extension.empty()) {
         parts.push_back(task.extension);
@@ -393,12 +393,12 @@ std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
 }
 
 std::wstring BuildToolReadyStatus(const ToolInstallStatus& ytDlpStatus, const FfmpegStatus& ffmpeg) {
-    std::wstring status = ytDlpStatus.installed ? L"youtube-dlp готов" : L"youtube-dlp не найден";
+    std::wstring status = ytDlpStatus.installed ? L"app.youtube_dlp_ready" : L"app.youtube_dlp_not_found";
     if (ytDlpStatus.installed && !ytDlpStatus.version.empty()) {
         status += L" (" + ytDlpStatus.version + L")";
     }
     if (ffmpeg.available) {
-        status += L" · ffmpeg найден";
+        status += L"app.ffmpeg_found";
     }
     return status;
 }
@@ -669,7 +669,7 @@ LRESULT CALLBACK QueueErrorMenuProc(HWND window, UINT message, WPARAM wParam, LP
     case WM_PAINT:
         PaintBuffered(window, [state](HDC dc, const RECT& client) {
             const std::vector<UiRenderer::PopupMenuItem> items = {
-                {1, L"Скопировать ошибку", false}
+                {1, L"app.copy_error", false}
             };
             UiRenderer::DrawPopupMenu(dc, client, items, state && state->hot ? 1 : 0);
         });
@@ -966,12 +966,14 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
 
     Gdiplus::GdiplusStartupInput gdiplusInput;
     if (Gdiplus::GdiplusStartup(&m_gdiplusToken, &gdiplusInput, nullptr) != Gdiplus::Ok) {
-        MessageBoxW(nullptr, L"Не удалось инициализировать GDI+.", L"YouTube Downloader", MB_OK | MB_ICONERROR);
+        const std::wstring message = Localization::UiText(L"app.failed_to_initialize_gdi");
+        MessageBoxW(nullptr, message.c_str(), L"YouTube Downloader", MB_OK | MB_ICONERROR);
         return false;
     }
 
     if (!RegisterButtonClass()) {
-        MessageBoxW(nullptr, L"Не удалось зарегистрировать класс кнопок.", L"YouTube Downloader", MB_OK | MB_ICONERROR);
+        const std::wstring message = Localization::UiText(L"app.failed_to_register_the_button_class");
+        MessageBoxW(nullptr, message.c_str(), L"YouTube Downloader", MB_OK | MB_ICONERROR);
         return false;
     }
     RegisterPopupMenuClasses(m_instance);
@@ -987,7 +989,8 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
     windowClass.hIconSm = LoadIconW(m_instance, MAKEINTRESOURCEW(IDI_MAIN_ICON));
 
     if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        MessageBoxW(nullptr, L"Не удалось зарегистрировать класс окна.", L"YouTube Downloader", MB_OK | MB_ICONERROR);
+        const std::wstring message = Localization::UiText(L"app.failed_to_register_the_window_class");
+        MessageBoxW(nullptr, message.c_str(), L"YouTube Downloader", MB_OK | MB_ICONERROR);
         return false;
     }
 
@@ -1011,7 +1014,8 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
         this
     );
     if (!m_window) {
-        MessageBoxW(nullptr, L"Не удалось создать главное окно.", L"YouTube Downloader", MB_OK | MB_ICONERROR);
+        const std::wstring message = Localization::UiText(L"app.failed_to_create_the_main_window");
+        MessageBoxW(nullptr, message.c_str(), L"YouTube Downloader", MB_OK | MB_ICONERROR);
         return false;
     }
     EnableDarkTitleBar(m_window);
@@ -1406,7 +1410,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 if (m_logger) {
                     m_logger->Info(L"Queued tasks cleared: count=" + std::to_wstring(removed));
                 }
-                SetTransientStatus(L"Очередь очищена: удалено " + std::to_wstring(removed) + L" задач");
+                SetTransientStatus(L"app.queue_cleared_removed" + std::to_wstring(removed) + L"app.tasks");
                 RefreshQueueText();
             }
             return 0;
@@ -1417,8 +1421,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     ShowInfoDialog(
                         m_window,
                         m_instance,
-                        L"Обработка ещё выполняется",
-                        L"Дождитесь завершения или отмените транскрибацию/перевод перед очисткой завершённых задач."
+                        L"app.processing_is_still_running",
+                        L"app.wait_for_transcription_translation_to_finish_or_cancel_i"
                     );
                     return 0;
                 }
@@ -1426,7 +1430,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 if (m_logger) {
                     m_logger->Info(L"Finished tasks cleared: count=" + std::to_wstring(removed));
                 }
-                SetTransientStatus(L"Завершённые задачи очищены: удалено " + std::to_wstring(removed) + L" задач");
+                SetTransientStatus(L"app.completed_tasks_cleared_removed" + std::to_wstring(removed) + L"app.tasks");
                 RefreshQueueText();
             }
             return 0;
@@ -1437,7 +1441,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 folder = m_config.downloadDir;
             }
             if (folder.empty()) {
-                ShowErrorDialog(m_window, m_instance, L"Папка не выбрана", L"Укажите папку загрузок.");
+                ShowErrorDialog(m_window, m_instance, L"app.no_folder_selected", L"app.specify_the_downloads_folder");
                 return 0;
             }
             std::error_code ec;
@@ -1445,7 +1449,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 std::filesystem::create_directories(folder, ec);
             }
             if (ec || !std::filesystem::is_directory(folder, ec)) {
-                ShowErrorDialog(m_window, m_instance, L"Папка недоступна", L"Не удалось открыть или создать папку загрузок.");
+                ShowErrorDialog(m_window, m_instance, L"app.folder_unavailable", L"app.failed_to_open_or_create_the_downloads_folder");
                 return 0;
             }
             ShellExecuteW(m_window, L"open", folder.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
@@ -1602,8 +1606,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     ShowErrorDialog(
                         m_window,
                         m_instance,
-                        result.status.empty() ? L"Операция не выполнена" : result.status,
-                        result.error.empty() ? L"Неизвестная ошибка" : result.error
+                        result.status.empty() ? L"app.operation_failed" : result.status,
+                        result.error.empty() ? L"app.unknown_error" : result.error
                     );
                     if (m_logger) {
                         m_logger->Error(
@@ -1643,11 +1647,12 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     std::lock_guard lock(m_previewMutex);
                     m_preview = result.preview;
                 }
-                std::wstring title = result.preview.title.empty() ? L"Видео найдено" : result.preview.title;
+                std::wstring title = result.preview.title.empty() ? L"app.video_found" : result.preview.title;
                 if (result.preview.isPlaylist) {
-                    title += L" — плейлист: " + std::to_wstring(result.preview.entries.size()) + L" видео";
+                    title += L"app.playlist" + std::to_wstring(result.preview.entries.size()) + L"app.videos";
                 }
-                SetWindowTextW(m_previewTitle, title.c_str());
+                const std::wstring translatedTitle = Localization::UiText(title);
+                SetWindowTextW(m_previewTitle, translatedTitle.c_str());
                 if (m_downloadQueue) {
                     bool enriched = m_downloadQueue->EnrichMetadata(
                         result.url,
@@ -1675,7 +1680,8 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     std::lock_guard lock(m_previewMutex);
                     m_preview = {};
                 }
-                SetWindowTextW(m_previewTitle, result.error.empty() ? L"Не удалось получить preview" : result.error.c_str());
+                const std::wstring previewError = Localization::UiText(result.error.empty() ? L"app.failed_to_fetch_preview" : result.error);
+                SetWindowTextW(m_previewTitle, previewError.c_str());
                 if (m_logger) {
                     m_logger->Error(L"Preview failed: url=" + result.url + L" error=" + result.error);
                 }
@@ -1749,15 +1755,15 @@ void Application::CreateControls() {
 
     m_urlEdit = CreateChild(m_window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 0, IdUrlEdit);
     InstallCustomEditContextMenu(m_urlEdit, m_window, m_instance);
-    const std::wstring urlCue = Localization::UiText(L"Ссылка на видео или плейлист");
+    const std::wstring urlCue = Localization::UiText(L"app.video_or_playlist_url");
     SendMessageW(m_urlEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(urlCue.c_str()));
     SendMessageW(m_urlEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
-    m_pasteButton = CreateButton(L"Вставить", IdPasteButton, false, false);
+    m_pasteButton = CreateButton(L"app.paste", IdPasteButton, false, false);
 
     m_previewTitle = CreateChild(
         m_window,
         L"STATIC",
-        L"Вставьте ссылку на видео или плейлист выше",
+        L"app.paste_a_video_or_playlist_link_above",
         SS_LEFT,
         0,
         0
@@ -1766,17 +1772,17 @@ void Application::CreateControls() {
     InstallCustomEditContextMenu(m_folderEdit, m_window, m_instance);
     SendMessageW(m_folderEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     SetWindowTextW(m_folderEdit, L"Downloads");
-    m_chooseFolderButton = CreateButton(L"Выбрать...", IdChooseFolderButton, false, true);
+    m_chooseFolderButton = CreateButton(L"app.choose", IdChooseFolderButton, false, true);
 
-    m_downloadButton = CreateButton(L"Скачать", IdDownloadButton, true, false);
-    m_clearButton = CreateButton(L"Очистить очередь", IdClearButton, false, false);
+    m_downloadButton = CreateButton(L"app.download", IdDownloadButton, true, false);
+    m_clearButton = CreateButton(L"app.clear_queue", IdClearButton, false, false);
     m_openFolderButton = CreateButton(OpenDownloadFolderButtonText().c_str(), IdOpenFolderButton, false, false);
-    m_logsButton = CreateButton(L"Логи", IdLogsButton, false, false);
+    m_logsButton = CreateButton(L"app.logs", IdLogsButton, false, false);
     m_clearFinishedButton = CreateButton(L"X", IdClearFinishedButton, false, false);
-    m_settingsButton = CreateButton(L"Настройки", IdSettingsButton, false, false);
-    m_statusLabel = CreateChild(m_window, L"STATIC", L"Подготовка интерфейса", SS_LEFT, 0, 0);
-    m_queueLabel = CreateChild(m_window, L"STATIC", L"Очередь загрузок", SS_LEFT, 0, 0);
-    m_queuePlaceholder = CreateChild(m_window, L"STATIC", L"Задач пока нет", SS_CENTER, 0, 0);
+    m_settingsButton = CreateButton(L"app.settings", IdSettingsButton, false, false);
+    m_statusLabel = CreateChild(m_window, L"STATIC", L"app.preparing_interface", SS_LEFT, 0, 0);
+    m_queueLabel = CreateChild(m_window, L"STATIC", L"app.download_queue", SS_LEFT, 0, 0);
+    m_queuePlaceholder = CreateChild(m_window, L"STATIC", L"app.no_tasks_yet", SS_CENTER, 0, 0);
 
     SetControlFonts();
     m_tooltip = CreateTooltipWindow(m_window);
@@ -1784,16 +1790,16 @@ void Application::CreateControls() {
         m_tooltipTexts.push_back(Localization::UiText(text));
         AddTooltip(m_tooltip, m_window, tool, m_tooltipTexts.back().c_str());
     };
-    addTooltip(m_urlEdit, L"Вставьте ссылку на видео, плейлист или другой поддерживаемый источник.");
-    addTooltip(m_pasteButton, L"Вставляет ссылку из буфера обмена.");
-    addTooltip(m_folderEdit, L"Папка, куда будут сохраняться скачанные файлы.");
-    addTooltip(m_chooseFolderButton, L"Выберите папку для сохранения загрузок.");
-    addTooltip(m_downloadButton, L"Добавляет ссылку в очередь загрузок.");
-    addTooltip(m_clearButton, L"Удаляет из очереди задачи, которые ещё не начали загружаться. Активные загрузки не останавливаются.");
-    addTooltip(m_openFolderButton, L"Открывает текущую папку загрузок.");
-    addTooltip(m_logsButton, L"Открывает текущий файл логов.");
-    addTooltip(m_clearFinishedButton, L"Очищает из списка завершённые и ошибочные задачи. Файлы на диске не удаляются.");
-    addTooltip(m_settingsButton, L"Открывает настройки качества, контейнера, FFmpeg и поведения приложения.");
+    addTooltip(m_urlEdit, L"app.paste_a_video_playlist_or_other_supported_source_url");
+    addTooltip(m_pasteButton, L"app.pastes_a_link_from_the_clipboard");
+    addTooltip(m_folderEdit, L"app.folder_where_downloaded_files_will_be_saved");
+    addTooltip(m_chooseFolderButton, L"app.choose_the_folder_for_saved_downloads");
+    addTooltip(m_downloadButton, L"app.adds_the_link_to_the_download_queue");
+    addTooltip(m_clearButton, L"app.removes_tasks_that_have_not_started_downloading_yet_acti");
+    addTooltip(m_openFolderButton, L"app.opens_the_current_downloads_folder");
+    addTooltip(m_logsButton, L"app.opens_the_current_log_file");
+    addTooltip(m_clearFinishedButton, L"app.clears_completed_and_failed_tasks_from_the_list_files_on");
+    addTooltip(m_settingsButton, L"app.opens_quality_container_ffmpeg_and_application_behavior");
 
     RECT client = {};
     GetClientRect(m_window, &client);
@@ -1941,16 +1947,16 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
         std::vector<QueueTaskActionItem> actionItems;
         if (IsRunningTaskState(task.state)) {
-            actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+            actionItems.push_back({QueueTaskAction::Clear, L"app.cancel"});
         } else {
             actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(task, postProcessingBusy));
             for (QueueTaskActionItem& item : actionItems) {
                 if (item.action == QueueTaskAction::Retry) {
-                    item.text = L"Возобновить";
+                    item.text = L"app.resume";
                 } else if (item.action == QueueTaskAction::Clear && task.state == DownloadTaskState::Completed) {
-                    item.text = L"Закрыть";
+                    item.text = L"app.close";
                 } else if (item.action == QueueTaskAction::Clear) {
-                    item.text = L"Удалить";
+                    item.text = L"app.delete";
                 }
             }
         }
@@ -1969,7 +1975,7 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
 
         std::wstring status = TaskStateText(task.state);
         if (postProcessingActive) {
-            status = m_postProcessingStatus.empty() ? L"Выполнение..." : m_postProcessingStatus;
+            status = m_postProcessingStatus.empty() ? L"app.running" : m_postProcessingStatus;
             const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
             status += L" · " + FormatDuration(elapsedMs / 1000);
         } else if (postProcessingBusy) {
@@ -2122,7 +2128,7 @@ bool Application::HandleQueueClick(POINT point) {
         const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
         std::vector<QueueTaskActionItem> actionItems;
         if (IsRunningTaskState(task.state)) {
-            actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+            actionItems.push_back({QueueTaskAction::Clear, L"app.cancel"});
         } else {
             actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(
                 task,
@@ -2285,7 +2291,7 @@ bool Application::UpdateQueueHover(POINT point) {
             const bool postProcessingBusy = HasPostProcessingOperationForTask(task.id);
             std::vector<QueueTaskActionItem> actionItems;
             if (IsRunningTaskState(task.state)) {
-                actionItems.push_back({QueueTaskAction::Clear, L"Отменить"});
+                actionItems.push_back({QueueTaskAction::Clear, L"app.cancel"});
             } else {
                 actionItems = BuildQueueTaskActions(BuildQueueActionInputForTask(
                     task,
@@ -2408,14 +2414,14 @@ void Application::RestoreStatusText() {
         const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
         const size_t queuedCount = CountTasksInState(tasks, DownloadTaskState::Queued);
         if (queuedCount > 0) {
-            SetStatus(L"В очереди осталось " + std::to_wstring(queuedCount) + L" задач");
+            SetStatus(L"app.remaining_in_queue" + std::to_wstring(queuedCount) + L"app.tasks");
             return;
         }
     }
     if (m_ytDlpReady) {
         SetStatus(BuildToolReadyStatus(m_ytDlpStatus, m_ffmpeg));
     } else {
-        SetStatus(L"Проверка yt-dlp...");
+        SetStatus(L"app.checking_yt_dlp");
     }
 }
 
@@ -2451,7 +2457,7 @@ void Application::UpdatePreviewLoadingText() {
         return;
     }
 
-    std::wstring text = L"Идёт считывание информации, подождите";
+    std::wstring text = L"app.reading_information_please_wait";
     text.append(static_cast<size_t>(m_previewLoadingDots), L'.');
     SetWindowTextW(m_previewTitle, text.c_str());
     m_previewLoadingDots = m_previewLoadingDots <= 1 ? 3 : m_previewLoadingDots - 1;
@@ -2514,7 +2520,7 @@ void Application::InitializeBackend() {
     LoadDownloadQueue();
 
     SetTimer(m_window, kQueueRefreshTimer, 80, nullptr);
-    SetStatus(L"Проверка yt-dlp...");
+    SetStatus(L"app.checking_yt_dlp");
     StartToolCheck();
 }
 
@@ -2611,14 +2617,14 @@ void Application::StartToolCheck() {
             }
             result.ready = result.status.installed;
             result.message = result.ready
-                ? L"yt-dlp готов" + (result.status.version.empty() ? L"" : L" (" + result.status.version + L")")
-                : L"yt-dlp не найден";
+                ? L"app.yt_dlp_ready" + (result.status.version.empty() ? L"" : L" (" + result.status.version + L")")
+                : L"app.yt_dlp_not_found";
         } catch (const std::exception& ex) {
             result.ready = false;
-            result.message = L"Ошибка подготовки yt-dlp: " + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            result.message = L"app.yt_dlp_preparation_error" + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
         } catch (...) {
             result.ready = false;
-            result.message = L"Ошибка подготовки yt-dlp";
+            result.message = L"app.yt_dlp_preparation_error_2";
         }
         if (stopToken.stop_requested()) {
             return;
@@ -2658,7 +2664,7 @@ void Application::StartAppUpdateCheck() {
             result.error = std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
         } catch (...) {
             result.ok = false;
-            result.error = L"Неизвестная ошибка проверки обновлений";
+            result.error = L"app.unknown_update_check_error";
         }
         if (stopToken.stop_requested()) {
             return;
@@ -2690,7 +2696,8 @@ void Application::StartPreviewFetch() {
             m_preview = {};
         }
         if (m_previewTitle) {
-            SetWindowTextW(m_previewTitle, L"Вставьте ссылку, чтобы получить название и превью");
+            const std::wstring previewText = Localization::UiText(L"app.paste_a_link_to_fetch_the_title_and_preview");
+            SetWindowTextW(m_previewTitle, previewText.c_str());
         }
         InvalidateRect(m_window, nullptr, FALSE);
         return;
@@ -2725,10 +2732,10 @@ void Application::StartPreviewFetch() {
             result.ok = true;
         } catch (const std::exception& ex) {
             result.ok = false;
-            result.error = L"Preview недоступен: " + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            result.error = L"app.preview_unavailable" + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
         } catch (...) {
             result.ok = false;
-            result.error = L"Preview недоступен";
+            result.error = L"app.preview_unavailable_2";
         }
         if (stopToken.stop_requested()) {
             return;
@@ -2747,8 +2754,8 @@ void Application::EnqueueCurrentUrl() {
         ShowErrorDialog(
             m_window,
             m_instance,
-            L"yt-dlp ещё не готов",
-            L"Дождитесь завершения проверки, установки или обновления yt-dlp."
+            L"app.yt_dlp_is_not_ready_yet",
+            L"app.wait_for_yt_dlp_check_installation_or_update_to_finish"
         );
         return;
     }
@@ -2756,15 +2763,15 @@ void Application::EnqueueCurrentUrl() {
         ShowInfoDialog(
             m_window,
             m_instance,
-            L"Информация ещё загружается",
-            L"Дождитесь, пока приложение получит название, состав плейлиста и превью."
+            L"app.information_is_still_loading",
+            L"app.wait_until_the_application_fetches_the_title_playlist_it"
         );
         return;
     }
 
     const std::wstring url = GetWindowTextString(m_urlEdit);
     if (url.empty()) {
-        ShowErrorDialog(m_window, m_instance, L"Нет ссылки", L"Вставьте ссылку на видео или плейлист.");
+        ShowErrorDialog(m_window, m_instance, L"app.no_link", L"app.paste_a_video_or_playlist_url");
         return;
     }
 
@@ -2804,7 +2811,7 @@ void Application::EnqueueCurrentUrl() {
             );
             --remaining;
             if (remaining > 0) {
-                SetTransientStatus(L"Добавление элементов плейлиста: осталось " + std::to_wstring(remaining));
+                SetTransientStatus(L"app.adding_playlist_items_remaining" + std::to_wstring(remaining));
             }
         }
         KillTimer(m_window, kStatusRestoreTimer);
@@ -2836,7 +2843,7 @@ bool Application::ShowAndSaveSettings(SettingsInitialSection initialSection) {
             std::to_wstring(m_config.maxParallelDownloads)
         );
     }
-    SetTransientStatus(L"Настройки сохранены");
+    SetTransientStatus(L"app.settings_saved");
     return true;
 }
 
@@ -2848,8 +2855,8 @@ void Application::StartPostProcessing(int taskId, int action) {
         ShowInfoDialog(
             m_window,
             m_instance,
-            L"Операция уже добавлена",
-            L"Для этой задачи уже выполняется или ожидает транскрибация/перевод."
+            L"app.operation_already_added",
+            L"app.transcription_or_translation_is_already_running_or_queue"
         );
         return;
     }
@@ -2861,11 +2868,11 @@ void Application::StartPostProcessing(int taskId, int action) {
 
     const std::filesystem::path mediaPath = FirstExistingMediaOutput(task);
     if (mediaPath.empty()) {
-        ShowErrorDialog(m_window, m_instance, L"Файл не найден", BuildMissingMediaFileMessage(task));
+        ShowErrorDialog(m_window, m_instance, L"app.file_not_found", BuildMissingMediaFileMessage(task));
         return;
     }
     if (task.request.url.empty()) {
-        ShowErrorDialog(m_window, m_instance, L"Нет ссылки", L"Для этой задачи недоступна исходная ссылка.");
+        ShowErrorDialog(m_window, m_instance, L"app.no_link", L"app.the_source_url_is_unavailable_for_this_task");
         return;
     }
 
@@ -2883,7 +2890,7 @@ void Application::StartPostProcessing(int taskId, int action) {
             task.request.quality
         );
         if (requestedSubtitleMode != config.subtitleFfmpegMode) {
-            SetTransientStatus(L"Аудиофайл: субтитры будут сохранены отдельными TXT/SRT");
+            SetTransientStatus(L"app.audio_file_subtitles_will_be_saved_as_separate_txt_srt_f");
         }
         if (config.transcriptionEngine == TranscriptionEngine::Whisper) {
             ToolInstallStatus whisper = WhisperManager::Resolve(paths, config);
@@ -2914,7 +2921,7 @@ void Application::StartPostProcessing(int taskId, int action) {
                     ConfigStore::Save(*m_paths, m_config);
                 }
                 whisper = WhisperManager::Resolve(paths, config);
-                SetTransientStatus(L"CUDA Whisper недоступен: переключено на CPU");
+                SetTransientStatus(L"app.cuda_whisper_unavailable_switched_to_cpu");
             }
             const bool whisperCudaBlocked = cudaReadiness == WhisperCudaReadinessAction::BlockCuda;
             const int missingCount =
@@ -2950,7 +2957,7 @@ void Application::StartPostProcessing(int taskId, int action) {
             }
             if (config.subtitleFfmpegMode != SubtitleFfmpegMode::Off && !ffmpeg.available) {
                 config.subtitleFfmpegMode = SubtitleFfmpegMode::Off;
-                SetTransientStatus(L"FFmpeg не найден: субтитры будут сохранены отдельными файлами");
+                SetTransientStatus(L"app.ffmpeg_not_found_subtitles_will_be_saved_as_separate_fil");
             }
         }
         const std::wstring transcriptLanguage = config.transcriptionEngine == TranscriptionEngine::Vot
@@ -2967,7 +2974,7 @@ void Application::StartPostProcessing(int taskId, int action) {
             transcriptPaths,
             config.subtitleFfmpegMode
         );
-        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись транскрибации", affectedFiles)) {
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"app.overwrite_transcription", affectedFiles)) {
             return;
         }
         approvedAffectedFiles = affectedFiles;
@@ -2976,8 +2983,8 @@ void Application::StartPostProcessing(int taskId, int action) {
             ShowErrorDialog(
                 m_window,
                 m_instance,
-                L"Видео слишком длинное",
-                L"Voice Over Translation не переводит видео длиннее 4 часов."
+                L"app.video_is_too_long",
+                L"app.voice_over_translation_does_not_translate_videos_longer"
             );
             return;
         }
@@ -2989,7 +2996,7 @@ void Application::StartPostProcessing(int taskId, int action) {
             task.request.quality
         );
         if (requestedVoiceMode != config.voiceOverFfmpegMode) {
-            SetTransientStatus(L"Аудиофайл: перевод будет сохранён отдельным MP3");
+            SetTransientStatus(L"app.audio_file_translation_will_be_saved_as_a_separate_mp3");
         }
         const VotExeStatus vot = VotExeManager::Resolve(paths, config);
         if (!vot.available) {
@@ -3000,14 +3007,14 @@ void Application::StartPostProcessing(int taskId, int action) {
         }
         if (config.voiceOverFfmpegMode != VoiceOverFfmpegMode::Off && !ffmpeg.available) {
             config.voiceOverFfmpegMode = VoiceOverFfmpegMode::Off;
-            SetTransientStatus(L"FFmpeg не найден: перевод будет сохранён отдельным MP3");
+            SetTransientStatus(L"app.ffmpeg_not_found_translation_will_be_saved_as_a_separate");
         }
         const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(mediaPath, paths.voiceOverTempDir(), config.voiceOverLanguage);
         const std::vector<std::filesystem::path> affectedFiles = BuildVoiceOverAffectedFiles(
             voicePaths,
             config.voiceOverFfmpegMode
         );
-        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"Перезапись перевода", affectedFiles)) {
+        if (!ShowAffectedFilesOverwriteDialog(m_window, m_instance, L"app.overwrite_translation", affectedFiles)) {
             return;
         }
         approvedAffectedFiles = affectedFiles;
@@ -3029,7 +3036,7 @@ void Application::StartPostProcessing(int taskId, int action) {
     if (m_postProcessingTaskId != 0) {
         m_postProcessingQueue.push_back(std::move(operation));
         ClearQueueHover();
-        SetTransientStatus(L"Операция добавлена в очередь обработки");
+        SetTransientStatus(L"app.operation_added_to_the_processing_queue");
         RECT client = {};
         GetClientRect(m_window, &client);
         RECT queueRect = QueuePanelRectForClient(client);
@@ -3046,7 +3053,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
     m_postProcessingAction = operation.action;
     m_postProcessingPercent = 0.0;
     m_postProcessingIndeterminate = true;
-    m_postProcessingStatus = operation.action == kQueueActionTranscribe ? L"Транскрибация..." : L"Перевод...";
+    m_postProcessingStatus = operation.action == kQueueActionTranscribe ? L"app.transcribing" : L"app.translating";
     m_postProcessingStartedTick = GetTickCount();
     ClearQueueHover();
 
@@ -3170,7 +3177,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                             cpuSelfTestPassed,
                             modelReady
                         )) {
-                        publishProgress(0.0, L"CUDA Whisper недоступен: повтор на CPU");
+                        publishProgress(0.0, L"app.cuda_whisper_unavailable_retrying_on_cpu");
                         request.whisperExePath = cpuWhisper.executable;
                         result = TranscriptionClient::Transcribe(request, callbacks, cancelEvent.get());
                         complete.fallbackWhisperToCpu = true;
@@ -3179,7 +3186,7 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                 complete.success = result.success;
                 complete.canceled = result.canceled;
                 complete.error = result.errorText;
-                complete.status = result.success ? L"Транскрибация завершена" : L"Транскрибация не выполнена";
+                complete.status = result.success ? L"app.transcription_completed" : L"app.transcription_failed";
             } else {
                 const VoiceOverTranslationPaths voicePaths = BuildVoiceOverPaths(
                     mediaPath,
@@ -3213,16 +3220,16 @@ void Application::StartPostProcessingWorker(PendingPostProcessingOperation opera
                 complete.success = result.success;
                 complete.canceled = result.canceled;
                 complete.error = result.errorText;
-                complete.status = result.success ? L"Перевод завершён" : L"Перевод не выполнен";
+                complete.status = result.success ? L"app.translation_completed" : L"app.translation_failed";
             }
         } catch (const std::exception& ex) {
             complete.success = false;
             complete.error = LocalizedToolErrorText(ex.what());
-            complete.status = action == kQueueActionTranscribe ? L"Транскрибация не выполнена" : L"Перевод не выполнен";
+            complete.status = action == kQueueActionTranscribe ? L"app.transcription_failed" : L"app.translation_failed";
         } catch (...) {
             complete.success = false;
-            complete.error = L"Неизвестная ошибка";
-            complete.status = action == kQueueActionTranscribe ? L"Транскрибация не выполнена" : L"Перевод не выполнен";
+            complete.error = L"app.unknown_error";
+            complete.status = action == kQueueActionTranscribe ? L"app.transcription_failed" : L"app.translation_failed";
         }
 
         if (stopToken.stop_requested()) {
@@ -3297,7 +3304,7 @@ bool Application::CancelPostProcessing(int taskId) {
     if (queued != m_postProcessingQueue.end()) {
         m_postProcessingQueue.erase(queued);
         ClearQueueHover();
-        SetTransientStatus(L"Операция удалена из очереди обработки");
+        SetTransientStatus(L"app.operation_removed_from_the_processing_queue");
         RECT client = {};
         GetClientRect(m_window, &client);
         RECT queueRect = QueuePanelRectForClient(client);
@@ -3322,7 +3329,7 @@ bool Application::CancelPostProcessing(int taskId) {
     m_postProcessingStatus.clear();
     m_postProcessingStartedTick = 0;
     ClearQueueHover();
-    SetTransientStatus(L"Операция отменена");
+    SetTransientStatus(L"app.operation_canceled");
     RECT client = {};
     GetClientRect(m_window, &client);
     RECT queueRect = QueuePanelRectForClient(client);
@@ -3363,7 +3370,7 @@ void Application::RefreshQueueText() {
         m_queuePlaceholderVisible = false;
     }
     if (queuedCount > 0 && !m_transientStatusActive) {
-        SetStatus(L"В очереди осталось " + std::to_wstring(queuedCount) + L" задач");
+        SetStatus(L"app.remaining_in_queue" + std::to_wstring(queuedCount) + L"app.tasks");
     } else if (queuedCount == 0 && !m_transientStatusActive) {
         RestoreStatusText();
     }

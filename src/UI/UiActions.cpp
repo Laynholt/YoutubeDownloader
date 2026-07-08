@@ -90,24 +90,24 @@ double PingPongProgressPhase(std::uint64_t elapsedMs, std::uint64_t periodMs) {
 std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input) {
     if (input.postProcessingBusy) {
         return {
-            {QueueTaskAction::CancelPostProcessing, L"Отменить"}
+            {QueueTaskAction::CancelPostProcessing, L"app.cancel"}
         };
     }
 
     if (input.completed) {
         std::vector<QueueTaskActionItem> actions;
         if (input.hasSourceUrl) {
-            actions.push_back({QueueTaskAction::Transcribe, L"Транскрибировать"});
-            actions.push_back({QueueTaskAction::Translate, L"Перевести"});
+            actions.push_back({QueueTaskAction::Transcribe, L"actions.transcribe"});
+            actions.push_back({QueueTaskAction::Translate, L"actions.translate"});
         }
-        actions.push_back({QueueTaskAction::Clear, L"Закрыть"});
+        actions.push_back({QueueTaskAction::Clear, L"app.close"});
         return actions;
     }
 
     if (input.failedOrCanceled) {
         return {
-            {QueueTaskAction::Retry, L"Повторить"},
-            {QueueTaskAction::Clear, L"Очистить"}
+            {QueueTaskAction::Retry, L"actions.retry"},
+            {QueueTaskAction::Clear, L"actions.clear"}
         };
     }
 
@@ -116,41 +116,41 @@ std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInpu
 
 ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue issue) {
     ToolReadinessDialogContent content;
-    content.title = L"Инструмент не готов";
-    content.openToolsText = L"Открыть Инструменты";
-    content.cancelText = L"Отмена";
+    content.title = L"actions.tool_is_not_ready";
+    content.openToolsText = L"dialog.open_tools";
+    content.cancelText = L"dialog.cancel";
 
     switch (issue) {
     case ToolReadinessIssue::MissingFfmpegForWhisper:
         content.message =
-            L"Для транскрибации через Whisper требуется FFmpeg: приложению нужно извлечь аудиодорожку перед запуском whisper-cli.exe.\n\n"
-            L"Откройте раздел Инструменты, чтобы установить FFmpeg или выбрать папку с ffmpeg.exe.";
+            L"actions.whisper_transcription_requires_ffmpeg_the_application_mu"
+            L"actions.open_tools_to_install_ffmpeg_or_choose_the_folder_with_f";
         break;
     case ToolReadinessIssue::MissingWhisperExe:
         content.message =
-            L"Не найден whisper-cli.exe для локальной транскрибации.\n\n"
-            L"Откройте раздел Инструменты, чтобы выбрать папку Whisper.cpp или установить инструмент.";
+            L"actions.whisper_cli_exe_for_local_transcription_was_not_found"
+            L"actions.open_tools_to_choose_the_whisper_cpp_folder_or_install_t";
         break;
     case ToolReadinessIssue::MissingWhisperModel:
         content.message =
-            L"Не найдена выбранная модель Whisper. Без модели whisper-cli.exe не сможет распознать аудио.\n\n"
-            L"Откройте раздел Инструменты, чтобы скачать или выбрать модель Whisper.";
+            L"actions.the_selected_whisper_model_was_not_found_without_a_model"
+            L"actions.open_tools_to_download_or_choose_a_whisper_model";
         break;
     case ToolReadinessIssue::MissingWhisperSetup:
         content.message =
-            L"Для транскрибации через Whisper нужно подготовить несколько компонентов: FFmpeg для извлечения аудио, "
-            L"whisper-cli.exe для распознавания и модель Whisper.\n\n"
-            L"Откройте раздел Инструменты, чтобы установить или выбрать недостающие файлы.";
+            L"actions.whisper_transcription_requires_several_components_ffmpeg"
+            L"actions.whisper_cli_exe_for_recognition_and_the_whisper_model"
+            L"actions.open_tools_to_install_or_choose_the_missing_files";
         break;
     case ToolReadinessIssue::MissingWhisperCuda:
         content.message =
-            L"В настройках выбран CUDA-backend Whisper, но CUDA недоступна или приложение нашло только CPU-версию whisper-cli.exe.\n\n"
-            L"Откройте раздел Инструменты, чтобы установить CUDA-версию, выбрать CPU-режим или скачать подходящий Whisper заново.";
+            L"actions.the_cuda_whisper_backend_is_selected_in_settings_but_cud"
+            L"actions.open_tools_to_install_the_cuda_version_choose_cpu_mode_o";
         break;
     case ToolReadinessIssue::MissingVotExe:
         content.message =
-            L"Не найден vot-helper.exe для Voice Over Translation.\n\n"
-            L"Откройте раздел Инструменты, чтобы выбрать папку VOT или установить инструмент.";
+            L"actions.vot_helper_exe_for_voice_over_translation_was_not_found"
+            L"actions.open_tools_to_choose_the_vot_folder_or_install_the_tool";
         break;
     }
 
@@ -160,29 +160,29 @@ ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue is
 std::wstring VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode mode) {
     switch (mode) {
     case VoiceOverFfmpegMode::AudioTrack:
-        return L"Аудиодорожка";
+        return L"actions.audio_track";
     case VoiceOverFfmpegMode::Mix:
-        return L"Смешать";
+        return L"actions.mix";
     case VoiceOverFfmpegMode::Off:
     default:
-        return L"Выкл";
+        return L"dialog.off";
     }
 }
 
 std::wstring SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode mode) {
     switch (mode) {
     case SubtitleFfmpegMode::SubtitleTrack:
-        return L"Дорожка субтитров";
+        return L"actions.subtitle_track";
     case SubtitleFfmpegMode::BurnIn:
-        return L"Вшить в видео";
+        return L"actions.burn_into_video";
     case SubtitleFfmpegMode::Off:
     default:
-        return L"Выкл";
+        return L"dialog.off";
     }
 }
 
 std::wstring OpenDownloadFolderButtonText() {
-    return L"Открыть папку";
+    return L"actions.open_folder";
 }
 
 std::wstring TranslationSettingsCollapsedIcon() {
@@ -190,18 +190,18 @@ std::wstring TranslationSettingsCollapsedIcon() {
 }
 
 std::wstring ToolSetupButtonText() {
-    return L"Настроить";
+    return L"actions.configure";
 }
 
 std::wstring WhisperBackendStatusText(WhisperBackend configuredBackend, WhisperBackend resolvedBackend, bool cudaAvailable) {
     if (configuredBackend == WhisperBackend::Cuda && (!cudaAvailable || resolvedBackend != WhisperBackend::Cuda)) {
-        return L"CUDA нет";
+        return L"actions.no_cuda";
     }
     if (resolvedBackend == WhisperBackend::Cuda) {
         return L"CUDA";
     }
     if (resolvedBackend == WhisperBackend::Custom) {
-        return L"Выбран";
+        return L"actions.selected";
     }
     return L"CPU";
 }
@@ -210,9 +210,9 @@ std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cud
     (void)configuredBackend;
     const bool installCuda = cudaAvailable;
     if (installCuda) {
-        return backendInstalled ? L"Переустановить CUDA" : L"Установить CUDA";
+        return backendInstalled ? L"actions.reinstall_cuda" : L"actions.install_cuda";
     }
-    return backendInstalled ? L"Переустановить CPU" : L"Установить CPU";
+    return backendInstalled ? L"actions.reinstall_cpu" : L"actions.install_cpu";
 }
 
 bool IsWhisperInstallTargetInstalled(WhisperBackend installBackend, bool cpuInstalled, bool cudaInstalled) {
@@ -225,31 +225,31 @@ std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText) {
 
 std::wstring LocalizedToolErrorText(const std::string& message) {
     if (message == "operation canceled") {
-        return L"Операция отменена";
+        return L"app.operation_canceled";
     }
     if (message == "media file is no longer available") {
-        return L"Исходный медиафайл больше недоступен";
+        return L"actions.source_media_file_is_no_longer_available";
     }
     if (message == "FFmpeg is no longer available") {
-        return L"FFmpeg больше недоступен";
+        return L"actions.ffmpeg_is_no_longer_available";
     }
     if (message == "whisper-cli.exe is no longer available") {
-        return L"whisper-cli.exe больше недоступен";
+        return L"actions.whisper_cli_exe_is_no_longer_available";
     }
     if (message == "Whisper model is no longer available") {
-        return L"Модель Whisper больше недоступна";
+        return L"actions.whisper_model_is_no_longer_available";
     }
     if (message == "vot-helper.exe is no longer available") {
-        return L"vot-helper.exe больше недоступен";
+        return L"actions.vot_helper_exe_is_no_longer_available";
     }
     if (message == "installed VOT helper self-test failed") {
-        return L"VOT helper установлен, но не прошёл проверку запуска";
+        return L"actions.vot_helper_is_installed_but_failed_the_launch_check";
     }
     if (message == "installed whisper.cpp self-test failed") {
-        return L"Whisper.cpp установлен, но не прошёл проверку запуска";
+        return L"actions.whisper_cpp_is_installed_but_failed_the_launch_check";
     }
     if (message == "post-processing output conflict is no longer approved") {
-        return L"Появился новый конфликт вывода. Повторите операцию и подтвердите перезапись.";
+        return L"actions.a_new_output_conflict_appeared_repeat_the_operation_and";
     }
     return std::wstring(message.begin(), message.end());
 }
@@ -257,11 +257,11 @@ std::wstring LocalizedToolErrorText(const std::string& message) {
 std::wstring PostProcessingQueueStatusText(QueueTaskAction action) {
     switch (action) {
     case QueueTaskAction::Transcribe:
-        return L"Ожидает транскрибации...";
+        return L"actions.waiting_for_transcription";
     case QueueTaskAction::Translate:
-        return L"Ожидает перевода...";
+        return L"actions.waiting_for_translation";
     default:
-        return L"Ожидает обработки...";
+        return L"actions.waiting_for_processing";
     }
 }
 
@@ -406,14 +406,14 @@ std::vector<EditContextMenuItem> BuildEditContextMenuItems(
     bool hasText
 ) {
     return {
-        {IdEditMenuUndo, L"Отменить", false, canUndo},
+        {IdEditMenuUndo, L"app.cancel", false, canUndo},
         {0, L"", true, false},
-        {IdEditMenuCut, L"Вырезать", false, hasSelection},
-        {IdEditMenuCopy, L"Копировать", false, hasSelection},
-        {IdEditMenuPaste, L"Вставить", false, canPaste},
-        {IdEditMenuDelete, L"Удалить", false, hasSelection},
+        {IdEditMenuCut, L"actions.cut", false, hasSelection},
+        {IdEditMenuCopy, L"dialog.copy_2", false, hasSelection},
+        {IdEditMenuPaste, L"app.paste", false, canPaste},
+        {IdEditMenuDelete, L"app.delete", false, hasSelection},
         {0, L"", true, false},
-        {IdEditMenuSelectAll, L"Выделить всё", false, hasText}
+        {IdEditMenuSelectAll, L"actions.select_all", false, hasText}
     };
 }
 

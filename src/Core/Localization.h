@@ -16,6 +16,8 @@ struct UiLanguage {
 
 class Localization {
 public:
+    Localization();
+
     static std::vector<UiLanguage> AvailableLanguages(const AppPaths& paths);
     static Localization Load(const AppPaths& paths, const std::wstring& languageId);
     static void SetActive(Localization localization);

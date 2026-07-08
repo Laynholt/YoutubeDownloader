@@ -508,34 +508,34 @@ TranscriptionResult TranscriptionClient::Transcribe(
     HANDLE cancelEvent
 ) {
     if (!IsRegularFile(request.mediaPath)) {
-        return Failed(L"Файл для распознавания не найден");
+        return Failed(L"transcription.file_for_recognition_not_found");
     }
     if (request.engine == TranscriptionEngine::Whisper) {
         if (!IsRegularFile(request.ffmpegExePath)) {
-            return Failed(L"FFmpeg не найден");
+            return Failed(L"dialog.ffmpeg_not_found");
         }
         if (!IsRegularFile(request.whisperExePath)) {
-            return Failed(L"whisper-cli.exe не найден");
+            return Failed(L"transcription.whisper_cli_exe_not_found");
         }
         if (!IsRegularFile(request.whisperModelPath)) {
-            return Failed(L"Модель Whisper не найдена");
+            return Failed(L"dialog.whisper_model_not_found");
         }
     } else {
         if (!IsRegularFile(request.votExePath)) {
-            return Failed(L"vot-helper.exe не найден");
+            return Failed(L"transcription.vot_helper_exe_not_found");
         }
         if (request.youtubeUrl.empty()) {
-            return Failed(L"Ссылка на видео недоступна");
+            return Failed(L"transcription.video_url_is_unavailable");
         }
         if (request.subtitleMode != SubtitleFfmpegMode::Off && !IsRegularFile(request.ffmpegExePath)) {
-            return Failed(L"FFmpeg не найден");
+            return Failed(L"dialog.ffmpeg_not_found");
         }
     }
 
     std::error_code ec;
     std::filesystem::create_directories(request.tempDirectory, ec);
     if (ec) {
-        return Failed(L"Не удалось создать папку для временного аудио");
+        return Failed(L"transcription.failed_to_create_the_temporary_audio_folder");
     }
 
     const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -554,7 +554,7 @@ TranscriptionResult TranscriptionClient::Transcribe(
     bool srtMoved = false;
 
     if (request.engine == TranscriptionEngine::Whisper) {
-        EmitTranscriptionProgress(callbacks, 5.0, L"Извлечение аудио для распознавания");
+        EmitTranscriptionProgress(callbacks, 5.0, L"transcription.extracting_audio_for_recognition");
 
         ProcessRunOptions ffmpeg;
         ffmpeg.executable = request.ffmpegExePath;
@@ -567,15 +567,15 @@ TranscriptionResult TranscriptionClient::Transcribe(
             std::filesystem::remove(paths.wavPath, ec);
             TranscriptionResult result;
             result.canceled = true;
-            result.errorText = L"Отменено";
+            result.errorText = L"app.canceled";
             return result;
         }
         if (extracted.exitCode != 0) {
             std::filesystem::remove(paths.wavPath, ec);
-            return Failed(L"Не удалось извлечь аудио: " + ProcessErrorText(extracted, L"FFmpeg завершился с ошибкой"));
+            return Failed(L"transcription.failed_to_extract_audio" + ProcessErrorText(extracted, L"transcription.ffmpeg_exited_with_an_error"));
         }
 
-        EmitTranscriptionProgress(callbacks, 20.0, L"Распознавание речи");
+        EmitTranscriptionProgress(callbacks, 20.0, L"transcription.recognizing_speech");
 
         ProcessRunOptions whisper;
         whisper.executable = request.whisperExePath;
@@ -585,7 +585,7 @@ TranscriptionResult TranscriptionClient::Transcribe(
         const auto handleWhisperLine = [&callbacks](const std::wstring& line) {
             const std::optional<double> progress = ParseWhisperProgressPercent(line);
             if (progress) {
-                EmitTranscriptionProgress(callbacks, 20.0 + (*progress * 0.78), L"Распознавание речи");
+                EmitTranscriptionProgress(callbacks, 20.0 + (*progress * 0.78), L"transcription.recognizing_speech");
             }
         };
         whisper.onStdoutLine = handleWhisperLine;
@@ -597,20 +597,20 @@ TranscriptionResult TranscriptionClient::Transcribe(
         if (recognized.canceled) {
             TranscriptionResult result;
             result.canceled = true;
-            result.errorText = L"Отменено";
+            result.errorText = L"app.canceled";
             return result;
         }
         if (recognized.exitCode != 0) {
-            return Failed(L"Whisper завершился с ошибкой: " + ProcessErrorText(recognized, L"неизвестная ошибка"));
+            return Failed(L"transcription.whisper_exited_with_an_error" + ProcessErrorText(recognized, L"transcription.text"));
         }
 
         textMoved = CommitPostProcessingSidecarFile(paths.tempTextPath, paths.finalTextPath);
         srtMoved = CommitPostProcessingSidecarFile(paths.tempSrtPath, paths.finalSrtPath);
         if (!textMoved || !srtMoved) {
-            return Failed(L"Whisper не сохранил TXT и SRT файлы расшифровки");
+            return Failed(L"transcription.whisper_did_not_save_txt_and_srt_transcript_files");
         }
     } else {
-        EmitTranscriptionProgress(callbacks, 10.0, L"Получение субтитров VOT");
+        EmitTranscriptionProgress(callbacks, 10.0, L"transcription.getting_vot_subtitles");
 
         std::filesystem::remove(paths.tempSrtPath, ec);
         ec.clear();
@@ -623,7 +623,7 @@ TranscriptionResult TranscriptionClient::Transcribe(
         vot.timeoutMs = INFINITE;
         vot.cancelEvent = cancelEvent;
         const auto handleVotLine = [&callbacks](const std::wstring&) {
-            EmitTranscriptionProgress(callbacks, 35.0, L"Получение субтитров VOT");
+            EmitTranscriptionProgress(callbacks, 35.0, L"transcription.getting_vot_subtitles");
         };
         vot.onStdoutLine = handleVotLine;
         vot.onStderrLine = handleVotLine;
@@ -635,7 +635,7 @@ TranscriptionResult TranscriptionClient::Transcribe(
             const std::wstring retrySourceLanguage =
                 SuggestedVotSubtitleSourceLanguage(subtitles, request.votTargetLanguage);
             if (!retrySourceLanguage.empty() && retrySourceLanguage != L"auto") {
-                EmitTranscriptionProgress(callbacks, 45.0, L"Уточнение языка субтитров VOT");
+                EmitTranscriptionProgress(callbacks, 45.0, L"transcription.refining_vot_subtitle_language");
                 std::filesystem::remove(paths.tempSrtPath, ec);
                 ec.clear();
                 vot.arguments = BuildVotHelperSubtitlesArgumentsForSource(
@@ -650,34 +650,34 @@ TranscriptionResult TranscriptionClient::Transcribe(
             std::filesystem::remove(paths.tempSrtPath, ec);
             TranscriptionResult result;
             result.canceled = true;
-            result.errorText = L"Отменено";
+            result.errorText = L"app.canceled";
             return result;
         }
         if (subtitles.exitCode != 0) {
             std::filesystem::remove(paths.tempSrtPath, ec);
-            return Failed(L"vot-helper.exe не получил субтитры: " + ProcessErrorText(subtitles, L"неизвестная ошибка"));
+            return Failed(L"transcription.vot_helper_exe_did_not_get_subtitles" + ProcessErrorText(subtitles, L"transcription.text"));
         }
         if (!IsRegularFile(paths.tempSrtPath)) {
-            return Failed(L"vot-helper.exe не создал SRT-файл");
+            return Failed(L"transcription.vot_helper_exe_did_not_create_an_srt_file");
         }
 
-        EmitTranscriptionProgress(callbacks, 70.0, L"Сохранение TXT и SRT");
+        EmitTranscriptionProgress(callbacks, 70.0, L"transcription.saving_txt_and_srt");
         const std::wstring plainText = PlainTextFromSrtContent(ReadUtf8TextFile(paths.tempSrtPath));
         if (!WriteUtf8TextFile(paths.tempTextPath, plainText)) {
             std::filesystem::remove(paths.tempSrtPath, ec);
-            return Failed(L"Не удалось создать TXT из субтитров VOT");
+            return Failed(L"transcription.failed_to_create_txt_from_vot_subtitles");
         }
 
         textMoved = CommitPostProcessingSidecarFile(paths.tempTextPath, paths.finalTextPath);
         srtMoved = CommitPostProcessingSidecarFile(paths.tempSrtPath, paths.finalSrtPath);
         if (!textMoved || !srtMoved) {
-            return Failed(L"Не удалось сохранить TXT и SRT файлы VOT");
+            return Failed(L"transcription.failed_to_save_vot_txt_and_srt_files");
         }
     }
 
     std::filesystem::path embeddedVideoPath;
     if (request.subtitleMode != SubtitleFfmpegMode::Off && srtMoved) {
-        EmitTranscriptionProgress(callbacks, 90.0, L"Встраивание субтитров в видео");
+        EmitTranscriptionProgress(callbacks, 90.0, L"transcription.embedding_subtitles_into_video");
 
         std::filesystem::remove(paths.tempVideoPath, ec);
         ec.clear();
@@ -700,22 +700,22 @@ TranscriptionResult TranscriptionClient::Transcribe(
         if (embedded.canceled) {
             TranscriptionResult result;
             result.canceled = true;
-            result.errorText = L"Отменено";
+            result.errorText = L"app.canceled";
             std::filesystem::remove(paths.tempVideoPath, ec);
             return result;
         }
         if (embedded.exitCode != 0) {
             std::filesystem::remove(paths.tempVideoPath, ec);
-            return Failed(L"FFmpeg не встроил субтитры в видео: " + ProcessErrorText(embedded, L"неизвестная ошибка"));
+            return Failed(L"transcription.ffmpeg_did_not_embed_subtitles_into_video" + ProcessErrorText(embedded, L"transcription.text"));
         }
         if (!ReplaceOriginalMediaWithPostProcessedFile(paths.tempVideoPath, paths.finalVideoPath)) {
             std::filesystem::remove(paths.tempVideoPath, ec);
-            return Failed(L"Не удалось заменить исходное видео версией с субтитрами");
+            return Failed(L"transcription.failed_to_replace_the_source_video_with_the_subtitled_ve");
         }
         embeddedVideoPath = paths.finalVideoPath;
     }
 
-    EmitTranscriptionProgress(callbacks, 99.0, L"Сохранение расшифровки");
+    EmitTranscriptionProgress(callbacks, 99.0, L"transcription.saving_transcript");
 
     TranscriptionResult result;
     result.success = true;

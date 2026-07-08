@@ -141,24 +141,24 @@ std::wstring FormatDuration(std::uint64_t seconds) {
 
     std::vector<std::wstring> parts;
     if (days > 0) {
-        parts.push_back(std::to_wstring(days) + L" д");
+        parts.push_back(std::to_wstring(days) + L"backend.d");
         if (hours > 0) {
-            parts.push_back(std::to_wstring(hours) + L" ч");
+            parts.push_back(std::to_wstring(hours) + L"backend.h");
         } else if (minutes > 0) {
-            parts.push_back(std::to_wstring(minutes) + L" мин");
+            parts.push_back(std::to_wstring(minutes) + L"backend.min");
         }
     } else if (hours > 0) {
-        parts.push_back(std::to_wstring(hours) + L" ч");
+        parts.push_back(std::to_wstring(hours) + L"backend.h");
         if (minutes > 0) {
-            parts.push_back(std::to_wstring(minutes) + L" мин");
+            parts.push_back(std::to_wstring(minutes) + L"backend.min");
         }
     } else if (minutes > 0) {
-        parts.push_back(std::to_wstring(minutes) + L" мин");
+        parts.push_back(std::to_wstring(minutes) + L"backend.min");
         if (seconds > 0) {
-            parts.push_back(std::to_wstring(seconds) + L" с");
+            parts.push_back(std::to_wstring(seconds) + L"backend.s");
         }
     } else {
-        parts.push_back(std::to_wstring(seconds) + L" с");
+        parts.push_back(std::to_wstring(seconds) + L"backend.s");
     }
 
     std::wstring result;

@@ -130,15 +130,15 @@ std::wstring MediaKindFor(const std::wstring& part, const std::wstring& vcodec, 
 
 std::wstring StageFor(const std::wstring& status, const std::wstring& mediaKind) {
     if (status == L"finished") {
-        return L"Загрузка завершена (часть)";
+        return L"ytdlp.download_completed_part";
     }
     if (mediaKind == L"video") {
-        return L"Скачивание видео:";
+        return L"ytdlp.downloading_video";
     }
     if (mediaKind == L"audio") {
-        return L"Скачивание аудио:";
+        return L"ytdlp.downloading_audio";
     }
-    return L"Скачивание:";
+    return L"ytdlp.downloading";
 }
 
 std::wstring JsonWide(const nlohmann::json& json, const char* key) {

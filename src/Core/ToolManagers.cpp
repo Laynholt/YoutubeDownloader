@@ -91,7 +91,7 @@ FfmpegStatus MakeFfmpegStatus(FfmpegSource source, const std::filesystem::path& 
     status.available = true;
     status.source = source;
     status.ffmpegExe = exe;
-    status.message = L"FFmpeg найден";
+    status.message = L"tools.ffmpeg_found";
     return status;
 }
 
@@ -526,12 +526,12 @@ FfmpegStatus FfmpegManager::Resolve(const AppPaths& paths, const AppConfig& conf
         return status;
     }
 
-    return MakeMissingFfmpegStatus(L"FFmpeg не найден");
+    return MakeMissingFfmpegStatus(L"dialog.ffmpeg_not_found");
 }
 
 FfmpegStatus FfmpegManager::ResolveUserPath(const std::filesystem::path& path) {
     if (path.empty()) {
-        return MakeMissingFfmpegStatus(L"Путь FFmpeg не задан");
+        return MakeMissingFfmpegStatus(L"tools.ffmpeg_path_is_not_set");
     }
 
     std::error_code ec;
@@ -551,7 +551,7 @@ FfmpegStatus FfmpegManager::ResolveUserPath(const std::filesystem::path& path) {
         }
     }
 
-    return MakeMissingFfmpegStatus(L"В выбранном пути не найден ffmpeg.exe");
+    return MakeMissingFfmpegStatus(L"tools.ffmpeg_exe_was_not_found_at_the_selected_path");
 }
 
 std::filesystem::path FfmpegManager::FindExtractedBinDir(const std::filesystem::path& extractedRoot) {
@@ -596,7 +596,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
     std::filesystem::remove_all(extractDir, ec);
 
     if (onProgress) {
-        onProgress(0, 0, L"Скачивание FFmpeg...");
+        onProgress(0, 0, L"tools.downloading_ffmpeg");
     }
 
     WinHttpClient::DownloadFile(
@@ -604,7 +604,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
         archive,
         [onProgress](std::uint64_t downloaded, std::uint64_t total) {
             if (onProgress) {
-                onProgress(downloaded, total, L"Скачивание FFmpeg...");
+                onProgress(downloaded, total, L"tools.downloading_ffmpeg");
             }
         },
         cancelEvent
@@ -616,7 +616,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
 
     std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
-        onProgress(0, 0, L"Распаковка FFmpeg...");
+        onProgress(0, 0, L"tools.extracting_ffmpeg");
     }
 
     ProcessRunOptions options;
@@ -649,7 +649,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
     }
 
     if (onProgress) {
-        onProgress(0, 0, L"Установка FFmpeg...");
+        onProgress(0, 0, L"tools.installing_ffmpeg");
     }
 
     std::filesystem::create_directories(paths.localFfmpegBinDir(), ec);
@@ -707,17 +707,17 @@ std::vector<WhisperModelInfo> WhisperManager::ModelCatalog() {
     };
 
     return {
-        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"очень быстро / низкое качество / 75 МиБ", L"Минимальная модель для слабых ПК и быстрых черновиков."),
-        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"быстро / базовое качество / 142 МиБ", L"Небольшая модель, когда важнее всего скорость."),
-        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"баланс / лучше Base / 466 МиБ", L"Хороший компромисс для коротких видео."),
-        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"выше качество / медленнее / 1.5 ГиБ", L"Заметно лучше Small, но работает медленнее."),
-        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"рекомендуется / быстро / высокое качество / 1.5 ГиБ", L"Практичный вариант по умолчанию: близко к Large по качеству и быстрее.", true, false),
-        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"лучшее качество / медленнее / 2.9 ГиБ", L"Лучшее качество распознавания, но самая тяжелая обычная модель.", false, true),
-        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"меньше / быстрее / ниже качество", L"Сжатая Small для скорости и экономии места."),
-        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"меньше / быстрый Medium / ниже качество", L"Сжатая Medium, когда качества Small недостаточно."),
-        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"компактно / быстро / хорошее качество", L"Сжатая Turbo с умеренной потерей качества."),
-        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"компактная Large / высокое качество / медленнее", L"Сжатая Large v3 без полного размера 2.9 ГиБ."),
-        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"сбалансированное сжатие / лучше q5", L"Сжатая Turbo с меньшей потерей качества, чем q5.")
+        model(L"tiny", L"Tiny", L"ggml-tiny.bin", 75ull * mib, L"tools.very_fast_low_quality_75_mib", L"tools.minimal_model_for_weak_pcs_and_quick_drafts"),
+        model(L"base", L"Base", L"ggml-base.bin", 142ull * mib, L"tools.fast_basic_quality_142_mib", L"tools.small_model_when_speed_matters_most"),
+        model(L"small", L"Small", L"ggml-small.bin", 466ull * mib, L"tools.balanced_better_than_base_466_mib", L"tools.good_compromise_for_short_videos"),
+        model(L"medium", L"Medium", L"ggml-medium.bin", 1530ull * mib, L"tools.higher_quality_slower_1_5_gib", L"tools.noticeably_better_than_small_but_slower"),
+        model(L"large-v3-turbo", L"Large v3 Turbo", L"ggml-large-v3-turbo.bin", 1530ull * mib, L"tools.recommended_fast_high_quality_1_5_gib", L"tools.practical_default_close_to_large_quality_and_faster", true, false),
+        model(L"large-v3", L"Large v3", L"ggml-large-v3.bin", 2900ull * mib, L"tools.best_quality_slower_2_9_gib", L"tools.best_recognition_quality_but_the_heaviest_regular_model", false, true),
+        model(L"small-q5_1", L"Small q5_1", L"ggml-small-q5_1.bin", 181ull * mib, L"tools.smaller_faster_lower_quality", L"tools.compressed_small_for_speed_and_space_saving"),
+        model(L"medium-q5_0", L"Medium q5_0", L"ggml-medium-q5_0.bin", 514ull * mib, L"tools.smaller_fast_medium_lower_quality", L"tools.compressed_medium_when_small_quality_is_not_enough"),
+        model(L"large-v3-turbo-q5_0", L"Large v3 Turbo q5_0", L"ggml-large-v3-turbo-q5_0.bin", 547ull * mib, L"tools.compact_fast_good_quality", L"tools.compressed_turbo_with_moderate_quality_loss"),
+        model(L"large-v3-q5_0", L"Large v3 q5_0", L"ggml-large-v3-q5_0.bin", 1080ull * mib, L"tools.compact_large_high_quality_slower", L"tools.compressed_large_v3_without_the_full_2_9_gib_size"),
+        model(L"large-v3-turbo-q8_0", L"Large v3 Turbo q8_0", L"ggml-large-v3-turbo-q8_0.bin", 835ull * mib, L"tools.balanced_compression_better_than_q5", L"tools.compressed_turbo_with_less_quality_loss_than_q5")
     };
 }
 
@@ -861,14 +861,14 @@ ToolInstallStatus WhisperManager::Install(
     std::filesystem::remove_all(extractDir, ec);
 
     if (onProgress) {
-        onProgress(0, 0, L"Скачивание whisper.cpp...");
+        onProgress(0, 0, L"tools.downloading_whisper_cpp");
     }
     WinHttpClient::DownloadFile(
         release.downloadUrl,
         archiveTmp,
         [onProgress](std::uint64_t downloaded, std::uint64_t total) {
             if (onProgress) {
-                onProgress(downloaded, total, L"Скачивание whisper.cpp...");
+                onProgress(downloaded, total, L"tools.downloading_whisper_cpp");
             }
         },
         cancelEvent
@@ -885,7 +885,7 @@ ToolInstallStatus WhisperManager::Install(
 
     std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
-        onProgress(0, 0, L"Распаковка whisper.cpp...");
+        onProgress(0, 0, L"tools.extracting_whisper_cpp");
     }
 
     ProcessRunOptions options;
@@ -918,7 +918,7 @@ ToolInstallStatus WhisperManager::Install(
     }
 
     if (onProgress) {
-        onProgress(0, 0, L"Установка whisper.cpp...");
+        onProgress(0, 0, L"tools.installing_whisper_cpp");
     }
 
     const std::filesystem::path installDir = BackendInstallDir(paths, installBackend);
@@ -991,7 +991,7 @@ std::filesystem::path WhisperManager::DownloadModel(
     std::filesystem::create_directories(paths.localWhisperModelsDir(), ec);
     std::filesystem::remove(tmp, ec);
 
-    const std::wstring statusText = L"Скачивание модели " + model.name + L"...";
+    const std::wstring statusText = L"tools.downloading_model" + model.name + L"...";
     if (onProgress) {
         onProgress(0, model.sizeBytes, statusText);
     }
@@ -1073,7 +1073,7 @@ VotExeStatus VotExeManager::Resolve(const AppPaths& paths, const AppConfig& conf
         return status;
     }
 
-    status.message = L"VOT helper не найден";
+    status.message = L"dialog.vot_helper_not_found";
     return status;
 }
 
@@ -1081,7 +1081,7 @@ VotExeStatus VotExeManager::ResolveUserPath(const std::filesystem::path& path) {
     VotExeStatus status;
     status.executable = FindExecutable(path);
     status.available = !status.executable.empty();
-    status.message = status.available ? L"VOT helper найден" : L"В выбранном пути не найден vot-helper.exe";
+    status.message = status.available ? L"tools.vot_helper_found" : L"dialog.vot_helper_exe_was_not_found_at_the_selected_path";
     return status;
 }
 
@@ -1201,14 +1201,14 @@ VotExeStatus VotExeManager::Install(
     std::filesystem::remove_all(extractDir, ec);
 
     if (onProgress) {
-        onProgress(0, 0, L"Скачивание VOT helper...");
+        onProgress(0, 0, L"tools.downloading_vot_helper");
     }
     WinHttpClient::DownloadFile(
         release.downloadUrl,
         archiveTmp,
         [onProgress](std::uint64_t downloaded, std::uint64_t total) {
             if (onProgress) {
-                onProgress(downloaded, total, L"Скачивание VOT helper...");
+                onProgress(downloaded, total, L"tools.downloading_vot_helper");
             }
         },
         cancelEvent
@@ -1231,7 +1231,7 @@ VotExeStatus VotExeManager::Install(
 
     std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
-        onProgress(0, 0, L"Распаковка VOT helper...");
+        onProgress(0, 0, L"tools.extracting_vot_helper");
     }
 
     ProcessRunOptions options;
@@ -1264,7 +1264,7 @@ VotExeStatus VotExeManager::Install(
     }
 
     if (onProgress) {
-        onProgress(0, 0, L"Установка VOT helper...");
+        onProgress(0, 0, L"tools.installing_vot_helper");
     }
 
     std::filesystem::create_directories(paths.localVotDir(), ec);
@@ -1347,10 +1347,10 @@ bool ShouldInstallAppUpdate(const ReleaseAssetInfo& latest) {
 
 std::wstring BuildAppUpdatePromptMessage(const ReleaseAssetInfo& release) {
     return
-        L"Доступна новая версия: " + release.version +
-        L"\nТекущая версия: " YTD_APP_VERSION_WIDE
-        L"\n\nСкачать и установить обновление сейчас?\n"
-        L"Приложение будет закрыто и запущено заново.";
+        L"tools.new_version_available" + release.version +
+        L"tools.current_version" YTD_APP_VERSION_WIDE
+        L"tools.download_and_install_the_update_now"
+        L"tools.the_application_will_close_and_restart";
 }
 
 ToolInstallStatus YtDlpManager::Status() const {

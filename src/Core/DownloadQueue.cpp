@@ -183,29 +183,29 @@ bool ShouldReuseExistingTask(DownloadTaskState state) {
 DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
     if (IsPersistedRunningState(snapshot.state)) {
         snapshot.state = DownloadTaskState::Canceled;
-        snapshot.statusText = L"Остановлено";
+        snapshot.statusText = L"download_queue.stopped";
         snapshot.speedBytesPerSecond = 0;
         snapshot.etaSeconds = 0;
     }
     if (snapshot.statusText.empty()) {
         switch (snapshot.state) {
         case DownloadTaskState::Completed:
-            snapshot.statusText = L"Готово";
+            snapshot.statusText = L"app.done";
             break;
         case DownloadTaskState::Failed:
-            snapshot.statusText = L"Ошибка";
+            snapshot.statusText = L"app.error";
             break;
         case DownloadTaskState::Canceled:
-            snapshot.statusText = L"Остановлено";
+            snapshot.statusText = L"download_queue.stopped";
             break;
         case DownloadTaskState::Queued:
-            snapshot.statusText = L"В очереди";
+            snapshot.statusText = L"app.queued";
             break;
         case DownloadTaskState::Preparing:
-            snapshot.statusText = L"Подготовка";
+            snapshot.statusText = L"app.preparing";
             break;
         case DownloadTaskState::Downloading:
-            snapshot.statusText = L"Загрузка";
+            snapshot.statusText = L"download_queue.loading";
             break;
         }
     }
@@ -215,7 +215,7 @@ DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
 DownloadTaskSnapshot SnapshotForShutdown(DownloadTaskSnapshot snapshot) {
     if (IsPersistedRunningState(snapshot.state)) {
         snapshot.state = DownloadTaskState::Canceled;
-        snapshot.statusText = L"Остановлено";
+        snapshot.statusText = L"download_queue.stopped";
         snapshot.speedBytesPerSecond = 0;
         snapshot.etaSeconds = 0;
     }
@@ -278,7 +278,7 @@ int DownloadQueue::Enqueue(
     record.snapshot.thumbnailPath = std::move(thumbnailPath);
     record.snapshot.durationSeconds = durationSeconds;
     record.snapshot.state = DownloadTaskState::Queued;
-    record.snapshot.statusText = L"В очереди";
+    record.snapshot.statusText = L"app.queued";
     m_tasks[id] = std::move(record);
     if (m_logger) {
         m_logger->Info(L"Download task enqueued: id=" + std::to_wstring(id) + L" url=" + request.url);
@@ -318,7 +318,7 @@ bool DownloadQueue::Cancel(int id) {
     TaskRecord& task = it->second;
     if (task.snapshot.state == DownloadTaskState::Queued) {
         task.snapshot.state = DownloadTaskState::Canceled;
-        task.snapshot.statusText = L"Отменено";
+        task.snapshot.statusText = L"app.canceled";
         if (m_logger) {
             m_logger->Info(L"Download task canceled while queued: id=" + std::to_wstring(id));
         }
@@ -328,7 +328,7 @@ bool DownloadQueue::Cancel(int id) {
     }
     if (task.active) {
         task.cancelRequested = true;
-        task.snapshot.statusText = L"Отмена...";
+        task.snapshot.statusText = L"dialog.canceling";
         if (m_logger) {
             m_logger->Info(L"Download task cancellation requested: id=" + std::to_wstring(id));
         }
@@ -357,7 +357,7 @@ bool DownloadQueue::Retry(int id) {
     task.snapshot.state = DownloadTaskState::Queued;
     task.snapshot.percent = 0.0;
     task.snapshot.errorText.clear();
-    task.snapshot.statusText = L"В очереди";
+    task.snapshot.statusText = L"app.queued";
     task.snapshot.downloadedBytes = 0;
     task.snapshot.totalBytes = 0;
     task.snapshot.speedBytesPerSecond = 0;
@@ -602,7 +602,7 @@ void DownloadQueue::SchedulerLoop() {
             const int id = nextTask->first;
             nextTask->second.active = true;
             nextTask->second.snapshot.state = DownloadTaskState::Preparing;
-            nextTask->second.snapshot.statusText = L"Подготовка";
+            nextTask->second.snapshot.statusText = L"app.preparing";
             ++m_revision;
             ++m_activeCount;
             m_workers.emplace(id, std::jthread([this, id](std::stop_token stopToken) {
@@ -644,7 +644,7 @@ void DownloadQueue::StartTask(int id, std::stop_token stopToken) {
         result.errorText.assign(ex.what(), ex.what() + std::strlen(ex.what()));
     } catch (...) {
         result.success = false;
-        result.errorText = L"Неизвестная ошибка";
+        result.errorText = L"app.unknown_error";
     }
 
     FinishTask(id, stopToken, result);
@@ -721,7 +721,7 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
     --m_activeCount;
     if (it->second.cancelRequested || stopToken.stop_requested()) {
         it->second.snapshot.state = DownloadTaskState::Canceled;
-        it->second.snapshot.statusText = L"Отменено";
+        it->second.snapshot.statusText = L"app.canceled";
         if (m_logger) {
             m_logger->Info(L"Download task canceled: id=" + std::to_wstring(id));
         }
@@ -729,7 +729,7 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
     } else if (result.success) {
         it->second.snapshot.state = DownloadTaskState::Completed;
         it->second.snapshot.percent = 100.0;
-        it->second.snapshot.statusText = L"Готово";
+        it->second.snapshot.statusText = L"app.done";
         for (auto path = result.outputFiles.rbegin(); path != result.outputFiles.rend(); ++path) {
             AddPreferredPath(it->second.snapshot.outputFiles, *path);
         }
@@ -740,7 +740,7 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
     } else {
         it->second.snapshot.state = DownloadTaskState::Failed;
         it->second.snapshot.errorText = result.errorText;
-        it->second.snapshot.statusText = L"Ошибка";
+        it->second.snapshot.statusText = L"app.error";
         if (m_logger) {
             std::wstring error = result.errorText.substr(0, 1000);
             m_logger->Error(
@@ -800,7 +800,7 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     }
     CloseHandle(cancelEvent);
     if (result.canceled || stopToken.stop_requested()) {
-        return {false, L"Отменено", {}};
+        return {false, L"app.canceled", {}};
     }
     if (result.exitCode != 0) {
         return {false, result.stderrText.empty() ? result.stdoutText : result.stderrText, {}};

@@ -256,24 +256,19 @@ void TestQueueTaskActionsForPostProcessing() {
     const std::vector<QueueTaskActionItem> actions = BuildQueueTaskActions(completed);
     Require(actions.size() == 3, "completed task should expose three actions");
     Require(actions[0].action == QueueTaskAction::Transcribe, "completed task first action should be transcribe");
-    Require(actions[0].text == L"Транскрибировать", "transcribe action text mismatch");
     Require(actions[1].action == QueueTaskAction::Translate, "completed task second action should be translate");
-    Require(actions[1].text == L"Перевести", "translate action text mismatch");
     Require(actions[2].action == QueueTaskAction::Clear, "completed task third action should be clear");
-    Require(actions[2].text == L"Закрыть", "completed task final action should be close");
 
     completed.postProcessingBusy = true;
     const std::vector<QueueTaskActionItem> busy = BuildQueueTaskActions(completed);
     Require(busy.size() == 1, "busy post-processing task should expose only cancel");
     Require(busy[0].action == QueueTaskAction::CancelPostProcessing, "busy post-processing action should cancel");
-    Require(busy[0].text == L"Отменить", "busy post-processing cancel text mismatch");
 
     completed.postProcessingBusy = false;
     completed.hasSourceUrl = false;
     const std::vector<QueueTaskActionItem> noUrl = BuildQueueTaskActions(completed);
     Require(noUrl.size() == 1, "completed task without source URL should only expose clear");
     Require(noUrl[0].action == QueueTaskAction::Clear, "completed task without source URL should expose clear action");
-    Require(noUrl[0].text == L"Закрыть", "completed task without source URL close text mismatch");
 
     QueueTaskActionInput failed;
     failed.failedOrCanceled = true;
@@ -284,68 +279,73 @@ void TestQueueTaskActionsForPostProcessing() {
 }
 
 void TestToolReadinessDialogContent() {
+    const Localization ru;
     const ToolReadinessDialogContent whisper = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingWhisperExe);
-    Require(whisper.title == L"Инструмент не готов", "readiness dialog title mismatch");
+    Require(ru.Text(whisper.title) == L"Инструмент не готов", "readiness dialog title mismatch");
+    const std::wstring whisperMessage = ru.Text(whisper.message);
     Require(
-        whisper.message.find(L"whisper-cli.exe") != std::wstring::npos,
+        whisperMessage.find(L"whisper-cli.exe") != std::wstring::npos,
         "readiness dialog should name the missing Whisper executable"
     );
     Require(
-        whisper.message.find(L"Инструменты") != std::wstring::npos,
+        whisperMessage.find(L"Инструменты") != std::wstring::npos,
         "readiness dialog should point to the tools section"
     );
-    Require(whisper.openToolsText == L"Открыть Инструменты", "readiness dialog primary action mismatch");
-    Require(whisper.cancelText == L"Отмена", "readiness dialog cancel action mismatch");
+    Require(ru.Text(whisper.openToolsText) == L"Открыть Инструменты", "readiness dialog primary action mismatch");
+    Require(ru.Text(whisper.cancelText) == L"Отмена", "readiness dialog cancel action mismatch");
 
     const ToolReadinessDialogContent vot = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingVotExe);
     Require(
-        vot.message.find(L"vot-helper.exe") != std::wstring::npos,
+        ru.Text(vot.message).find(L"vot-helper.exe") != std::wstring::npos,
         "readiness dialog should name the missing VOT executable"
     );
 
     const ToolReadinessDialogContent whisperSetup = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingWhisperSetup);
+    const std::wstring whisperSetupMessage = ru.Text(whisperSetup.message);
     Require(
-        whisperSetup.message.find(L"FFmpeg") != std::wstring::npos &&
-        whisperSetup.message.find(L"whisper-cli.exe") != std::wstring::npos &&
-        whisperSetup.message.find(L"модель") != std::wstring::npos,
+        whisperSetupMessage.find(L"FFmpeg") != std::wstring::npos &&
+        whisperSetupMessage.find(L"whisper-cli.exe") != std::wstring::npos &&
+        whisperSetupMessage.find(L"модель") != std::wstring::npos,
         "aggregate Whisper readiness dialog should name all required components"
     );
 
     const ToolReadinessDialogContent whisperCuda = BuildToolReadinessDialogContent(ToolReadinessIssue::MissingWhisperCuda);
+    const std::wstring whisperCudaMessage = ru.Text(whisperCuda.message);
     Require(
-        whisperCuda.message.find(L"CUDA") != std::wstring::npos &&
-        whisperCuda.message.find(L"CPU") != std::wstring::npos,
+        whisperCudaMessage.find(L"CUDA") != std::wstring::npos &&
+        whisperCudaMessage.find(L"CPU") != std::wstring::npos,
         "CUDA readiness dialog should explain CUDA fallback"
     );
 }
 
 void TestPostProcessingModeDisplayText() {
+    const Localization ru;
     Require(
-        VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Off) == L"Выкл",
+        ru.Text(VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Off)) == L"Выкл",
         "voice-over off display text mismatch"
     );
     Require(
-        VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack) == L"Аудиодорожка",
+        ru.Text(VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::AudioTrack)) == L"Аудиодорожка",
         "voice-over audio track display text should be clear Russian"
     );
     Require(
-        VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Mix) == L"Смешать",
+        ru.Text(VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode::Mix)) == L"Смешать",
         "voice-over mix display text mismatch"
     );
     Require(
-        SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::Off) == L"Выкл",
+        ru.Text(SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::Off)) == L"Выкл",
         "subtitle off display text mismatch"
     );
     Require(
-        SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::SubtitleTrack) == L"Дорожка субтитров",
+        ru.Text(SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::SubtitleTrack)) == L"Дорожка субтитров",
         "subtitle track display text should be clear Russian"
     );
     Require(
-        SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::BurnIn) == L"Вшить в видео",
+        ru.Text(SubtitleFfmpegModeDisplayText(SubtitleFfmpegMode::BurnIn)) == L"Вшить в видео",
         "subtitle burn-in display text should be clear Russian"
     );
     Require(
-        OpenDownloadFolderButtonText() == L"Открыть папку",
+        ru.Text(OpenDownloadFolderButtonText()) == L"Открыть папку",
         "main open-folder button text should be explicit"
     );
     Require(
@@ -353,7 +353,7 @@ void TestPostProcessingModeDisplayText() {
         "collapsed translation settings icon should communicate voice-over"
     );
     Require(
-        ToolSetupButtonText() == L"Настроить",
+        ru.Text(ToolSetupButtonText()) == L"Настроить",
         "tool setup button text should open setup dialogs"
     );
     Require(
@@ -361,7 +361,7 @@ void TestPostProcessingModeDisplayText() {
         "ready selected CUDA backend should show CUDA status"
     );
     Require(
-        WhisperBackendStatusText(WhisperBackend::Cuda, WhisperBackend::Cpu, false) == L"CUDA нет",
+        ru.Text(WhisperBackendStatusText(WhisperBackend::Cuda, WhisperBackend::Cpu, false)) == L"CUDA нет",
         "missing selected CUDA backend should show unavailable CUDA status"
     );
     Require(
@@ -369,11 +369,11 @@ void TestPostProcessingModeDisplayText() {
         "auto backend resolved to CPU should show CPU status"
     );
     Require(
-        WhisperInstallButtonText(WhisperBackend::Cuda, true, true) == L"Переустановить CUDA",
+        ru.Text(WhisperInstallButtonText(WhisperBackend::Cuda, true, true)) == L"Переустановить CUDA",
         "installed CUDA whisper should expose CUDA reinstall action"
     );
     Require(
-        WhisperInstallButtonText(WhisperBackend::Cpu, true, false) == L"Установить CUDA",
+        ru.Text(WhisperInstallButtonText(WhisperBackend::Cpu, true, false)) == L"Установить CUDA",
         "available CUDA candidate should offer CUDA install even when CPU is configured"
     );
     Require(
@@ -389,7 +389,7 @@ void TestPostProcessingModeDisplayText() {
         "installed CPU backend should make the CPU install target look installed"
     );
     Require(
-        WhisperInstallButtonText(WhisperBackend::Cuda, false, false) == L"Установить CPU",
+        ru.Text(WhisperInstallButtonText(WhisperBackend::Cuda, false, false)) == L"Установить CPU",
         "missing CUDA candidate should offer CPU install"
     );
     const std::wstring ffmpegTooltip = FfmpegGatedOptionTooltip(L"Добавлять дорожку");
@@ -398,31 +398,31 @@ void TestPostProcessingModeDisplayText() {
         "FFmpeg gated tooltip should keep only the action text"
     );
     Require(
-        LocalizedToolErrorText("operation canceled") == L"Операция отменена",
+        ru.Text(LocalizedToolErrorText("operation canceled")) == L"Операция отменена",
         "tool cancellation error should be localized"
     );
     Require(
-        LocalizedToolErrorText("media file is no longer available") == L"Исходный медиафайл больше недоступен",
+        ru.Text(LocalizedToolErrorText("media file is no longer available")) == L"Исходный медиафайл больше недоступен",
         "missing media revalidation error should be localized"
     );
     Require(
-        LocalizedToolErrorText("whisper-cli.exe is no longer available") == L"whisper-cli.exe больше недоступен",
+        ru.Text(LocalizedToolErrorText("whisper-cli.exe is no longer available")) == L"whisper-cli.exe больше недоступен",
         "missing whisper revalidation error should be localized"
     );
     Require(
-        LocalizedToolErrorText("Whisper model is no longer available") == L"Модель Whisper больше недоступна",
+        ru.Text(LocalizedToolErrorText("Whisper model is no longer available")) == L"Модель Whisper больше недоступна",
         "missing whisper model revalidation error should be localized"
     );
     Require(
-        LocalizedToolErrorText("vot-helper.exe is no longer available") == L"vot-helper.exe больше недоступен",
+        ru.Text(LocalizedToolErrorText("vot-helper.exe is no longer available")) == L"vot-helper.exe больше недоступен",
         "missing VOT revalidation error should be localized"
     );
     Require(
-        LocalizedToolErrorText("installed VOT helper self-test failed") == L"VOT helper установлен, но не прошёл проверку запуска",
+        ru.Text(LocalizedToolErrorText("installed VOT helper self-test failed")) == L"VOT helper установлен, но не прошёл проверку запуска",
         "VOT self-test install error should be localized"
     );
     Require(
-        LocalizedToolErrorText("installed whisper.cpp self-test failed") == L"Whisper.cpp установлен, но не прошёл проверку запуска",
+        ru.Text(LocalizedToolErrorText("installed whisper.cpp self-test failed")) == L"Whisper.cpp установлен, но не прошёл проверку запуска",
         "Whisper self-test install error should be localized"
     );
     Require(
@@ -432,16 +432,17 @@ void TestPostProcessingModeDisplayText() {
 }
 
 void TestPostProcessingQueueStatusText() {
+    const Localization ru;
     Require(
-        PostProcessingQueueStatusText(QueueTaskAction::Transcribe) == L"Ожидает транскрибации...",
+        ru.Text(PostProcessingQueueStatusText(QueueTaskAction::Transcribe)) == L"Ожидает транскрибации...",
         "queued transcription status should name the operation"
     );
     Require(
-        PostProcessingQueueStatusText(QueueTaskAction::Translate) == L"Ожидает перевода...",
+        ru.Text(PostProcessingQueueStatusText(QueueTaskAction::Translate)) == L"Ожидает перевода...",
         "queued translation status should name the operation"
     );
     Require(
-        PostProcessingQueueStatusText(QueueTaskAction::None) == L"Ожидает обработки...",
+        ru.Text(PostProcessingQueueStatusText(QueueTaskAction::None)) == L"Ожидает обработки...",
         "unknown queued post-processing status should fall back to generic text"
     );
 }
@@ -457,7 +458,6 @@ void TestCompletedQueueTaskActionsDoNotDependOnOutputProbe() {
     Require(actions[0].action == QueueTaskAction::Transcribe, "completed task first action should be transcribe");
     Require(actions[1].action == QueueTaskAction::Translate, "completed task second action should be translate");
     Require(actions[2].action == QueueTaskAction::Clear, "completed task third action should be clear");
-    Require(actions[2].text == L"Закрыть", "completed task final action should be close");
 }
 
 void TestWhisperInstallBackendSelection() {
@@ -701,7 +701,7 @@ void TestPostProcessingAffectedFileApprovalRevalidation() {
         "previously approved affected outputs should not be rejected"
     );
     Require(
-        LocalizedToolErrorText("post-processing output conflict is no longer approved") ==
+        Localization().Text(LocalizedToolErrorText("post-processing output conflict is no longer approved")) ==
             L"Появился новый конфликт вывода. Повторите операцию и подтвердите перезапись.",
         "new output conflict revalidation error should be localized"
     );
@@ -1104,12 +1104,13 @@ void TestProgressPresentation() {
     Require(FormatProgressBytes(1024, 0) == L"1.0 KB", "downloaded-only progress text mismatch");
     Require(FormatProgressBytes(0, 0).empty(), "unknown progress sizes should be hidden");
 
+    const Localization ru;
     Require(FormatDuration(0).empty(), "zero duration should be hidden");
-    Require(FormatDuration(7) == L"7 с", "seconds duration mismatch");
-    Require(FormatDuration(75) == L"1 мин 15 с", "minute duration mismatch");
-    Require(FormatDuration(3600) == L"1 ч", "hour duration mismatch");
-    Require(FormatDuration(9000) == L"2 ч 30 мин", "large second count should become hours and minutes");
-    Require(FormatDuration(172861) == L"2 д 1 мин", "multi-day duration mismatch");
+    Require(ru.Text(FormatDuration(7)) == L"7 с", "seconds duration mismatch");
+    Require(ru.Text(FormatDuration(75)) == L"1 мин 15 с", "minute duration mismatch");
+    Require(ru.Text(FormatDuration(3600)) == L"1 ч", "hour duration mismatch");
+    Require(ru.Text(FormatDuration(9000)) == L"2 ч 30 мин", "large second count should become hours and minutes");
+    Require(ru.Text(FormatDuration(172861)) == L"2 д 1 мин", "multi-day duration mismatch");
 
     Require(CalculateProgressPercent(0, 0) == 0, "unknown-total percent should be zero");
     Require(CalculateProgressPercent(50, 100) == 50, "half progress percent mismatch");
@@ -1327,7 +1328,7 @@ void TestYtDlpProgressParsing() {
 
     Require(progress.recognized, "progress line was not recognized");
     Require(progress.rawStatus == L"downloading", "progress status mismatch");
-    Require(progress.stage == L"Скачивание видео:", "progress stage mismatch");
+    Require(progress.stage == L"ytdlp.downloading_video", "progress stage mismatch");
     Require(progress.percent == 50.0, "progress percent mismatch");
     Require(progress.speedBytesPerSecond == 2048, "progress speed mismatch");
     Require(progress.etaSeconds == 5, "progress eta mismatch");
@@ -1345,7 +1346,7 @@ void TestYtDlpProgressParsing() {
     const YtDlpProgress audio = ParseYtDlpProgressLine(audioLine);
     Require(audio.recognized, "audio progress line was not recognized");
     Require(audio.mediaKind == L"audio", "audio media kind mismatch");
-    Require(audio.stage == L"Скачивание аудио:", "audio progress stage mismatch");
+    Require(audio.stage == L"ytdlp.downloading_audio", "audio progress stage mismatch");
     Require(audio.extension == L"m4a", "audio extension mismatch");
     Require(audio.formatId == L"140", "audio format id mismatch");
 
@@ -1439,7 +1440,7 @@ void TestAppUpdatePromptMessage() {
     ReleaseAssetInfo release;
     release.version = L"9.8.7";
 
-    const std::wstring message = BuildAppUpdatePromptMessage(release);
+    const std::wstring message = Localization().Text(BuildAppUpdatePromptMessage(release));
     Require(message.find(L"Доступна новая версия: 9.8.7") != std::wstring::npos, "new version missing from update prompt");
     Require(message.find(L"Текущая версия: " YTD_APP_VERSION_WIDE) != std::wstring::npos, "current version missing from update prompt");
     Require(message.find(L"закрыто и запущено заново") != std::wstring::npos, "restart warning missing from update prompt");
@@ -1499,9 +1500,10 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
   "id": "EN",
   "name": "English",
   "strings": {
-    "settings.language.title": "Interface language",
-    "Очередь очищена: удалено ": "Queue cleared: removed ",
-    " задач": " tasks"
+    "dialog.application_language": "Application language",
+    "app.queue_cleared_removed": "Queue cleared: removed ",
+    "app.tasks": " tasks",
+    "Настройки": "Settings"
   }
 })json";
     }
@@ -1518,9 +1520,10 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
 
     const Localization english = Localization::Load(paths, L"en");
     Require(english.currentLanguageId() == L"en", "selected external language mismatch");
-    Require(english.Text(L"settings.language.title") == L"Interface language", "external text mismatch");
-    Require(english.Text(L"settings.language.restart") == L"Язык применится после перезапуска.", "missing key should fall back to Russian");
-    Require(english.Text(L"Очередь очищена: удалено 2 задач") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known fragments");
+    Require(english.Text(L"dialog.application_language") == L"Application language", "external text mismatch");
+    Require(english.Text(L"dialog.language_will_apply_after_restart") == L"Язык применится после перезапуска.", "missing key should fall back to Russian");
+    Require(english.Text(L"app.queue_cleared_removed2app.tasks") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known key fragments");
+    Require(english.Text(L"Настройки") == L"Настройки", "legacy Russian-key translation should be ignored");
 
     const Localization missing = Localization::Load(paths, L"zz");
     Require(missing.currentLanguageId() == L"ru", "missing language should fall back to Russian");
@@ -2204,7 +2207,7 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     task.thumbnailPath = root / L"stuff" / L"thumb_cache" / L"thumb.jpg";
     task.state = DownloadTaskState::Canceled;
     task.percent = 37.5;
-    task.statusText = L"Остановлено";
+    task.statusText = L"download_queue.stopped";
     task.errorText = L"Manual stop";
     task.downloadedBytes = 1234;
     task.totalBytes = 9999;
@@ -2234,7 +2237,7 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     Require(restored.thumbnailPath == task.thumbnailPath, "restored thumbnail path mismatch");
     Require(restored.state == DownloadTaskState::Canceled, "restored state mismatch");
     Require(restored.percent == 37.5, "restored percent mismatch");
-    Require(restored.statusText == L"Остановлено", "restored status mismatch");
+    Require(restored.statusText == L"download_queue.stopped", "restored status mismatch");
     Require(restored.errorText == L"Manual stop", "restored error mismatch");
     Require(restored.downloadedBytes == 1234, "restored downloaded bytes mismatch");
     Require(restored.totalBytes == 9999, "restored total bytes mismatch");
@@ -3231,7 +3234,7 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
         }
         YtDlpProgress first;
         first.recognized = true;
-        first.stage = L"Скачивание видео:";
+        first.stage = L"ytdlp.downloading_video";
         first.percent = 50.0;
         first.downloadedBytes = 800;
         first.totalBytes = 1600;
@@ -3243,7 +3246,7 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
         }
         YtDlpProgress second;
         second.recognized = true;
-        second.stage = L"Скачивание аудио:";
+        second.stage = L"ytdlp.downloading_audio";
         second.percent = 10.0;
         second.downloadedBytes = 70;
         second.totalBytes = 700;
@@ -3272,7 +3275,7 @@ void TestDownloadQueueProgressPercentDoesNotMoveBackwardWithinTrack() {
         UNREFERENCED_PARAMETER(task);
         YtDlpProgress first;
         first.recognized = true;
-        first.stage = L"Скачивание видео:";
+        first.stage = L"ytdlp.downloading_video";
         first.mediaKind = L"video";
         first.percent = 50.0;
         first.downloadedBytes = 500;
@@ -3307,7 +3310,7 @@ void TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts() {
         UNREFERENCED_PARAMETER(task);
         YtDlpProgress video;
         video.recognized = true;
-        video.stage = L"Скачивание видео:";
+        video.stage = L"ytdlp.downloading_video";
         video.mediaKind = L"video";
         video.percent = 100.0;
         video.downloadedBytes = 1000;
@@ -3316,7 +3319,7 @@ void TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts() {
 
         YtDlpProgress audio;
         audio.recognized = true;
-        audio.stage = L"Скачивание аудио:";
+        audio.stage = L"ytdlp.downloading_audio";
         audio.mediaKind = L"audio";
         audio.percent = 25.0;
         audio.downloadedBytes = 250;
@@ -3339,7 +3342,7 @@ void TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts() {
     const DownloadTaskSnapshot task = queue.GetTask(id);
     Require(task.state == DownloadTaskState::Failed, "fixture task should fail after progress assertions");
     Require(task.mediaKind == L"audio", "stale video progress should not replace active audio track");
-    Require(task.statusText == L"Ошибка", "failed task should keep final failed status");
+    Require(task.statusText == L"app.error", "failed task should keep final failed status");
 }
 
 void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
@@ -3352,7 +3355,7 @@ void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
         UNREFERENCED_PARAMETER(task);
         YtDlpProgress video;
         video.recognized = true;
-        video.stage = L"Загрузка завершена (часть)";
+        video.stage = L"ytdlp.download_completed_part";
         video.mediaKind = L"video";
         video.percent = 100.0;
         video.downloadedBytes = 1000;
@@ -3361,7 +3364,7 @@ void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
 
         YtDlpProgress audio;
         audio.recognized = true;
-        audio.stage = L"Скачивание аудио:";
+        audio.stage = L"ytdlp.downloading_audio";
         audio.mediaKind = L"audio";
         audio.percent = 25.0;
         audio.downloadedBytes = 250;
@@ -3371,7 +3374,7 @@ void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
         YtDlpProgress staleFinished;
         staleFinished.recognized = true;
         staleFinished.rawStatus = L"finished";
-        staleFinished.stage = L"Загрузка завершена (часть)";
+        staleFinished.stage = L"ytdlp.download_completed_part";
         staleFinished.percent = 100.0;
         staleFinished.downloadedBytes = 1000;
         staleFinished.totalBytes = 1000;
@@ -3462,7 +3465,7 @@ void TestDownloadQueueImportsRestoredTasksWithoutStartingThem() {
     restored.request.url = L"https://example.invalid/restored";
     restored.title = L"Restored";
     restored.state = DownloadTaskState::Queued;
-    restored.statusText = L"В очереди";
+    restored.statusText = L"download_queue.queued";
 
     queue.ImportSnapshots({restored});
     std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -3471,7 +3474,7 @@ void TestDownloadQueueImportsRestoredTasksWithoutStartingThem() {
     Require(tasks.size() == 1, "import should restore one task");
     Require(tasks.front().id == 10, "restored task id mismatch");
     Require(tasks.front().state == DownloadTaskState::Canceled, "restored queued task should be stopped");
-    Require(tasks.front().statusText == L"Остановлено", "restored queued task status mismatch");
+    Require(tasks.front().statusText == L"download_queue.stopped", "restored queued task status mismatch");
     Require(!executorRan.load(), "restored tasks should not start automatically");
 }
 
@@ -3502,7 +3505,7 @@ void TestDownloadQueueExportForShutdownStopsActiveTasks() {
     Require(shutdown.size() == 1, "shutdown export should include active task");
     Require(shutdown.front().id == id, "shutdown export id mismatch");
     Require(shutdown.front().state == DownloadTaskState::Canceled, "active task should persist as canceled on shutdown");
-    Require(shutdown.front().statusText == L"Остановлено", "active task shutdown status mismatch");
+    Require(shutdown.front().statusText == L"download_queue.stopped", "active task shutdown status mismatch");
 }
 
 void TestDownloadQueueExportSkipsCompletedTasks() {

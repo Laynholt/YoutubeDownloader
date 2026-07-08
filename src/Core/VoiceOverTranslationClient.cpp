@@ -147,7 +147,7 @@ VoiceOverTranslationResult Canceled(std::vector<std::filesystem::path> cleanupPa
 
     VoiceOverTranslationResult result;
     result.canceled = true;
-    result.errorText = L"Отменено";
+    result.errorText = L"app.canceled";
     return result;
 }
 
@@ -279,22 +279,22 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
     HANDLE cancelEvent
 ) {
     if (!IsRegularFile(request.mediaPath)) {
-        return Failed(L"Файл для перевода не найден");
+        return Failed(L"voiceover.file_for_translation_not_found");
     }
     if (!IsRegularFile(request.votExePath)) {
-        return Failed(L"vot-helper.exe не найден");
+        return Failed(L"transcription.vot_helper_exe_not_found");
     }
     if (request.youtubeUrl.empty()) {
-        return Failed(L"Ссылка на видео недоступна");
+        return Failed(L"transcription.video_url_is_unavailable");
     }
     if (request.ffmpegMode != VoiceOverFfmpegMode::Off && !IsRegularFile(request.ffmpegExePath)) {
-        return Failed(L"FFmpeg не найден");
+        return Failed(L"dialog.ffmpeg_not_found");
     }
 
     std::error_code ec;
     std::filesystem::create_directories(request.tempDirectory, ec);
     if (ec) {
-        return Failed(L"Не удалось создать папку для временной озвучки");
+        return Failed(L"voiceover.failed_to_create_the_temporary_voice_over_folder");
     }
 
     const VoiceOverTranslationPaths paths = BuildVoiceOverPaths(
@@ -305,7 +305,7 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
     std::filesystem::remove(paths.tempAudioPath, ec);
     ec.clear();
 
-    EmitVoiceOverProgress(callbacks, 5.0, L"Получение перевода");
+    EmitVoiceOverProgress(callbacks, 5.0, L"voiceover.getting_translation");
 
     ProcessRunOptions vot;
     vot.executable = request.votExePath;
@@ -313,7 +313,7 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
     vot.timeoutMs = INFINITE;
     vot.cancelEvent = cancelEvent;
     const auto handleVotLine = [&callbacks](const std::wstring&) {
-        EmitVoiceOverProgress(callbacks, 20.0, L"Получение перевода");
+        EmitVoiceOverProgress(callbacks, 20.0, L"voiceover.getting_translation");
     };
     vot.onStdoutLine = handleVotLine;
     vot.onStderrLine = handleVotLine;
@@ -324,11 +324,11 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
     }
     if (translated.exitCode != 0) {
         std::filesystem::remove(paths.tempAudioPath, ec);
-        return Failed(L"vot-helper.exe завершился с ошибкой: " + ProcessErrorSummary(translated, L"неизвестная ошибка"));
+        return Failed(L"voiceover.vot_helper_exe_exited_with_an_error" + ProcessErrorSummary(translated, L"transcription.text"));
     }
     if (!CommitPostProcessingSidecarFile(paths.tempAudioPath, paths.finalAudioPath)) {
         std::filesystem::remove(paths.tempAudioPath, ec);
-        return Failed(L"vot-helper.exe не создал mp3 с переводом");
+        return Failed(L"voiceover.vot_helper_exe_did_not_create_the_translated_mp3");
     }
 
     if (request.ffmpegMode == VoiceOverFfmpegMode::Off) {
@@ -338,7 +338,7 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
         return result;
     }
 
-    EmitVoiceOverProgress(callbacks, 70.0, L"Встраивание перевода в видео");
+    EmitVoiceOverProgress(callbacks, 70.0, L"voiceover.embedding_translation_into_video");
 
     std::filesystem::remove(paths.tempVideoPath, ec);
     ec.clear();
@@ -357,14 +357,14 @@ VoiceOverTranslationResult VoiceOverTranslationClient::Translate(
     }
     if (embedded.exitCode != 0) {
         std::filesystem::remove(paths.tempVideoPath, ec);
-        return Failed(L"FFmpeg не встроил перевод в видео: " + ProcessErrorSummary(embedded, L"неизвестная ошибка"));
+        return Failed(L"voiceover.ffmpeg_did_not_embed_translation_into_video" + ProcessErrorSummary(embedded, L"transcription.text"));
     }
     if (!ReplaceOriginalMediaWithPostProcessedFile(paths.tempVideoPath, paths.finalVideoPath)) {
         std::filesystem::remove(paths.tempVideoPath, ec);
-        return Failed(L"Не удалось заменить исходное видео версией с переводом");
+        return Failed(L"voiceover.failed_to_replace_the_source_video_with_the_translated_v");
     }
 
-    EmitVoiceOverProgress(callbacks, 99.0, L"Сохранение перевода");
+    EmitVoiceOverProgress(callbacks, 99.0, L"voiceover.saving_translation");
 
     VoiceOverTranslationResult result;
     result.success = true;
