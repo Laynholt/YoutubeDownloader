@@ -28,6 +28,10 @@ std::filesystem::path AppPaths::thumbCacheDir() const {
     return stuffDir() / L"thumb_cache";
 }
 
+std::filesystem::path AppPaths::languagesDir() const {
+    return stuffDir() / L"languages";
+}
+
 std::filesystem::path AppPaths::toolsDir() const {
     return m_root / L"tools";
 }

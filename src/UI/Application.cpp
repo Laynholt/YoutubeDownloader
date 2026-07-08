@@ -5,6 +5,7 @@
 #include "DialogWindows.h"
 #include "DownloadQueueStore.h"
 #include "KeyboardShortcuts.h"
+#include "Localization.h"
 #include "resource.h"
 #include "TranscriptionClient.h"
 #include "UiActions.h"
@@ -137,10 +138,11 @@ void StopAndJoin(std::jthread& worker) {
 }
 
 HWND CreateChild(HWND parent, const wchar_t* className, const wchar_t* text, DWORD style, DWORD exStyle, int id) {
+    const std::wstring translated = Localization::UiText(text);
     return CreateWindowExW(
         exStyle,
         className,
-        text,
+        translated.c_str(),
         WS_CHILD | WS_VISIBLE | style,
         0,
         0,
@@ -319,10 +321,11 @@ void AddRoundedRect(Gdiplus::GraphicsPath& path, const RECT& rect, int radius) {
 }
 
 void DrawTextBlock(HDC dc, const std::wstring& text, RECT rect, COLORREF color, HFONT font, UINT format) {
+    const std::wstring translated = Localization::UiText(text);
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
-    DrawTextW(dc, text.c_str(), -1, &rect, format | DT_NOPREFIX);
+    DrawTextW(dc, translated.c_str(), -1, &rect, format | DT_NOPREFIX);
     SelectObject(dc, oldFont);
 }
 
@@ -1012,6 +1015,13 @@ bool Application::Initialize(HINSTANCE instance, int showCommand) {
         return false;
     }
     EnableDarkTitleBar(m_window);
+
+    m_paths = std::make_unique<AppPaths>(GetExecutableRoot());
+    std::error_code ec;
+    std::filesystem::create_directories(m_paths->stuffDir(), ec);
+    std::filesystem::create_directories(m_paths->languagesDir(), ec);
+    m_config = ConfigStore::Load(*m_paths);
+    Localization::SetActive(Localization::Load(*m_paths, m_config.uiLanguage));
 
     CreateControls();
     InitializeBackend();
@@ -1706,12 +1716,12 @@ HWND Application::CreateButton(const wchar_t* text, int id, bool primary, bool o
     state->commandId = id;
     state->primary = primary;
     state->onPanel = onPanel;
-    state->text = text;
+    state->text = Localization::UiText(text);
 
     HWND button = CreateWindowExW(
         0,
         kButtonClassName,
-        text,
+        state->text.c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0,
         0,
@@ -1739,7 +1749,8 @@ void Application::CreateControls() {
 
     m_urlEdit = CreateChild(m_window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 0, IdUrlEdit);
     InstallCustomEditContextMenu(m_urlEdit, m_window, m_instance);
-    SendMessageW(m_urlEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"Ссылка на видео или плейлист"));
+    const std::wstring urlCue = Localization::UiText(L"Ссылка на видео или плейлист");
+    SendMessageW(m_urlEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(urlCue.c_str()));
     SendMessageW(m_urlEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     m_pasteButton = CreateButton(L"Вставить", IdPasteButton, false, false);
 
@@ -1769,16 +1780,20 @@ void Application::CreateControls() {
 
     SetControlFonts();
     m_tooltip = CreateTooltipWindow(m_window);
-    AddTooltip(m_tooltip, m_window, m_urlEdit, L"Вставьте ссылку на видео, плейлист или другой поддерживаемый источник.");
-    AddTooltip(m_tooltip, m_window, m_pasteButton, L"Вставляет ссылку из буфера обмена.");
-    AddTooltip(m_tooltip, m_window, m_folderEdit, L"Папка, куда будут сохраняться скачанные файлы.");
-    AddTooltip(m_tooltip, m_window, m_chooseFolderButton, L"Выберите папку для сохранения загрузок.");
-    AddTooltip(m_tooltip, m_window, m_downloadButton, L"Добавляет ссылку в очередь загрузок.");
-    AddTooltip(m_tooltip, m_window, m_clearButton, L"Удаляет из очереди задачи, которые ещё не начали загружаться. Активные загрузки не останавливаются.");
-    AddTooltip(m_tooltip, m_window, m_openFolderButton, L"Открывает текущую папку загрузок.");
-    AddTooltip(m_tooltip, m_window, m_logsButton, L"Открывает текущий файл логов.");
-    AddTooltip(m_tooltip, m_window, m_clearFinishedButton, L"Очищает из списка завершённые и ошибочные задачи. Файлы на диске не удаляются.");
-    AddTooltip(m_tooltip, m_window, m_settingsButton, L"Открывает настройки качества, контейнера, FFmpeg и поведения приложения.");
+    const auto addTooltip = [this](HWND tool, const wchar_t* text) {
+        m_tooltipTexts.push_back(Localization::UiText(text));
+        AddTooltip(m_tooltip, m_window, tool, m_tooltipTexts.back().c_str());
+    };
+    addTooltip(m_urlEdit, L"Вставьте ссылку на видео, плейлист или другой поддерживаемый источник.");
+    addTooltip(m_pasteButton, L"Вставляет ссылку из буфера обмена.");
+    addTooltip(m_folderEdit, L"Папка, куда будут сохраняться скачанные файлы.");
+    addTooltip(m_chooseFolderButton, L"Выберите папку для сохранения загрузок.");
+    addTooltip(m_downloadButton, L"Добавляет ссылку в очередь загрузок.");
+    addTooltip(m_clearButton, L"Удаляет из очереди задачи, которые ещё не начали загружаться. Активные загрузки не останавливаются.");
+    addTooltip(m_openFolderButton, L"Открывает текущую папку загрузок.");
+    addTooltip(m_logsButton, L"Открывает текущий файл логов.");
+    addTooltip(m_clearFinishedButton, L"Очищает из списка завершённые и ошибочные задачи. Файлы на диске не удаляются.");
+    addTooltip(m_settingsButton, L"Открывает настройки качества, контейнера, FFmpeg и поведения приложения.");
 
     RECT client = {};
     GetClientRect(m_window, &client);
@@ -2375,7 +2390,8 @@ void Application::SetControlFonts() {
 
 void Application::SetStatus(const std::wstring& text) {
     if (m_statusLabel) {
-        SetWindowTextW(m_statusLabel, text.c_str());
+        const std::wstring translated = Localization::UiText(text);
+        SetWindowTextW(m_statusLabel, translated.c_str());
     }
 }
 
@@ -2447,6 +2463,7 @@ void Application::InitializeBackend() {
     m_paths = std::make_unique<AppPaths>(GetExecutableRoot());
     std::error_code ec;
     std::filesystem::create_directories(m_paths->stuffDir(), ec);
+    std::filesystem::create_directories(m_paths->languagesDir(), ec);
     std::filesystem::create_directories(m_paths->thumbCacheDir(), ec);
     std::filesystem::create_directories(m_paths->toolsDir(), ec);
 
@@ -2463,6 +2480,7 @@ void Application::InitializeBackend() {
         m_logger->Error(L"Local SHA256SUMS creation failed: unknown error");
     }
     m_config = ConfigStore::Load(*m_paths);
+    Localization::SetActive(Localization::Load(*m_paths, m_config.uiLanguage));
     if (m_folderEdit && !m_config.downloadDir.empty()) {
         SetWindowTextW(m_folderEdit, m_config.downloadDir.wstring().c_str());
     }

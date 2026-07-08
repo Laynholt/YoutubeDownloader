@@ -296,6 +296,7 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.votExeVersion = WStringFromJson(json, "vot_exe_version", config.votExeVersion);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
+        config.uiLanguage = WStringFromJson(json, "ui_language", config.uiLanguage);
         config.transcriptionEngine = TranscriptionEngineFromJson(json, "transcription_engine", config.transcriptionEngine);
         config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
         config.whisperLanguage = NormalizeWhisperLanguage(WStringFromJson(json, "whisper_language", config.whisperLanguage));
@@ -342,6 +343,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["vot_exe_version"] = WideToUtf8(config.votExeVersion);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
+    json["ui_language"] = WideToUtf8(config.uiLanguage.empty() ? L"ru" : config.uiLanguage);
     json["transcription_engine"] = WideToUtf8(TranscriptionEngineToConfigValue(config.transcriptionEngine));
     json["whisper_backend"] = WideToUtf8(WhisperBackendToConfigValue(config.whisperBackend));
     json["whisper_language"] = WideToUtf8(NormalizeWhisperLanguage(config.whisperLanguage));

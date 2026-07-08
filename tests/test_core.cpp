@@ -8,6 +8,7 @@
 #include "FileOperations.h"
 #include "KeyboardShortcuts.h"
 #include "Logger.h"
+#include "Localization.h"
 #include "PostProcessingFileOps.h"
 #include "ProcessRunner.h"
 #include "TranscriptionClient.h"
@@ -50,6 +51,8 @@ fs::path MakeTempRoot(const std::wstring& name) {
     return root;
 }
 
+fs::path CurrentTestExecutablePath();
+
 void TestAppPaths() {
     const fs::path root = fs::path(L"C:/Portable/YoutubeDownloader");
     const AppPaths paths(root);
@@ -60,6 +63,7 @@ void TestAppPaths() {
     Require(paths.logPath() == root / L"stuff" / L"ytdl.log", "log path mismatch");
     Require(paths.downloadQueuePath() == root / L"stuff" / L"download_queue.json", "download queue path mismatch");
     Require(paths.thumbCacheDir() == root / L"stuff" / L"thumb_cache", "thumb cache path mismatch");
+    Require(paths.languagesDir() == root / L"stuff" / L"languages", "languages path mismatch");
     Require(paths.toolsDir() == root / L"tools", "tools path mismatch");
     Require(paths.ytDlpDir() == root / L"tools" / L"yt-dlp", "yt-dlp dir path mismatch");
     Require(paths.ytDlpExePath() == root / L"tools" / L"yt-dlp" / L"yt-dlp.exe", "yt-dlp path mismatch");
@@ -92,6 +96,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(fs::is_regular_file(paths.configPath()), "default config should be created on first load");
     Require(defaults.quality == L"max", "default quality mismatch");
     Require(defaults.container == L"auto", "default container mismatch");
+    Require(defaults.uiLanguage == L"ru", "default UI language mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
     Require(defaults.transcriptionEngine == TranscriptionEngine::Whisper, "default transcription engine mismatch");
@@ -127,6 +132,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
     saved.quality = L"720p";
     saved.container = L"mp4";
+    saved.uiLanguage = L"en";
     saved.maxParallelDownloads = 5;
     saved.autoUpdateApp = true;
     saved.lastYtDlpCheckAt = L"2026-06-17T20:00:00Z";
@@ -155,6 +161,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, "subtitle ffmpeg mode round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
     Require(loaded.container == L"mp4", "container round-trip mismatch");
+    Require(loaded.uiLanguage == L"en", "UI language round-trip mismatch");
     Require(loaded.maxParallelDownloads == 5, "max parallel round-trip mismatch");
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
@@ -1481,6 +1488,44 @@ void TestAppUpdateLocalSha256SumsCreation() {
     );
 }
 
+void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_Localization");
+    const AppPaths paths(root);
+    fs::create_directories(paths.languagesDir());
+    {
+        std::ofstream out(paths.languagesDir() / L"en.json", std::ios::binary | std::ios::trunc);
+        out << R"json({
+  "version": 1,
+  "id": "EN",
+  "name": "English",
+  "strings": {
+    "settings.language.title": "Interface language",
+    "Очередь очищена: удалено ": "Queue cleared: removed ",
+    " задач": " tasks"
+  }
+})json";
+    }
+    {
+        std::ofstream out(paths.languagesDir() / L"bad.json", std::ios::binary | std::ios::trunc);
+        out << R"json({"id":"bad","name":"Broken","strings":"nope"})json";
+    }
+
+    const std::vector<UiLanguage> languages = Localization::AvailableLanguages(paths);
+    Require(languages.size() == 2, "built-in Russian and valid English should be available");
+    Require(languages[0].id == L"ru", "built-in Russian should be first");
+    Require(languages[1].id == L"en", "external language id should normalize to lowercase");
+    Require(languages[1].name == L"English", "external language name mismatch");
+
+    const Localization english = Localization::Load(paths, L"en");
+    Require(english.currentLanguageId() == L"en", "selected external language mismatch");
+    Require(english.Text(L"settings.language.title") == L"Interface language", "external text mismatch");
+    Require(english.Text(L"settings.language.restart") == L"Язык применится после перезапуска.", "missing key should fall back to Russian");
+    Require(english.Text(L"Очередь очищена: удалено 2 задач") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known fragments");
+
+    const Localization missing = Localization::Load(paths, L"zz");
+    Require(missing.currentLanguageId() == L"ru", "missing language should fall back to Russian");
+}
+
 void TestFfmpegResolutionPrecedence() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_Ffmpeg");
     const AppPaths paths(root);
@@ -1690,12 +1735,10 @@ void TestWhisperBackendResolution() {
 void TestWhisperSelectedBackendFallsBackToInstalledAlternative() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_WhisperBackendFallback");
     const AppPaths paths(root);
+    const fs::path fixture = CurrentTestExecutablePath();
 
     fs::create_directories(paths.localWhisperCpuExePath().parent_path());
-    {
-        std::ofstream out(paths.localWhisperCpuExePath());
-        out << "cpu";
-    }
+    fs::copy_file(fixture, paths.localWhisperCpuExePath(), fs::copy_options::overwrite_existing);
 
     AppConfig config;
     config.whisperBackend = WhisperBackend::Cuda;
@@ -3535,6 +3578,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigNormalizesPostProcessingLanguageOptions();
+    TestLocalizationLoadsExternalLanguageWithRussianFallback();
     TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
     TestPreviewFetchInputValidation();

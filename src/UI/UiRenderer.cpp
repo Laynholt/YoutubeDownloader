@@ -1,5 +1,7 @@
 #include "UiRenderer.h"
 
+#include "Localization.h"
+
 #include <gdiplus.h>
 
 #include <algorithm>
@@ -189,7 +191,8 @@ void UiRenderer::DrawButton(
     StringFormat format;
     format.SetAlignment(StringAlignment::StringAlignmentCenter);
     format.SetLineAlignment(StringAlignment::StringAlignmentCenter);
-    graphics.DrawString(text, -1, &font, textRect, &format, &textBrush);
+    const std::wstring translated = Localization::UiText(text);
+    graphics.DrawString(translated.c_str(), -1, &font, textRect, &format, &textBrush);
 }
 
 void UiRenderer::DrawPopupMenu(HDC dc, const RECT& rect, const std::vector<PopupMenuItem>& items, UINT hoveredItemId) {
@@ -269,7 +272,8 @@ void UiRenderer::DrawPopupMenu(HDC dc, const RECT& rect, const std::vector<Popup
         textRect.left += kPopupTextPaddingLeft;
         textRect.right -= 10;
         SetTextColor(dc, item.enabled ? RGB(235, 235, 235) : RGB(128, 128, 132));
-        DrawTextW(dc, item.text.c_str(), -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const std::wstring translated = Localization::UiText(item.text);
+        DrawTextW(dc, translated.c_str(), -1, &textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
     SelectObject(dc, oldFont);

@@ -153,6 +153,7 @@ private:
     HBRUSH m_backgroundBrush = nullptr;
     HBRUSH m_panelBrush = nullptr;
     HWND m_tooltip = nullptr;
+    std::deque<std::wstring> m_tooltipTexts;
     ULONG_PTR m_gdiplusToken = 0;
 
     std::unique_ptr<AppPaths> m_paths;

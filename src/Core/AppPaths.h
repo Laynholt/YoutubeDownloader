@@ -12,6 +12,7 @@ public:
     std::filesystem::path logPath() const;
     std::filesystem::path downloadQueuePath() const;
     std::filesystem::path thumbCacheDir() const;
+    std::filesystem::path languagesDir() const;
     std::filesystem::path toolsDir() const;
     std::filesystem::path ytDlpDir() const;
     std::filesystem::path ytDlpExePath() const;

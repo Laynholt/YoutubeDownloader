@@ -2,6 +2,7 @@
 
 #include "AppVersion.h"
 #include "BackendText.h"
+#include "Localization.h"
 #include "ToolManagers.h"
 #include "UiActions.h"
 #include "UiRenderer.h"
@@ -75,6 +76,7 @@ constexpr int kSettingsContentTop = 86;
 constexpr int kSettingsCardGap = 14;
 constexpr int kSettingsCardPadding = 18;
 constexpr int kSettingsChoiceCardHeight = 112;
+constexpr int kSettingsParallelCardHeight = 120;
 constexpr int kSettingsBehaviorCardHeight = 158;
 constexpr int kSettingsWorkflowCardHeight = 128;
 constexpr int kSettingsWorkflowLanguageCardHeight = kSettingsChoiceCardHeight;
@@ -113,6 +115,7 @@ enum class SettingsSection {
     Downloads,
     Transcription,
     Translation,
+    Additional,
     Tools,
     About
 };
@@ -160,6 +163,8 @@ enum DialogCommand {
     IdVoiceVolumeMinus = 154,
     IdVoiceVolumePlus = 155,
     IdWhisperModelChooseFolder = 156,
+    IdUiLanguage = 157,
+    IdSettingsNavAdditional = 158,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -207,13 +212,15 @@ struct LogCopyMenuState {
 
 enum class SettingsLanguageTarget {
     VotSubtitle,
-    VoiceOver
+    VoiceOver,
+    Interface
 };
 
 struct SettingsComboMenuState {
     HWND owner = nullptr;
     SettingsLanguageTarget target = SettingsLanguageTarget::VotSubtitle;
     std::vector<std::wstring> values;
+    std::vector<std::wstring> labels;
     int hotIndex = -1;
 };
 
@@ -268,6 +275,7 @@ struct DialogState {
     std::vector<std::filesystem::path> votExecutableCandidates;
     int selectedVotExecutableIndex = 0;
     std::filesystem::path* selectedVotExecutableResult = nullptr;
+    std::vector<UiLanguage> uiLanguages;
 };
 
 void ShowModal(DialogState* state, int width, int height);
@@ -339,6 +347,11 @@ RECT SettingsStackCardRect(const DialogState* state, int width, int height, int 
     const RECT content = SettingsContentRect(state, width, height);
     const int top = content.top + kSettingsContentTop + index * (cardHeight + kSettingsCardGap);
     return {content.left, top, content.right, top + cardHeight};
+}
+
+RECT SettingsDownloadsParallelCardRect(const DialogState* state, int width, int height) {
+    const RECT previous = SettingsStackCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
+    return {previous.left, previous.bottom + kSettingsCardGap, previous.right, previous.bottom + kSettingsCardGap + kSettingsParallelCardHeight};
 }
 
 RECT SettingsCardBelow(const RECT& previous, int cardHeight) {
@@ -480,7 +493,7 @@ RECT PaddedRect(RECT rect, int padding) {
 }
 
 RECT SettingsParallelValueRect(const DialogState* state, int width, int height) {
-    const RECT card = SettingsStackCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
+    const RECT card = SettingsDownloadsParallelCardRect(state, width, height);
     const int valueRight = card.right - kSettingsCardPadding - 46 - kDialogButtonGap;
     return {valueRight - 54, card.top + kSettingsCardControlTop, valueRight, card.top + kSettingsCardControlTop + kDialogButtonHeight};
 }
@@ -514,10 +527,11 @@ HFONT CreateUiFont(int height = -16, int weight = FW_NORMAL) {
 }
 
 void DrawTextBlock(HDC dc, const std::wstring& text, RECT rect, COLORREF color, HFONT font, UINT format) {
+    const std::wstring translated = Localization::UiText(text);
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
-    DrawTextW(dc, text.c_str(), -1, &rect, format | DT_NOPREFIX);
+    DrawTextW(dc, translated.c_str(), -1, &rect, format | DT_NOPREFIX);
     SelectObject(dc, oldFont);
 }
 
@@ -644,6 +658,20 @@ std::wstring SettingsLanguageButtonText(const std::wstring& value) {
     return (value.empty() ? L"auto" : value) + L"  ▾";
 }
 
+std::wstring InterfaceLanguageButtonText(const DialogState* state) {
+    const std::wstring selected = state && !state->workingConfig.uiLanguage.empty()
+        ? state->workingConfig.uiLanguage
+        : L"ru";
+    if (state) {
+        for (const UiLanguage& language : state->uiLanguages) {
+            if (language.id == selected) {
+                return language.name + L"  ▾";
+            }
+        }
+    }
+    return L"Русский  ▾";
+}
+
 void SetControlsVisible(HWND parent, std::initializer_list<int> ids, bool visible) {
     for (int id : ids) {
         HWND control = GetDlgItem(parent, id);
@@ -738,22 +766,21 @@ void RelayDialogTooltipMessage(const DialogState* state, const MSG& message) {
     }
 }
 
+void AddDialogTooltip(DialogState* state, HWND tool, std::wstring text);
+
 void AddDialogTooltip(DialogState* state, HWND tool, const wchar_t* text) {
     if (!state || !tool || !text) {
         return;
     }
-    HWND tooltip = CreateTooltip(state->window, tool, text);
-    if (tooltip) {
-        state->tooltips.push_back(tooltip);
-    }
+    AddDialogTooltip(state, tool, std::wstring(text));
 }
 
 void AddDialogTooltip(DialogState* state, HWND tool, std::wstring text) {
     if (!state || !tool) {
         return;
     }
-    state->tooltipTexts.push_back(std::move(text));
-    AddDialogTooltip(state, tool, state->tooltipTexts.back().c_str());
+    state->tooltipTexts.push_back(Localization::UiText(text));
+    state->tooltips.push_back(CreateTooltip(state->window, tool, state->tooltipTexts.back().c_str()));
 }
 
 const WhisperModelInfo* RecommendedWhisperModel(const std::vector<WhisperModelInfo>& catalog);
@@ -1109,12 +1136,12 @@ HWND CreateDarkButton(HWND parent, HINSTANCE instance, const wchar_t* text, int 
     state->commandId = id;
     state->primary = primary;
     state->onCard = onCard;
-    state->text = text;
+    state->text = Localization::UiText(text);
 
     HWND button = CreateWindowExW(
         0,
         kDialogButtonClassName,
-        text,
+        state->text.c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP,
         0,
         0,
@@ -1144,13 +1171,14 @@ void SetDarkButtonState(HWND parent, int id, bool primary, const std::wstring& t
     if (!state) {
         return;
     }
-    const bool textChanged = !text.empty() && state->text != text;
+    const std::wstring translated = text.empty() ? std::wstring{} : Localization::UiText(text);
+    const bool textChanged = !translated.empty() && state->text != translated;
     if (state->primary == primary && !textChanged) {
         return;
     }
     state->primary = primary;
     if (textChanged) {
-        state->text = text;
+        state->text = translated;
     }
     InvalidateRect(button, nullptr, TRUE);
 }
@@ -1213,6 +1241,7 @@ void RefreshSettingsButtons(DialogState* state) {
     SetDarkButtonState(state->window, IdSettingsNavDownloads, state->settingsSection == SettingsSection::Downloads, collapsed ? L"⬇" : L"Загрузки");
     SetDarkButtonState(state->window, IdSettingsNavTranscription, state->settingsSection == SettingsSection::Transcription, collapsed ? L"✎" : L"Транскрибация");
     SetDarkButtonState(state->window, IdSettingsNavTranslation, state->settingsSection == SettingsSection::Translation, collapsed ? TranslationSettingsCollapsedIcon() : L"Перевод");
+    SetDarkButtonState(state->window, IdSettingsNavAdditional, state->settingsSection == SettingsSection::Additional, collapsed ? L"+" : L"Дополнительно");
     SetDarkButtonState(state->window, IdSettingsNavTools, state->settingsSection == SettingsSection::Tools, collapsed ? L"⚙" : L"Инструменты");
     SetDarkButtonState(state->window, IdSettingsNavAbout, state->settingsSection == SettingsSection::About, collapsed ? L"ⓘ" : L"О программе");
 
@@ -1234,6 +1263,7 @@ void RefreshSettingsButtons(DialogState* state) {
         state->workingConfig.autoUpdateApp,
         state->workingConfig.autoUpdateApp ? L"Автопроверка: Вкл" : L"Автопроверка: Выкл"
     );
+    SetDarkButtonState(state->window, IdUiLanguage, false, InterfaceLanguageButtonText(state));
     SetDarkButtonState(state->window, IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
     SetDarkButtonState(state->window, IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
     SetDarkButtonState(state->window, IdVotSubtitleLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.votSubtitleLanguage));
@@ -1359,7 +1389,7 @@ void ShowModal(DialogState* state, int width, int height) {
     HWND window = CreateWindowExW(
         exStyle,
         kDialogClassName,
-        state->title.c_str(),
+        Localization::UiText(state->title).c_str(),
         style,
         0,
         0,
@@ -1599,10 +1629,11 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     if (toggle) {
         MoveWindow(toggle, sidebar.right - 46, sidebar.top + 16, 32, 32, TRUE);
     }
-    const std::array<int, 4> navIds = {
+    const std::array<int, 5> navIds = {
         IdSettingsNavDownloads,
         IdSettingsNavTranscription,
         IdSettingsNavTranslation,
+        IdSettingsNavAdditional,
         IdSettingsNavTools
     };
     int navTop = sidebar.top + 70;
@@ -1659,6 +1690,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
     HWND checkUpdates = GetDlgItem(state->window, IdCheckUpdates);
     HWND autoUpdate = GetDlgItem(state->window, IdAutoUpdate);
+    HWND uiLanguage = GetDlgItem(state->window, IdUiLanguage);
     HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
     HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
     HWND transcriptionWhisper = GetDlgItem(state->window, IdTranscriptionWhisper);
@@ -1684,16 +1716,22 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND cancel = GetDlgItem(state->window, IdCancel);
     HWND ok = GetDlgItem(state->window, IdOk);
 
-    card = SettingsStackCardRect(state, width, height, 2, kSettingsBehaviorCardHeight);
-    if (autoUpdate) {
-        MoveWindow(autoUpdate, card.left + kSettingsCardPadding, card.top + 108, 210, 34, TRUE);
-    }
+    card = SettingsDownloadsParallelCardRect(state, width, height);
     const RECT parallelValue = SettingsParallelValueRect(state, width, height);
     if (parallelMinus) {
         MoveWindow(parallelMinus, parallelValue.left - 46 - kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
     }
     if (parallelPlus) {
         MoveWindow(parallelPlus, parallelValue.right + kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
+    }
+
+    card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
+    if (uiLanguage) {
+        MoveWindow(uiLanguage, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, TRUE);
+    }
+    card = SettingsCardBelow(card, kSettingsChoiceCardHeight);
+    if (autoUpdate) {
+        MoveWindow(autoUpdate, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, TRUE);
     }
 
     card = SettingsTranscriptionEngineCardRect(state, width, height);
@@ -1806,8 +1844,11 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
 
     SetControlsVisible(state->window, {
         101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
-        IdAutoUpdate, IdParallelMinus, IdParallelPlus
+        IdParallelMinus, IdParallelPlus
     }, state->settingsSection == SettingsSection::Downloads);
+    SetControlsVisible(state->window, {
+        IdAutoUpdate, IdUiLanguage
+    }, state->settingsSection == SettingsSection::Additional);
     SetControlsVisible(state->window, {
         IdTranscriptionWhisper, IdTranscriptionVot, IdVotSubtitleLanguageEdit,
         IdSubtitleModeOff, IdSubtitleModeTrack, IdSubtitleModeBurn
@@ -2342,6 +2383,10 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         sectionTitle = L"Перевод";
         sectionSubtitle = L"Целевой язык озвучки и FFmpeg-интеграция перевода.";
         break;
+    case SettingsSection::Additional:
+        sectionTitle = L"Дополнительно";
+        sectionSubtitle = L"Язык приложения и обновления.";
+        break;
     case SettingsSection::Tools:
         sectionTitle = L"Инструменты";
         sectionSubtitle = L"Статус yt-dlp, FFmpeg, Whisper.cpp и Voice Over Translation.";
@@ -2363,8 +2408,8 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     if (state->settingsSection == SettingsSection::Downloads) {
         DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight), L"Качество", L"Качество по умолчанию для новых загрузок.", labelFont, textFont);
         DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"Контейнер", L"Формат итогового файла без изменения схемы имен.", labelFont, textFont);
-        const RECT behaviorCard = SettingsStackCardRect(state, client.right, client.bottom, 2, kSettingsBehaviorCardHeight);
-        DrawSettingsCard(dc, behaviorCard, L"Поведение", L"Автопроверка обновлений и параллельные загрузки.", labelFont, textFont);
+        const RECT behaviorCard = SettingsDownloadsParallelCardRect(state, client.right, client.bottom);
+        DrawSettingsCard(dc, behaviorCard, L"Параллельность", L"Сколько задач можно скачивать одновременно.", labelFont, textFont);
         DrawTextBlock(
             dc,
             L"Параллельные загрузки",
@@ -2379,6 +2424,32 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
         );
         DrawTextBlock(dc, std::to_wstring(state->workingConfig.maxParallelDownloads), SettingsParallelValueRect(state, client.right, client.bottom), kTextColor, labelFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    } else if (state->settingsSection == SettingsSection::Additional) {
+        const RECT languageCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight);
+        DrawSettingsCard(dc, languageCard, L"Язык приложения", L"Язык интерфейса применится после перезапуска.", labelFont, textFont);
+        if (state->config && state->workingConfig.uiLanguage != state->config->uiLanguage) {
+            DrawTextBlock(
+                dc,
+                L"Язык применится после перезапуска.",
+                {
+                    languageCard.left + kSettingsCardPadding,
+                    languageCard.top + kSettingsCardControlTop,
+                    languageCard.right - kSettingsCardPadding - 280,
+                    languageCard.top + kSettingsCardControlTop + 34
+                },
+                kMutedTextColor,
+                textFont,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
+            );
+        }
+        DrawSettingsCard(
+            dc,
+            SettingsCardBelow(languageCard, kSettingsChoiceCardHeight),
+            L"Проверка обновлений",
+            L"Автоматически проверять новые версии при запуске.",
+            labelFont,
+            textFont
+        );
     } else if (state->settingsSection == SettingsSection::Transcription) {
         DrawSettingsCard(dc, SettingsTranscriptionEngineCardRect(state, client.right, client.bottom), L"Движок", L"Whisper.cpp или vot-helper.exe для создания TXT/SRT.", labelFont, textFont);
         DrawSettingsCard(
@@ -2575,11 +2646,7 @@ void CreateFfmpegControls(DialogState* state) {
     AddDialogTooltip(state, installButton, L"Скачивает и настраивает локальный FFmpeg для объединения видео и аудио.");
     AddDialogTooltip(state, skipButton, L"Закрывает окно без настройки FFmpeg.");
     if (folderButton) {
-        state->tooltip = CreateTooltip(
-            state->window,
-            folderButton,
-            L"Выберите папку, где находится ffmpeg.exe, или папку выше, содержащую bin\\ffmpeg.exe, ffprobe.exe и ffplay.exe."
-        );
+        AddDialogTooltip(state, folderButton, L"Выберите папку, где находится ffmpeg.exe, или папку выше, содержащую bin\\ffmpeg.exe, ffprobe.exe и ffplay.exe.");
     }
 }
 
@@ -2936,6 +3003,7 @@ void CreateSettingsControls(DialogState* state) {
     HWND downloadsNav = CreateDarkButton(state->window, state->instance, L"Загрузки", IdSettingsNavDownloads, true, false);
     HWND transcriptionNav = CreateDarkButton(state->window, state->instance, L"Транскрибация", IdSettingsNavTranscription, false, false);
     HWND translationNav = CreateDarkButton(state->window, state->instance, L"Перевод", IdSettingsNavTranslation, false, false);
+    HWND additionalNav = CreateDarkButton(state->window, state->instance, L"Дополнительно", IdSettingsNavAdditional, false, false);
     HWND toolsNav = CreateDarkButton(state->window, state->instance, L"Инструменты", IdSettingsNavTools, false, false);
     HWND aboutNav = CreateDarkButton(state->window, state->instance, L"О программе", IdSettingsNavAbout, false, false);
 
@@ -3015,6 +3083,13 @@ void CreateSettingsControls(DialogState* state) {
         IdAutoUpdate,
         state->workingConfig.autoUpdateApp
     );
+    HWND uiLanguageButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        InterfaceLanguageButtonText(state).c_str(),
+        IdUiLanguage,
+        false
+    );
     HWND minusButton = CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
     HWND plusButton = CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
     HWND checkUpdatesButton = CreateDarkButton(state->window, state->instance, L"Проверить обновления", IdCheckUpdates, false);
@@ -3024,8 +3099,10 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, downloadsNav, L"Открывает настройки загрузок.");
     AddDialogTooltip(state, transcriptionNav, L"Открывает настройки транскрибации.");
     AddDialogTooltip(state, translationNav, L"Открывает настройки перевода.");
+    AddDialogTooltip(state, additionalNav, L"Открывает дополнительные настройки приложения.");
     AddDialogTooltip(state, toolsNav, L"Открывает статус и настройку инструментов.");
     AddDialogTooltip(state, aboutNav, L"Открывает информацию о приложении.");
+    AddDialogTooltip(state, uiLanguageButton, L"Выбирает язык интерфейса после перезапуска приложения.");
     AddDialogTooltip(state, ffmpegButton, L"Открывает настройку FFmpeg и существующий поток установки.");
     AddDialogTooltip(state, transcriptionWhisperButton, L"Использовать whisper-cli.exe для транскрибации.");
     AddDialogTooltip(state, transcriptionVotButton, L"Использовать vot-helper.exe subtitles для получения SRT/TXT.");
@@ -3133,9 +3210,18 @@ void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, SettingsLanguageT
     case SettingsLanguageTarget::VoiceOver:
         menuState->values = VoiceLanguageOptions();
         break;
+    case SettingsLanguageTarget::Interface:
+        for (const UiLanguage& language : state->uiLanguages) {
+            menuState->values.push_back(language.id);
+            menuState->labels.push_back(language.name);
+        }
+        break;
     default:
         menuState->values = VotSubtitleLanguageOptions();
         break;
+    }
+    if (menuState->labels.empty()) {
+        menuState->labels = menuState->values;
     }
 
     RECT anchorRect = {};
@@ -3453,6 +3539,12 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 RefreshSettingsButtons(state);
                 InvalidateRect(window, nullptr, FALSE);
                 return 0;
+            case IdSettingsNavAdditional:
+                state->settingsSection = SettingsSection::Additional;
+                RelayoutDialog(state);
+                RefreshSettingsButtons(state);
+                InvalidateRect(window, nullptr, FALSE);
+                return 0;
             case IdSettingsNavTools:
             case IdTranscriptionOpenTools:
             case IdTranslationOpenTools:
@@ -3480,6 +3572,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdAutoUpdate:
                 state->workingConfig.autoUpdateApp = !state->workingConfig.autoUpdateApp;
                 RefreshSettingsButtons(state);
+                return 0;
+            case IdUiLanguage:
+                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdUiLanguage), SettingsLanguageTarget::Interface);
                 return 0;
             case IdParallelMinus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 1, 10);
@@ -4033,9 +4128,10 @@ LRESULT CALLBACK DialogButtonProc(HWND window, UINT message, WPARAM wParam, LPAR
 }
 
 int MeasureTextHeight(HDC dc, HFONT font, const std::wstring& text, int width) {
+    const std::wstring translated = Localization::UiText(text);
     HFONT oldFont = reinterpret_cast<HFONT>(SelectObject(dc, font));
     RECT measure = {0, 0, width, 1};
-    DrawTextW(dc, text.c_str(), -1, &measure, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+    DrawTextW(dc, translated.c_str(), -1, &measure, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
     SelectObject(dc, oldFont);
     return measure.bottom - measure.top;
 }
@@ -4424,8 +4520,10 @@ void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, i
     const std::wstring value = menuState->values[static_cast<size_t>(index)];
     if (menuState->target == SettingsLanguageTarget::VotSubtitle) {
         ownerState->workingConfig.votSubtitleLanguage = value;
-    } else {
+    } else if (menuState->target == SettingsLanguageTarget::VoiceOver) {
         ownerState->workingConfig.voiceOverLanguage = value;
+    } else {
+        ownerState->workingConfig.uiLanguage = value.empty() ? L"ru" : value;
     }
     RefreshSettingsButtons(ownerState);
     InvalidateRect(ownerState->window, nullptr, FALSE);
@@ -4508,9 +4606,9 @@ LRESULT CALLBACK SettingsComboMenuProc(HWND window, UINT message, WPARAM wParam,
         PaintBuffered(window, [state](HDC dc, const RECT& client) {
             std::vector<UiRenderer::PopupMenuItem> items;
             if (state) {
-                items.reserve(state->values.size());
-                for (size_t index = 0; index < state->values.size(); ++index) {
-                    items.push_back({static_cast<UINT>(index + 1), state->values[index], false});
+                items.reserve(state->labels.size());
+                for (size_t index = 0; index < state->labels.size(); ++index) {
+                    items.push_back({static_cast<UINT>(index + 1), Localization::UiText(state->labels[index]), false});
                 }
             }
             UiRenderer::DrawPopupMenu(dc, client, items, state && state->hotIndex >= 0 ? static_cast<UINT>(state->hotIndex + 1) : 0);
@@ -4851,6 +4949,7 @@ bool ShowSettingsDialog(
     state->paths = paths.root().empty() ? nullptr : &paths;
     state->config = &config;
     state->workingConfig = config;
+    state->uiLanguages = Localization::AvailableLanguages(paths);
     state->settingsSection = ToSettingsSection(initialSection);
     bool saved = false;
     state->savedResult = &saved;

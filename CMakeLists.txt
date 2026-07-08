@@ -33,6 +33,7 @@ set(CORE_SOURCES
     src/Core/FileOperations.cpp
     src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
+    src/Core/Localization.cpp
     src/Core/PostProcessingFileOps.cpp
     src/Core/ToolManagers.cpp
     src/Core/TranscriptionClient.cpp
@@ -54,6 +55,7 @@ set(CORE_HEADERS
     src/Core/FileOperations.h
     src/Core/KeyboardShortcuts.h
     src/Core/Logger.h
+    src/Core/Localization.h
     src/Core/PostProcessingFileOps.h
     src/Core/ToolManagers.h
     src/Core/TranscriptionClient.h
@@ -118,6 +120,12 @@ endif()
 set_target_properties(YoutubeDownloader PROPERTIES
     OUTPUT_NAME "YoutubeDownloader"
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+add_custom_command(TARGET YoutubeDownloader POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/stuff/languages
+        $<TARGET_FILE_DIR:YoutubeDownloader>/stuff/languages
 )
 
 add_executable(YoutubeDownloaderTests
