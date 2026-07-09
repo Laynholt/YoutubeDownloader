@@ -23,15 +23,12 @@ if(WIN32)
 endif()
 
 set(CORE_SOURCES
-    src/Core/AppPaths.cpp
-    src/Core/AppVersion.h
     src/Core/AsyncWait.cpp
     src/Core/BackendText.cpp
     src/Core/Config.cpp
     src/Core/DownloadQueue.cpp
     src/Core/DownloadQueueStore.cpp
     src/Core/FileOperations.cpp
-    src/Core/KeyboardShortcuts.cpp
     src/Core/Logger.cpp
     src/Core/Localization.cpp
     src/Core/PostProcessingFileOps.cpp
@@ -44,31 +41,8 @@ set(CORE_SOURCES
     src/Platform/WinHttpClient.cpp
 )
 
-set(CORE_HEADERS
-    src/Core/AppPaths.h
-    src/Core/AppVersion.h
-    src/Core/AsyncWait.h
-    src/Core/BackendText.h
-    src/Core/Config.h
-    src/Core/DownloadQueue.h
-    src/Core/DownloadQueueStore.h
-    src/Core/FileOperations.h
-    src/Core/KeyboardShortcuts.h
-    src/Core/Logger.h
-    src/Core/Localization.h
-    src/Core/PostProcessingFileOps.h
-    src/Core/ToolManagers.h
-    src/Core/TranscriptionClient.h
-    src/Core/Version.h
-    src/Core/VoiceOverTranslationClient.h
-    src/Core/YtDlpClient.h
-    src/Platform/ProcessRunner.h
-    src/Platform/WinHttpClient.h
-)
-
 add_library(YoutubeDownloaderCore STATIC
     ${CORE_SOURCES}
-    ${CORE_HEADERS}
 )
 
 target_include_directories(YoutubeDownloaderCore PUBLIC
@@ -88,15 +62,10 @@ target_link_libraries(YoutubeDownloaderCore PUBLIC
 add_executable(YoutubeDownloader WIN32
     src/App/main.cpp
     src/UI/Application.cpp
-    src/UI/Application.h
     src/UI/DialogWindows.cpp
-    src/UI/DialogWindows.h
-    src/UI/resource.h
     src/UI/resource.rc
     src/UI/UiActions.cpp
-    src/UI/UiActions.h
     src/UI/UiRenderer.cpp
-    src/UI/UiRenderer.h
 )
 
 target_include_directories(YoutubeDownloader PRIVATE
@@ -130,7 +99,6 @@ add_custom_command(TARGET YoutubeDownloader POST_BUILD
 
 add_executable(YoutubeDownloaderTests
     src/UI/UiActions.cpp
-    src/UI/UiActions.h
     tests/test_core.cpp
 )
 

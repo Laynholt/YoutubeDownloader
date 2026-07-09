@@ -38,19 +38,18 @@ struct FfmpegStatus {
     std::wstring message;
 };
 
-class FfmpegManager {
-public:
-    static FfmpegStatus Resolve(const AppPaths& paths, const AppConfig& config);
-    static FfmpegStatus ResolveUserPath(const std::filesystem::path& path);
-    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
-    static std::filesystem::path FindExtractedBinDir(const std::filesystem::path& extractedRoot);
-    static std::wstring EssentialsDownloadUrl();
-    static FfmpegStatus InstallEssentials(
+namespace FfmpegManager {
+FfmpegStatus Resolve(const AppPaths& paths, const AppConfig& config);
+FfmpegStatus ResolveUserPath(const std::filesystem::path& path);
+std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+std::filesystem::path FindExtractedBinDir(const std::filesystem::path& extractedRoot);
+std::wstring EssentialsDownloadUrl();
+FfmpegStatus InstallEssentials(
         const AppPaths& paths,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-};
+);
+}
 
 struct ToolInstallStatus {
     bool installed = false;
@@ -71,39 +70,38 @@ struct WhisperModelInfo {
     bool bestQuality = false;
 };
 
-class WhisperManager {
-public:
-    static const char* WindowsCpuAssetName();
-    static const char* WindowsCudaAssetName();
-    static const char* BackendAssetName(WhisperBackend backend);
-    static std::vector<WhisperModelInfo> ModelCatalog();
-    static std::filesystem::path ModelPath(const AppPaths& paths, const WhisperModelInfo& model);
-    static std::filesystem::path BackendInstallDir(const AppPaths& paths, WhisperBackend backend);
-    static std::filesystem::path BackendExecutablePath(const AppPaths& paths, WhisperBackend backend);
-    static std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
-    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
-    static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
-    static ToolInstallStatus ResolveBackend(const AppPaths& paths, WhisperBackend backend);
-    static ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
-    static ReleaseAssetInfo CheckLatestRelease(WhisperBackend backend = WhisperBackend::Cpu, HANDLE cancelEvent = nullptr);
-    static ToolInstallStatus Install(
+namespace WhisperManager {
+const char* WindowsCpuAssetName();
+const char* WindowsCudaAssetName();
+const char* BackendAssetName(WhisperBackend backend);
+std::vector<WhisperModelInfo> ModelCatalog();
+std::filesystem::path ModelPath(const AppPaths& paths, const WhisperModelInfo& model);
+std::filesystem::path BackendInstallDir(const AppPaths& paths, WhisperBackend backend);
+std::filesystem::path BackendExecutablePath(const AppPaths& paths, WhisperBackend backend);
+std::filesystem::path FindExecutableDir(const std::filesystem::path& extractedRoot);
+std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+ToolInstallStatus ResolveBackend(const AppPaths& paths, WhisperBackend backend);
+ToolInstallStatus Resolve(const AppPaths& paths, const AppConfig& config);
+ReleaseAssetInfo CheckLatestRelease(WhisperBackend backend = WhisperBackend::Cpu, HANDLE cancelEvent = nullptr);
+ToolInstallStatus Install(
         const AppPaths& paths,
         WhisperBackend backend,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-    static ToolInstallStatus Install(
+);
+ToolInstallStatus Install(
         const AppPaths& paths,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-    static std::filesystem::path DownloadModel(
+);
+std::filesystem::path DownloadModel(
         const AppPaths& paths,
         const WhisperModelInfo& model,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-};
+);
+}
 
 WhisperBackend SelectWhisperInstallBackend(WhisperBackend configuredBackend, bool cudaAvailable);
 bool IsWhisperCudaCandidateAvailable();
@@ -115,25 +113,24 @@ struct VotExeStatus {
     std::wstring message;
 };
 
-class VotExeManager {
-public:
-    static const char* WindowsZipAssetName();
-    static const char* Sha256SumsAssetName();
-    static ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
-    static ReleaseAssetInfo CheckLatestSha256Sums(HANDLE cancelEvent = nullptr);
-    static VotExeStatus Resolve(const AppPaths& paths, const AppConfig& config);
-    static VotExeStatus ResolveUserPath(const std::filesystem::path& path);
-    static std::filesystem::path FindExecutable(const std::filesystem::path& root);
-    static std::vector<std::filesystem::path> FindExecutables(const std::filesystem::path& root);
-    static std::wstring Sha256ForFile(const std::string& sumsText, const std::string& fileName);
-    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
-    static bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
-    static VotExeStatus Install(
+namespace VotExeManager {
+const char* WindowsZipAssetName();
+const char* Sha256SumsAssetName();
+ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
+ReleaseAssetInfo CheckLatestSha256Sums(HANDLE cancelEvent = nullptr);
+VotExeStatus Resolve(const AppPaths& paths, const AppConfig& config);
+VotExeStatus ResolveUserPath(const std::filesystem::path& path);
+std::filesystem::path FindExecutable(const std::filesystem::path& root);
+std::vector<std::filesystem::path> FindExecutables(const std::filesystem::path& root);
+std::wstring Sha256ForFile(const std::string& sumsText, const std::string& fileName);
+std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+bool SelfTestExecutable(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+VotExeStatus Install(
         const AppPaths& paths,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-};
+);
+}
 
 bool ShouldInstallYtDlpUpdate(const ToolInstallStatus& current, const ReleaseAssetInfo& latest);
 bool ValidateYtDlpExecutableVersion(const std::filesystem::path& executable, const std::wstring& expectedVersion);
@@ -153,21 +150,20 @@ private:
     AppPaths m_paths;
 };
 
-class AppUpdateService {
-public:
-    static const char* ExeAssetName();
-    static const char* Sha256SumsAssetName();
-    static ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
-    static ReleaseAssetInfo CheckLatestSha256Sums(HANDLE cancelEvent = nullptr);
-    static void EnsureLocalSha256Sums(const AppPaths& paths);
-    static std::filesystem::path DownloadUpdateExe(
+namespace AppUpdateService {
+const char* ExeAssetName();
+const char* Sha256SumsAssetName();
+ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr);
+ReleaseAssetInfo CheckLatestSha256Sums(HANDLE cancelEvent = nullptr);
+void EnsureLocalSha256Sums(const AppPaths& paths);
+std::filesystem::path DownloadUpdateExe(
         const AppPaths& paths,
         const ReleaseAssetInfo& release,
         const std::function<void(std::uint64_t downloaded, std::uint64_t total)>& onProgress = {},
         HANDLE cancelEvent = nullptr
-    );
-    static void StartDownloadedUpdate(
+);
+void StartDownloadedUpdate(
         const AppPaths& paths,
         const std::filesystem::path& downloadedExe
-    );
-};
+);
+}

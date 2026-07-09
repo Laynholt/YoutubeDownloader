@@ -65,11 +65,8 @@ struct AppConfig {
     std::wstring lastYtDlpVersion;
 };
 
-class ConfigStore {
-public:
-    static AppConfig Load(const AppPaths& paths);
-    static void Save(const AppPaths& paths, const AppConfig& config);
-
-private:
-    static AppConfig Defaults();
-};
+namespace ConfigStore {
+AppConfig Defaults();
+AppConfig Load(const AppPaths& paths);
+void Save(const AppPaths& paths, const AppConfig& config);
+}

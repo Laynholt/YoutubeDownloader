@@ -5,8 +5,7 @@
 
 #include <vector>
 
-class DownloadQueueStore {
-public:
-    static std::vector<DownloadTaskSnapshot> Load(const AppPaths& paths);
-    static void Save(const AppPaths& paths, const std::vector<DownloadTaskSnapshot>& tasks);
-};
+namespace DownloadQueueStore {
+std::vector<DownloadTaskSnapshot> Load(const AppPaths& paths);
+void Save(const AppPaths& paths, const std::vector<DownloadTaskSnapshot>& tasks);
+}

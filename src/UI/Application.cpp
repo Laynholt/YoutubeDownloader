@@ -4,7 +4,6 @@
 #include "BackendText.h"
 #include "DialogWindows.h"
 #include "DownloadQueueStore.h"
-#include "KeyboardShortcuts.h"
 #include "Localization.h"
 #include "resource.h"
 #include "TranscriptionClient.h"
@@ -1084,16 +1083,13 @@ bool Application::HandleMainWindowShortcut(const MSG& message) {
     }
 
     const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const MainWindowShortcutAction action = ResolveMainWindowShortcut(controlDown, static_cast<unsigned int>(message.wParam));
-    switch (action) {
-    case MainWindowShortcutAction::PasteUrl:
+    if (controlDown && (message.wParam == 'V' || message.wParam == 'v')) {
         PasteReplacingEditText(m_urlEdit);
         return true;
-    case MainWindowShortcutAction::Download:
+    }
+    if (!controlDown && message.wParam == '\r') {
         EnqueueCurrentUrl();
         return true;
-    case MainWindowShortcutAction::None:
-        return false;
     }
     return false;
 }

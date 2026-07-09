@@ -6,7 +6,6 @@
 #include "DownloadQueue.h"
 #include "DownloadQueueStore.h"
 #include "FileOperations.h"
-#include "KeyboardShortcuts.h"
 #include "Logger.h"
 #include "Localization.h"
 #include "PostProcessingFileOps.h"
@@ -192,25 +191,6 @@ void TestConfigNormalizesPostProcessingLanguageOptions() {
     Require(loaded.whisperLanguage == L"fr", "known VOT source language should lowercase");
     Require(loaded.votSubtitleLanguage == L"en", "known VOT subtitle language should lowercase");
     Require(loaded.voiceOverLanguage == L"ru", "unsupported voice-over TTS language should normalize to ru");
-}
-
-void TestMainWindowShortcutResolution() {
-    Require(
-        ResolveMainWindowShortcut(true, 'V') == MainWindowShortcutAction::PasteUrl,
-        "Ctrl+V should paste into the URL field"
-    );
-    Require(
-        ResolveMainWindowShortcut(true, 'v') == MainWindowShortcutAction::PasteUrl,
-        "Ctrl+v should paste into the URL field"
-    );
-    Require(
-        ResolveMainWindowShortcut(false, '\r') == MainWindowShortcutAction::Download,
-        "Enter should start download"
-    );
-    Require(
-        ResolveMainWindowShortcut(false, 'V') == MainWindowShortcutAction::None,
-        "V without Ctrl should not trigger paste"
-    );
 }
 
 void TestDownloadAttemptResolution() {
@@ -3582,7 +3562,6 @@ int main(int argc, char** argv) {
     TestConfigDefaultsAndRoundTrip();
     TestConfigNormalizesPostProcessingLanguageOptions();
     TestLocalizationLoadsExternalLanguageWithRussianFallback();
-    TestMainWindowShortcutResolution();
     TestDownloadAttemptResolution();
     TestPreviewFetchInputValidation();
     TestPingPongProgressPhase();

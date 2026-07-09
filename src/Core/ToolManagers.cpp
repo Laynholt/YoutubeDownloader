@@ -308,6 +308,40 @@ std::wstring QuotePowerShellLiteral(const std::filesystem::path& path) {
     return escaped;
 }
 
+void ExtractZip(
+    const std::filesystem::path& archive,
+    const std::filesystem::path& extractDir,
+    HANDLE cancelEvent,
+    const char* failureMessage
+) {
+    std::error_code ec;
+    std::filesystem::create_directories(extractDir, ec);
+
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (!std::filesystem::is_regular_file(options.executable, ec)) {
+        options.executable = L"powershell.exe";
+    }
+    options.arguments = {
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
+            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
+    };
+    options.timeoutMs = 120000;
+    options.cancelEvent = cancelEvent;
+
+    const ProcessRunResult extract = ProcessRunner::Run(options);
+    if (extract.canceled) {
+        throw std::runtime_error("operation canceled");
+    }
+    if (extract.exitCode != 0) {
+        throw std::runtime_error(failureMessage);
+    }
+}
+
 std::wstring QuoteCommandLineArgument(const std::wstring& arg) {
     if (arg.empty()) {
         return L"\"\"";
@@ -645,34 +679,10 @@ FfmpegStatus FfmpegManager::InstallEssentials(
         throw std::runtime_error("operation canceled");
     }
 
-    std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
         onProgress(0, 0, L"tools.extracting_ffmpeg");
     }
-
-    ProcessRunOptions options;
-    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-    if (!std::filesystem::is_regular_file(options.executable, ec)) {
-        options.executable = L"powershell.exe";
-    }
-    options.arguments = {
-        L"-NoProfile",
-        L"-ExecutionPolicy",
-        L"Bypass",
-        L"-Command",
-        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
-            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
-    };
-    options.timeoutMs = 120000;
-    options.cancelEvent = cancelEvent;
-
-    const ProcessRunResult extract = ProcessRunner::Run(options);
-    if (extract.canceled) {
-        throw std::runtime_error("operation canceled");
-    }
-    if (extract.exitCode != 0) {
-        throw std::runtime_error("failed to extract FFmpeg archive");
-    }
+    ExtractZip(archive, extractDir, cancelEvent, "failed to extract FFmpeg archive");
 
     const std::filesystem::path extractedBin = FindExtractedBinDir(extractDir);
     if (extractedBin.empty()) {
@@ -914,34 +924,10 @@ ToolInstallStatus WhisperManager::Install(
         throw std::runtime_error("failed to finalize whisper.cpp archive");
     }
 
-    std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
         onProgress(0, 0, L"tools.extracting_whisper_cpp");
     }
-
-    ProcessRunOptions options;
-    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-    if (!std::filesystem::is_regular_file(options.executable, ec)) {
-        options.executable = L"powershell.exe";
-    }
-    options.arguments = {
-        L"-NoProfile",
-        L"-ExecutionPolicy",
-        L"Bypass",
-        L"-Command",
-        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
-            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
-    };
-    options.timeoutMs = 120000;
-    options.cancelEvent = cancelEvent;
-
-    const ProcessRunResult extract = ProcessRunner::Run(options);
-    if (extract.canceled) {
-        throw std::runtime_error("operation canceled");
-    }
-    if (extract.exitCode != 0) {
-        throw std::runtime_error("failed to extract whisper.cpp archive");
-    }
+    ExtractZip(archive, extractDir, cancelEvent, "failed to extract whisper.cpp archive");
 
     const std::filesystem::path executableDir = FindExecutableDir(extractDir);
     if (executableDir.empty()) {
@@ -1260,34 +1246,10 @@ VotExeStatus VotExeManager::Install(
         throw std::runtime_error("failed to finalize VOT helper archive");
     }
 
-    std::filesystem::create_directories(extractDir, ec);
     if (onProgress) {
         onProgress(0, 0, L"tools.extracting_vot_helper");
     }
-
-    ProcessRunOptions options;
-    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-    if (!std::filesystem::is_regular_file(options.executable, ec)) {
-        options.executable = L"powershell.exe";
-    }
-    options.arguments = {
-        L"-NoProfile",
-        L"-ExecutionPolicy",
-        L"Bypass",
-        L"-Command",
-        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
-            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
-    };
-    options.timeoutMs = 120000;
-    options.cancelEvent = cancelEvent;
-
-    const ProcessRunResult extract = ProcessRunner::Run(options);
-    if (extract.canceled) {
-        throw std::runtime_error("operation canceled");
-    }
-    if (extract.exitCode != 0) {
-        throw std::runtime_error("failed to extract VOT helper archive");
-    }
+    ExtractZip(archive, extractDir, cancelEvent, "failed to extract VOT helper archive");
 
     const std::filesystem::path executable = FindExecutable(extractDir);
     if (executable.empty()) {
