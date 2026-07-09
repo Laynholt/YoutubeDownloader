@@ -487,6 +487,10 @@ void TestPostProcessingModeDisplayText() {
         LocalizedToolErrorText("network failed") == L"network failed",
         "unknown tool errors should keep their original text"
     );
+    Require(
+        LocalizedToolErrorText("\xD0\xBE\xD1\x88\xD0\xB8\xD0\xB1\xD0\xBA\xD0\xB0 \xD0\xB0\xD1\x80\xD1\x85\xD0\xB8\xD0\xB2\xD0\xB0") == L"ошибка архива",
+        "unknown UTF-8 tool errors should decode before display"
+    );
 }
 
 void TestPostProcessingQueueStatusText() {
@@ -1190,6 +1194,36 @@ size_t ArgIndex(const std::vector<std::wstring>& args, const std::wstring& value
     const auto it = std::ranges::find(args, value);
     Require(it != args.end(), "argument not found");
     return static_cast<size_t>(std::distance(args.begin(), it));
+}
+
+void TestExtractZipProcessOptions() {
+    const ProcessRunOptions options = BuildExtractZipOptions(
+        fs::path(L"C:/Temp/archive's.zip"),
+        fs::path(L"C:/Temp/out dir"),
+        nullptr
+    );
+
+    Require(options.timeoutMs == 120000, "zip extraction timeout mismatch");
+    Require(ContainsArg(options.arguments, L"-NoProfile"), "zip extraction should disable profile loading");
+    Require(ContainsArg(options.arguments, L"-ExecutionPolicy"), "zip extraction execution policy argument missing");
+    Require(ContainsArg(options.arguments, L"Bypass"), "zip extraction execution policy value missing");
+    Require(ContainsArg(options.arguments, L"-Command"), "zip extraction command argument missing");
+
+    const std::wstring command = options.arguments.at(ArgIndex(options.arguments, L"-Command") + 1);
+    Require(command.find(L"Expand-Archive -LiteralPath 'C:/Temp/archive''s.zip'") != std::wstring::npos, "zip archive path should be PowerShell-quoted");
+    Require(command.find(L"-DestinationPath 'C:/Temp/out dir' -Force") != std::wstring::npos, "zip destination path should be PowerShell-quoted");
+}
+
+void TestProcessFailureMessageIncludesExitCodeAndOutput() {
+    ProcessRunResult result;
+    result.exitCode = 9;
+    result.stderrText = L"bad archive\r\n";
+
+    const std::string message = BuildProcessFailureMessage("failed to extract archive", result);
+
+    Require(message.find("failed to extract archive") != std::string::npos, "process failure should keep context");
+    Require(message.find("exit code 9") != std::string::npos, "process failure should include exit code");
+    Require(message.find("bad archive") != std::string::npos, "process failure should include stderr");
 }
 
 void TestYtDlpDownloadArguments() {
@@ -3667,6 +3701,8 @@ int main(int argc, char** argv) {
     TestWaitForDelayCompletesOrStopsPromptly();
     TestProgressPresentation();
     TestVersionCompare();
+    TestExtractZipProcessOptions();
+    TestProcessFailureMessageIncludesExitCodeAndOutput();
     TestYtDlpDownloadArguments();
     TestYtDlpOutputPathParsing();
     TestYtDlpOutputFileFallbackFindsNewMedia();

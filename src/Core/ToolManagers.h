@@ -8,6 +8,7 @@
 
 #include "AppPaths.h"
 #include "Config.h"
+#include "ProcessRunner.h"
 
 #include <filesystem>
 #include <functional>
@@ -22,6 +23,12 @@ struct ReleaseAssetInfo {
 };
 
 ReleaseAssetInfo ParseGitHubReleaseAsset(const std::string& releaseJson, const std::string& assetName);
+ProcessRunOptions BuildExtractZipOptions(
+        const std::filesystem::path& archive,
+        const std::filesystem::path& extractDir,
+        HANDLE cancelEvent = nullptr
+);
+std::string BuildProcessFailureMessage(const char* context, const ProcessRunResult& result);
 
 enum class FfmpegSource {
     Missing,

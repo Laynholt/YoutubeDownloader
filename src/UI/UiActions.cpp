@@ -1,5 +1,7 @@
 #include "UiActions.h"
 
+#include "BackendText.h"
+
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -251,7 +253,11 @@ std::wstring LocalizedToolErrorText(const std::string& message) {
     if (message == "post-processing output conflict is no longer approved") {
         return L"actions.a_new_output_conflict_appeared_repeat_the_operation_and";
     }
-    return std::wstring(message.begin(), message.end());
+    try {
+        return Utf8ToWide(message);
+    } catch (...) {
+        return std::wstring(message.begin(), message.end());
+    }
 }
 
 std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind) {

@@ -16,6 +16,7 @@
 #include <cwctype>
 #include <fstream>
 #include <iomanip>
+#include <initializer_list>
 #include <iterator>
 #include <sstream>
 #include <system_error>
@@ -85,6 +86,30 @@ bool IsSameExistingFile(const std::filesystem::path& left, const std::filesystem
     std::error_code ec;
     return std::filesystem::equivalent(left, right, ec) && !ec;
 }
+
+class CleanupPaths {
+public:
+    CleanupPaths(std::initializer_list<std::filesystem::path> paths)
+        : m_paths(paths) {
+    }
+
+    ~CleanupPaths() {
+        if (!m_enabled) {
+            return;
+        }
+        std::error_code ec;
+        for (const std::filesystem::path& path : m_paths) {
+            std::filesystem::remove_all(path, ec);
+            ec.clear();
+        }
+    }
+
+    void dismiss() { m_enabled = false; }
+
+private:
+    std::vector<std::filesystem::path> m_paths;
+    bool m_enabled = true;
+};
 
 FfmpegStatus MakeFfmpegStatus(FfmpegSource source, const std::filesystem::path& exe) {
     FfmpegStatus status;
@@ -308,6 +333,21 @@ std::wstring QuotePowerShellLiteral(const std::filesystem::path& path) {
     return escaped;
 }
 
+std::string TrimForError(std::wstring text) {
+    while (!text.empty() && iswspace(text.back())) {
+        text.pop_back();
+    }
+    while (!text.empty() && iswspace(text.front())) {
+        text.erase(text.begin());
+    }
+    constexpr size_t maxChars = 700;
+    if (text.size() > maxChars) {
+        text.resize(maxChars);
+        text += L"...";
+    }
+    return WideToUtf8(text);
+}
+
 void ExtractZip(
     const std::filesystem::path& archive,
     const std::filesystem::path& extractDir,
@@ -317,28 +357,12 @@ void ExtractZip(
     std::error_code ec;
     std::filesystem::create_directories(extractDir, ec);
 
-    ProcessRunOptions options;
-    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
-    if (!std::filesystem::is_regular_file(options.executable, ec)) {
-        options.executable = L"powershell.exe";
-    }
-    options.arguments = {
-        L"-NoProfile",
-        L"-ExecutionPolicy",
-        L"Bypass",
-        L"-Command",
-        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
-            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
-    };
-    options.timeoutMs = 120000;
-    options.cancelEvent = cancelEvent;
-
-    const ProcessRunResult extract = ProcessRunner::Run(options);
+    const ProcessRunResult extract = ProcessRunner::Run(BuildExtractZipOptions(archive, extractDir, cancelEvent));
     if (extract.canceled) {
         throw std::runtime_error("operation canceled");
     }
     if (extract.exitCode != 0) {
-        throw std::runtime_error(failureMessage);
+        throw std::runtime_error(BuildProcessFailureMessage(failureMessage, extract));
     }
 }
 
@@ -561,6 +585,47 @@ ReleaseAssetInfo ParseGitHubReleaseAsset(const std::string& releaseJson, const s
     return info;
 }
 
+ProcessRunOptions BuildExtractZipOptions(
+    const std::filesystem::path& archive,
+    const std::filesystem::path& extractDir,
+    HANDLE cancelEvent
+) {
+    std::error_code ec;
+    ProcessRunOptions options;
+    options.executable = L"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (!std::filesystem::is_regular_file(options.executable, ec)) {
+        options.executable = L"powershell.exe";
+    }
+    options.arguments = {
+        L"-NoProfile",
+        L"-ExecutionPolicy",
+        L"Bypass",
+        L"-Command",
+        L"Expand-Archive -LiteralPath " + QuotePowerShellLiteral(archive) +
+            L" -DestinationPath " + QuotePowerShellLiteral(extractDir) + L" -Force"
+    };
+    options.timeoutMs = 120000;
+    options.cancelEvent = cancelEvent;
+    return options;
+}
+
+std::string BuildProcessFailureMessage(const char* context, const ProcessRunResult& result) {
+    std::string message = context ? context : "process failed";
+    message += " (exit code " + std::to_string(result.exitCode) + ")";
+
+    const std::string stderrText = TrimForError(result.stderrText);
+    if (!stderrText.empty()) {
+        message += ": " + stderrText;
+        return message;
+    }
+
+    const std::string stdoutText = TrimForError(result.stdoutText);
+    if (!stdoutText.empty()) {
+        message += ": " + stdoutText;
+    }
+    return message;
+}
+
 FfmpegStatus FfmpegManager::Resolve(const AppPaths& paths, const AppConfig& config) {
     const FfmpegStatus configured = ResolveUserPath(config.ffmpegPath);
     if (configured.available) {
@@ -654,6 +719,7 @@ FfmpegStatus FfmpegManager::InstallEssentials(
 ) {
     const std::filesystem::path archive = paths.stuffDir() / L"ffmpeg-release-essentials.zip";
     const std::filesystem::path extractDir = paths.stuffDir() / L"ffmpeg_extract";
+    CleanupPaths cleanup({archive, extractDir});
 
     std::error_code ec;
     std::filesystem::create_directories(paths.stuffDir(), ec);
@@ -894,6 +960,7 @@ ToolInstallStatus WhisperManager::Install(
     const std::filesystem::path archiveTmp = paths.stuffDir() / (archiveName + L".tmp");
     const std::filesystem::path archive = paths.stuffDir() / archiveName;
     const std::filesystem::path extractDir = paths.stuffDir() / (L"whisper_" + backendSuffix + L"_extract");
+    CleanupPaths cleanup({archiveTmp, archive, extractDir});
 
     std::error_code ec;
     std::filesystem::create_directories(paths.stuffDir(), ec);
@@ -1004,6 +1071,7 @@ std::filesystem::path WhisperManager::DownloadModel(
 
     const std::filesystem::path target = ModelPath(paths, model);
     const std::filesystem::path tmp = target.wstring() + L".tmp";
+    CleanupPaths cleanup({tmp});
     std::error_code ec;
     std::filesystem::create_directories(paths.localWhisperModelsDir(), ec);
     std::filesystem::remove(tmp, ec);
@@ -1210,6 +1278,7 @@ VotExeStatus VotExeManager::Install(
     const std::filesystem::path archiveTmp = paths.stuffDir() / L"vot-helper-windows-x64.zip.tmp";
     const std::filesystem::path archive = paths.stuffDir() / L"vot-helper-windows-x64.zip";
     const std::filesystem::path extractDir = paths.stuffDir() / L"vot_helper_extract";
+    CleanupPaths cleanup({archiveTmp, archive, extractDir});
 
     std::error_code ec;
     std::filesystem::create_directories(paths.stuffDir(), ec);
@@ -1433,6 +1502,7 @@ std::filesystem::path AppUpdateService::DownloadUpdateExe(
     }
 
     const std::filesystem::path target = paths.stuffDir() / L"updates" / L"YoutubeDownloader.exe.new";
+    CleanupPaths cleanup({target});
     std::error_code ec;
     std::filesystem::remove(target, ec);
     WinHttpClient::DownloadFile(release.downloadUrl, target, onProgress, cancelEvent);
@@ -1455,6 +1525,7 @@ std::filesystem::path AppUpdateService::DownloadUpdateExe(
         std::filesystem::remove(target, ec);
         throw std::runtime_error("app update checksum validation failed");
     }
+    cleanup.dismiss();
     return target;
 }
 
