@@ -1,5 +1,7 @@
 # YoutubeDownloader
 
+[English README](README.en.md)
+
 YoutubeDownloader - портативное Win32-приложение для скачивания видео, плейлистов и аудио с YouTube через `yt-dlp`. В приложении есть нативный Windows-интерфейс, очередь загрузок, предпросмотр названия и обложки, а также поддержка FFmpeg для объединения и обработки медиа.
 
 ## Screenshots
@@ -51,3 +53,15 @@ ctest --test-dir build -C Release --output-on-failure
 ## Runtime
 
 При запуске приложение проверяет наличие `yt-dlp` и может установить или обновить его из официальных GitHub Releases. FFmpeg можно указать вручную, найти через `PATH` или установить в локальную папку инструментов приложения.
+
+## Локализация
+
+Русский язык встроен в приложение. Дополнительные языки интерфейса загружаются из `stuff/languages/*.json`.
+
+Формат файлов перевода и правила добавления языков описаны в [`stuff/languages/README.md`](stuff/languages/README.md). Английский перевод лежит в [`stuff/languages/en.json`](stuff/languages/en.json).
+
+## Лицензия
+
+Проект распространяется под лицензией MIT. См. [`LICENSE`](LICENSE).
+
+Сторонние библиотеки и внешние инструменты сохраняют собственные лицензии. См. [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).

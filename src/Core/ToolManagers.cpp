@@ -261,6 +261,37 @@ void CopyRegularFilesFromDir(const std::filesystem::path& sourceDir, const std::
     }
 }
 
+bool IsLicenseNoticeFile(const std::filesystem::path& path) {
+    std::wstring name = path.filename().wstring();
+    std::transform(name.begin(), name.end(), name.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    return name.rfind(L"license", 0) == 0 ||
+        name.rfind(L"copying", 0) == 0 ||
+        name.rfind(L"notice", 0) == 0;
+}
+
+void CopyLicenseNoticeFilesFromDir(const std::filesystem::path& sourceDir, const std::filesystem::path& targetDir) {
+    std::error_code ec;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(sourceDir, ec)) {
+        if (ec) {
+            break;
+        }
+        if (!entry.is_regular_file(ec) || !IsLicenseNoticeFile(entry.path())) {
+            continue;
+        }
+        std::filesystem::copy_file(
+            entry.path(),
+            targetDir / entry.path().filename(),
+            std::filesystem::copy_options::overwrite_existing,
+            ec
+        );
+        if (ec) {
+            throw std::runtime_error("failed to copy tool license files");
+        }
+    }
+}
+
 std::wstring QuotePowerShellLiteral(const std::filesystem::path& path) {
     std::wstring value = path.wstring();
     std::wstring escaped;
@@ -1277,6 +1308,7 @@ VotExeStatus VotExeManager::Install(
     if (ec) {
         throw std::runtime_error("failed to copy VOT helper executable");
     }
+    CopyLicenseNoticeFilesFromDir(executable.parent_path(), paths.localVotDir());
 
     std::filesystem::remove(archive, ec);
     ec.clear();
