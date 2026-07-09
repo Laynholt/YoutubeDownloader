@@ -188,7 +188,7 @@ std::wstring OpenDownloadFolderButtonText() {
 }
 
 std::wstring TranslationSettingsCollapsedIcon() {
-    return L"♫";
+    return L"⇄";
 }
 
 std::wstring ToolSetupButtonText() {

@@ -329,7 +329,7 @@ void TestPostProcessingModeDisplayText() {
         "main open-folder button text should be explicit"
     );
     Require(
-        TranslationSettingsCollapsedIcon() == L"♫",
+        TranslationSettingsCollapsedIcon() == L"⇄",
         "collapsed translation settings icon should communicate voice-over"
     );
     Require(

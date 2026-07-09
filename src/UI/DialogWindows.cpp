@@ -1309,11 +1309,11 @@ void RefreshSettingsButtons(DialogState* state) {
 
     SetDarkButtonState(state->window, IdSettingsToggleSidebar, false, collapsed ? L">" : L"<");
     SetDarkButtonState(state->window, IdSettingsNavDownloads, state->settingsSection == SettingsSection::Downloads, collapsed ? L"⬇" : L"dialog.downloads");
-    SetDarkButtonState(state->window, IdSettingsNavTranscription, state->settingsSection == SettingsSection::Transcription, collapsed ? L"✎" : L"dialog.transcription");
+    SetDarkButtonState(state->window, IdSettingsNavTranscription, state->settingsSection == SettingsSection::Transcription, collapsed ? L"▤" : L"dialog.transcription");
     SetDarkButtonState(state->window, IdSettingsNavTranslation, state->settingsSection == SettingsSection::Translation, collapsed ? TranslationSettingsCollapsedIcon() : L"dialog.translation");
-    SetDarkButtonState(state->window, IdSettingsNavAdditional, state->settingsSection == SettingsSection::Additional, collapsed ? L"+" : L"dialog.additional");
-    SetDarkButtonState(state->window, IdSettingsNavTools, state->settingsSection == SettingsSection::Tools, collapsed ? L"⚙" : L"dialog.tools");
-    SetDarkButtonState(state->window, IdSettingsNavAbout, state->settingsSection == SettingsSection::About, collapsed ? L"ⓘ" : L"dialog.about");
+    SetDarkButtonState(state->window, IdSettingsNavAdditional, state->settingsSection == SettingsSection::Additional, collapsed ? L"•••" : L"dialog.additional");
+    SetDarkButtonState(state->window, IdSettingsNavTools, state->settingsSection == SettingsSection::Tools, collapsed ? L"⚒" : L"dialog.tools");
+    SetDarkButtonState(state->window, IdSettingsNavAbout, state->settingsSection == SettingsSection::About, collapsed ? L"ℹ" : L"dialog.about");
 
     SetDarkButtonState(state->window, 101, state->workingConfig.quality == L"audio");
     SetDarkButtonState(state->window, 102, state->workingConfig.quality == L"360p");
