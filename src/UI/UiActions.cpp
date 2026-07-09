@@ -254,6 +254,62 @@ std::wstring LocalizedToolErrorText(const std::string& message) {
     return std::wstring(message.begin(), message.end());
 }
 
+std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind) {
+    switch (kind) {
+    case ProgressTaskKind::AppUpdate:
+        return L"dialog.failed_to_update_the_application";
+    case ProgressTaskKind::WhisperModelDownload:
+        return L"dialog.failed_to_download_the_whisper_model";
+    case ProgressTaskKind::VotInstall:
+        return L"dialog.failed_to_install_vot_helper";
+    case ProgressTaskKind::WhisperInstall:
+        return L"dialog.failed_to_install_whisper_cpp";
+    case ProgressTaskKind::FfmpegInstall:
+    default:
+        return L"dialog.failed_to_install_ffmpeg";
+    }
+}
+
+std::wstring ProgressTaskUnknownErrorMessage(ProgressTaskKind kind) {
+    switch (kind) {
+    case ProgressTaskKind::AppUpdate:
+        return L"dialog.unknown_application_update_error";
+    case ProgressTaskKind::WhisperModelDownload:
+        return L"dialog.unknown_whisper_model_download_error";
+    case ProgressTaskKind::VotInstall:
+        return L"dialog.unknown_vot_helper_installation_error";
+    case ProgressTaskKind::WhisperInstall:
+        return L"dialog.unknown_whisper_cpp_installation_error";
+    case ProgressTaskKind::FfmpegInstall:
+    default:
+        return L"dialog.unknown_ffmpeg_installation_error";
+    }
+}
+
+std::wstring ProgressTaskSuccessMessage(ProgressTaskKind kind, bool whisperModelReady) {
+    switch (kind) {
+    case ProgressTaskKind::AppUpdate:
+        return L"dialog.update_downloaded_the_application_will_close_and_restart";
+    case ProgressTaskKind::WhisperInstall:
+        return whisperModelReady
+            ? L"dialog.whisper_cpp_installed"
+            : L"dialog.whisper_cpp_installed_now_download_a_model_the_model_win";
+    case ProgressTaskKind::WhisperModelDownload:
+        return L"dialog.whisper_model_downloaded";
+    case ProgressTaskKind::VotInstall:
+        return L"dialog.vot_helper_installed";
+    case ProgressTaskKind::FfmpegInstall:
+    default:
+        return L"dialog.ffmpeg_installed";
+    }
+}
+
+std::wstring ProgressDoneButtonText(ProgressTaskKind kind, bool success, bool whisperModelReady) {
+    return success && kind == ProgressTaskKind::WhisperInstall && !whisperModelReady
+        ? L"dialog.models"
+        : L"OK";
+}
+
 std::wstring PostProcessingQueueStatusText(QueueTaskAction action) {
     switch (action) {
     case QueueTaskAction::Transcribe:

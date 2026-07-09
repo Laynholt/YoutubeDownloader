@@ -406,6 +406,84 @@ void TestPostProcessingModeDisplayText() {
         "Whisper self-test install error should be localized"
     );
     Require(
+        ProgressTaskFailureMessage(ProgressTaskKind::FfmpegInstall) == L"dialog.failed_to_install_ffmpeg",
+        "FFmpeg progress failure key mismatch"
+    );
+    Require(
+        ProgressTaskFailureMessage(ProgressTaskKind::WhisperInstall) == L"dialog.failed_to_install_whisper_cpp",
+        "Whisper progress failure key mismatch"
+    );
+    Require(
+        ProgressTaskFailureMessage(ProgressTaskKind::WhisperModelDownload) == L"dialog.failed_to_download_the_whisper_model",
+        "Whisper model progress failure key mismatch"
+    );
+    Require(
+        ProgressTaskFailureMessage(ProgressTaskKind::VotInstall) == L"dialog.failed_to_install_vot_helper",
+        "VOT progress failure key mismatch"
+    );
+    Require(
+        ProgressTaskFailureMessage(ProgressTaskKind::AppUpdate) == L"dialog.failed_to_update_the_application",
+        "app update progress failure key mismatch"
+    );
+    Require(
+        ProgressTaskUnknownErrorMessage(ProgressTaskKind::FfmpegInstall) == L"dialog.unknown_ffmpeg_installation_error",
+        "FFmpeg unknown error key mismatch"
+    );
+    Require(
+        ProgressTaskUnknownErrorMessage(ProgressTaskKind::WhisperInstall) == L"dialog.unknown_whisper_cpp_installation_error",
+        "Whisper unknown error key mismatch"
+    );
+    Require(
+        ProgressTaskUnknownErrorMessage(ProgressTaskKind::WhisperModelDownload) == L"dialog.unknown_whisper_model_download_error",
+        "Whisper model unknown error key mismatch"
+    );
+    Require(
+        ProgressTaskUnknownErrorMessage(ProgressTaskKind::VotInstall) == L"dialog.unknown_vot_helper_installation_error",
+        "VOT unknown error key mismatch"
+    );
+    Require(
+        ProgressTaskUnknownErrorMessage(ProgressTaskKind::AppUpdate) == L"dialog.unknown_application_update_error",
+        "app update unknown error key mismatch"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::FfmpegInstall, true) == L"dialog.ffmpeg_installed",
+        "FFmpeg success key mismatch"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::WhisperInstall, true) == L"dialog.whisper_cpp_installed",
+        "Whisper success key should use installed text when model is ready"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::WhisperInstall, false) ==
+            L"dialog.whisper_cpp_installed_now_download_a_model_the_model_win",
+        "Whisper success key should ask for model when missing"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::WhisperModelDownload, true) == L"dialog.whisper_model_downloaded",
+        "Whisper model success key mismatch"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::VotInstall, true) == L"dialog.vot_helper_installed",
+        "VOT success key mismatch"
+    );
+    Require(
+        ProgressTaskSuccessMessage(ProgressTaskKind::AppUpdate, true) ==
+            L"dialog.update_downloaded_the_application_will_close_and_restart",
+        "app update success key mismatch"
+    );
+    Require(
+        ProgressDoneButtonText(ProgressTaskKind::WhisperInstall, true, false) == L"dialog.models",
+        "Whisper install without model should switch done button to models"
+    );
+    Require(
+        ProgressDoneButtonText(ProgressTaskKind::WhisperInstall, true, true) == L"OK",
+        "Whisper install with model should use OK"
+    );
+    Require(
+        ProgressDoneButtonText(ProgressTaskKind::FfmpegInstall, true, false) == L"OK",
+        "other progress modes should use OK"
+    );
+    Require(
         LocalizedToolErrorText("network failed") == L"network failed",
         "unknown tool errors should keep their original text"
     );

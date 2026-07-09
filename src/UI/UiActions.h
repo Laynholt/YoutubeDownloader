@@ -37,6 +37,14 @@ enum class WhisperCudaReadinessAction {
     BlockCuda
 };
 
+enum class ProgressTaskKind {
+    FfmpegInstall,
+    WhisperInstall,
+    WhisperModelDownload,
+    VotInstall,
+    AppUpdate
+};
+
 struct ToolReadinessDialogContent {
     std::wstring title;
     std::wstring message;
@@ -88,6 +96,10 @@ std::wstring WhisperInstallButtonText(WhisperBackend configuredBackend, bool cud
 bool IsWhisperInstallTargetInstalled(WhisperBackend installBackend, bool cpuInstalled, bool cudaInstalled);
 std::wstring FfmpegGatedOptionTooltip(const std::wstring& actionText);
 std::wstring LocalizedToolErrorText(const std::string& message);
+std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind);
+std::wstring ProgressTaskUnknownErrorMessage(ProgressTaskKind kind);
+std::wstring ProgressTaskSuccessMessage(ProgressTaskKind kind, bool whisperModelReady);
+std::wstring ProgressDoneButtonText(ProgressTaskKind kind, bool success, bool whisperModelReady);
 std::wstring PostProcessingQueueStatusText(QueueTaskAction action);
 bool ShouldBlockWhisperCudaBackend(
     WhisperBackend configuredBackend,

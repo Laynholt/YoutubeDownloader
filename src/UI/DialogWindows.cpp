@@ -288,6 +288,9 @@ struct DialogState {
 };
 
 void ShowModal(DialogState* state, int width, int height);
+
+using ProgressReporter = std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>;
+using ProgressWork = std::function<void(const ProgressReporter& reportProgress)>;
 void RefreshSettingsButtons(DialogState* state);
 
 void CloseDialogWindow(HWND window) {
@@ -2725,6 +2728,57 @@ void InvalidateProgressContent(HWND window) {
     InvalidateRect(window, &progressContent, FALSE);
 }
 
+ProgressTaskKind ProgressKindFor(ProgressMode mode) {
+    switch (mode) {
+    case ProgressMode::AppUpdate:
+        return ProgressTaskKind::AppUpdate;
+    case ProgressMode::WhisperInstall:
+        return ProgressTaskKind::WhisperInstall;
+    case ProgressMode::WhisperModelDownload:
+        return ProgressTaskKind::WhisperModelDownload;
+    case ProgressMode::VotInstall:
+        return ProgressTaskKind::VotInstall;
+    case ProgressMode::FfmpegInstall:
+    default:
+        return ProgressTaskKind::FfmpegInstall;
+    }
+}
+
+ProgressReporter MakeProgressReporter(DialogState* state, HWND window) {
+    return [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
+        {
+            std::lock_guard lock(state->progressMutex);
+            state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
+        }
+        PostMessageW(window, kProgressUpdateMessage, 0, 0);
+    };
+}
+
+void SetProgressFailure(DialogState* state, const std::wstring& message) {
+    std::lock_guard lock(state->progressMutex);
+    state->progressError = message;
+}
+
+void PostProgressDone(HWND window, bool success) {
+    PostMessageW(window, kProgressDoneMessage, success ? TRUE : FALSE, 0);
+}
+
+void StartProgressWorker(DialogState* state, ProgressTaskKind kind, ProgressWork work) {
+    HWND window = state->window;
+    state->worker = std::jthread([state, window, kind, work = std::move(work)](std::stop_token) {
+        try {
+            work(MakeProgressReporter(state, window));
+            PostProgressDone(window, true);
+        } catch (const std::exception& ex) {
+            SetProgressFailure(state, LocalizedToolErrorText(ex.what()));
+            PostProgressDone(window, false);
+        } catch (...) {
+            SetProgressFailure(state, ProgressTaskUnknownErrorMessage(kind));
+            PostProgressDone(window, false);
+        }
+    });
+}
+
 void CreateWhisperControls(DialogState* state) {
     HWND installButton = CreateDarkButton(state->window, state->instance, L"dialog.install", IdInstall, true, false);
     HWND modelButton = CreateDarkButton(state->window, state->instance, L"dialog.choose_model", IdWhisperDownloadModel, false, false);
@@ -2804,40 +2858,14 @@ void StartFfmpegInstallWorker(DialogState* state) {
         return;
     }
 
-    HWND window = state->window;
     const AppPaths paths = *state->paths;
     AppConfig* config = state->config;
     HANDLE cancelEvent = state->cancelEvent;
 
-    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
-        try {
-            const FfmpegStatus status = FfmpegManager::InstallEssentials(
-                paths,
-                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
-                },
-                cancelEvent
-            );
-            config->ffmpegPath = status.ffmpegExe;
-            config->ffmpegVersion = status.version;
-            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
-        } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(ex.what());
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"dialog.unknown_ffmpeg_installation_error";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        }
+    StartProgressWorker(state, ProgressTaskKind::FfmpegInstall, [paths, config, cancelEvent](const ProgressReporter& reportProgress) {
+        const FfmpegStatus status = FfmpegManager::InstallEssentials(paths, reportProgress, cancelEvent);
+        config->ffmpegPath = status.ffmpegExe;
+        config->ffmpegVersion = status.version;
     });
 }
 
@@ -2860,19 +2888,13 @@ void StartWhisperInstallWorker(DialogState* state) {
             const ToolInstallStatus status = WhisperManager::Install(
                 paths,
                 installBackend,
-                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
-                },
+                MakeProgressReporter(state, window),
                 cancelEvent
             );
             config->whisperPath = status.executable;
             config->whisperVersion = status.version;
             config->whisperBackend = status.whisperBackend;
-            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+            PostProgressDone(window, true);
         } catch (const std::exception& ex) {
             const std::string installError = ex.what();
             const ToolInstallStatus cpuStatus = WhisperManager::ResolveBackend(paths, WhisperBackend::Cpu);
@@ -2897,20 +2919,14 @@ void StartWhisperInstallWorker(DialogState* state) {
                     state->progressSuccessMessage =
                         L"dialog.cuda_whisper_is_installed_but_failed_the_launch_check_sw";
                 }
-                PostMessageW(window, kProgressDoneMessage, TRUE, 0);
+                PostProgressDone(window, true);
                 return;
             }
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(installError);
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            SetProgressFailure(state, LocalizedToolErrorText(installError));
+            PostProgressDone(window, false);
         } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"dialog.unknown_whisper_cpp_installation_error";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+            SetProgressFailure(state, ProgressTaskUnknownErrorMessage(ProgressTaskKind::WhisperInstall));
+            PostProgressDone(window, false);
         }
     });
 }
@@ -2920,46 +2936,18 @@ void StartWhisperModelDownloadWorker(DialogState* state) {
         return;
     }
 
-    HWND window = state->window;
     const AppPaths paths = *state->paths;
     AppConfig* config = state->config;
     HANDLE cancelEvent = state->cancelEvent;
     const std::optional<WhisperModelInfo> selectedModel = state->progressWhisperModel;
 
-    state->worker = std::jthread([state, window, paths, config, cancelEvent, selectedModel](std::stop_token) {
-        try {
-            const std::vector<WhisperModelInfo> catalog = WhisperManager::ModelCatalog();
-            const WhisperModelInfo* model = selectedModel ? &*selectedModel : RecommendedWhisperModel(catalog);
-            if (!model || model->id.empty()) {
-                throw std::runtime_error("whisper model catalog is empty");
-            }
-            const std::filesystem::path modelPath = WhisperManager::DownloadModel(
-                paths,
-                *model,
-                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
-                },
-                cancelEvent
-            );
-            config->whisperModelPath = modelPath;
-            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
-        } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(ex.what());
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"dialog.unknown_whisper_model_download_error";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+    StartProgressWorker(state, ProgressTaskKind::WhisperModelDownload, [paths, config, cancelEvent, selectedModel](const ProgressReporter& reportProgress) {
+        const std::vector<WhisperModelInfo> catalog = WhisperManager::ModelCatalog();
+        const WhisperModelInfo* model = selectedModel ? &*selectedModel : RecommendedWhisperModel(catalog);
+        if (!model || model->id.empty()) {
+            throw std::runtime_error("whisper model catalog is empty");
         }
+        config->whisperModelPath = WhisperManager::DownloadModel(paths, *model, reportProgress, cancelEvent);
     });
 }
 
@@ -2968,40 +2956,14 @@ void StartVotInstallWorker(DialogState* state) {
         return;
     }
 
-    HWND window = state->window;
     const AppPaths paths = *state->paths;
     AppConfig* config = state->config;
     HANDLE cancelEvent = state->cancelEvent;
 
-    state->worker = std::jthread([state, window, paths, config, cancelEvent](std::stop_token) {
-        try {
-            const VotExeStatus status = VotExeManager::Install(
-                paths,
-                [state, window](std::uint64_t downloaded, std::uint64_t total, const std::wstring& statusText) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, statusText};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
-                },
-                cancelEvent
-            );
-            config->votExePath = status.executable;
-            config->votExeVersion = status.version;
-            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
-        } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(ex.what());
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"dialog.unknown_vot_helper_installation_error";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        }
+    StartProgressWorker(state, ProgressTaskKind::VotInstall, [paths, config, cancelEvent](const ProgressReporter& reportProgress) {
+        const VotExeStatus status = VotExeManager::Install(paths, reportProgress, cancelEvent);
+        config->votExePath = status.executable;
+        config->votExeVersion = status.version;
     });
 }
 
@@ -3010,43 +2972,23 @@ void StartAppUpdateWorker(DialogState* state) {
         return;
     }
 
-    HWND window = state->window;
     const AppPaths paths = *state->paths;
     const ReleaseAssetInfo release = state->release;
     HANDLE cancelEvent = state->cancelEvent;
 
-    state->worker = std::jthread([state, window, paths, release, cancelEvent](std::stop_token) {
-        try {
-            const std::filesystem::path downloadedExe = AppUpdateService::DownloadUpdateExe(
-                paths,
-                release,
-                [state, window](std::uint64_t downloaded, std::uint64_t total) {
-                    {
-                        std::lock_guard lock(state->progressMutex);
-                        state->pendingProgress = ProgressUpdate{downloaded, total, L"dialog.downloading_update"};
-                    }
-                    PostMessageW(window, kProgressUpdateMessage, 0, 0);
-                },
-                cancelEvent
-            );
-            if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
-                throw std::runtime_error("operation canceled");
-            }
-            AppUpdateService::StartDownloadedUpdate(paths, downloadedExe);
-            PostMessageW(window, kProgressDoneMessage, TRUE, 0);
-        } catch (const std::exception& ex) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = LocalizedToolErrorText(ex.what());
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
-        } catch (...) {
-            {
-                std::lock_guard lock(state->progressMutex);
-                state->progressError = L"dialog.unknown_application_update_error";
-            }
-            PostMessageW(window, kProgressDoneMessage, FALSE, 0);
+    StartProgressWorker(state, ProgressTaskKind::AppUpdate, [paths, release, cancelEvent](const ProgressReporter& reportProgress) {
+        const std::filesystem::path downloadedExe = AppUpdateService::DownloadUpdateExe(
+            paths,
+            release,
+            [&reportProgress](std::uint64_t downloaded, std::uint64_t total) {
+                reportProgress(downloaded, total, L"dialog.downloading_update");
+            },
+            cancelEvent
+        );
+        if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+            throw std::runtime_error("operation canceled");
         }
+        AppUpdateService::StartDownloadedUpdate(paths, downloadedExe);
     });
 }
 
@@ -3985,6 +3927,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (state && state->type == DialogType::Progress) {
             state->progressDone = true;
             state->progressSuccess = wParam == TRUE;
+            const ProgressTaskKind progressKind = ProgressKindFor(state->progressMode);
+            const bool whisperModelReady = progressKind == ProgressTaskKind::WhisperInstall &&
+                IsRegularFile(ResolveDialogWhisperModelPath(state));
             if (state->progressSuccess) {
                 std::optional<std::wstring> successMessage;
                 {
@@ -3994,19 +3939,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 }
                 if (successMessage) {
                     state->message = *successMessage;
-                } else if (state->progressMode == ProgressMode::AppUpdate) {
-                    state->message = L"dialog.update_downloaded_the_application_will_close_and_restart";
-                } else if (state->progressMode == ProgressMode::WhisperInstall) {
-                    const bool modelReady = IsRegularFile(ResolveDialogWhisperModelPath(state));
-                    state->message = modelReady
-                        ? L"dialog.whisper_cpp_installed"
-                        : L"dialog.whisper_cpp_installed_now_download_a_model_the_model_win";
-                } else if (state->progressMode == ProgressMode::WhisperModelDownload) {
-                    state->message = L"dialog.whisper_model_downloaded";
-                } else if (state->progressMode == ProgressMode::VotInstall) {
-                    state->message = L"dialog.vot_helper_installed";
                 } else {
-                    state->message = L"dialog.ffmpeg_installed";
+                    state->message = ProgressTaskSuccessMessage(progressKind, whisperModelReady);
                 }
                 if (state->savedResult) {
                     *state->savedResult = true;
@@ -4022,24 +3956,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     error = std::move(state->progressError);
                     state->progressError.reset();
                 }
-                state->message = error
-                    ? *error
-                    : (state->progressMode == ProgressMode::AppUpdate
-                        ? L"dialog.failed_to_update_the_application"
-                        : (state->progressMode == ProgressMode::WhisperModelDownload
-                            ? L"dialog.failed_to_download_the_whisper_model"
-                            : (state->progressMode == ProgressMode::VotInstall
-                                ? L"dialog.failed_to_install_vot_helper"
-                                : (state->progressMode == ProgressMode::WhisperInstall
-                                    ? L"dialog.failed_to_install_whisper_cpp"
-                                    : L"dialog.failed_to_install_ffmpeg"))));
+                state->message = error ? *error : ProgressTaskFailureMessage(progressKind);
             }
-            const std::wstring doneButtonText =
-                state->progressSuccess &&
-                state->progressMode == ProgressMode::WhisperInstall &&
-                !IsRegularFile(ResolveDialogWhisperModelPath(state))
-                    ? L"dialog.models"
-                    : L"OK";
+            const std::wstring doneButtonText = ProgressDoneButtonText(
+                progressKind,
+                state->progressSuccess,
+                whisperModelReady
+            );
             SetDarkButtonState(window, IdCancel, state->progressSuccess, doneButtonText);
             InvalidateProgressContent(window);
         }
