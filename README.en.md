@@ -12,7 +12,9 @@ YoutubeDownloader is a portable Win32 application for downloading YouTube videos
 
 ![Translation settings](screenshots/settings3.png)
 
-![Tools settings](screenshots/settings4.png)
+![Additional settings](screenshots/settings4.png)
+
+![Tools settings](screenshots/settings5.png)
 
 ## Stack
 
