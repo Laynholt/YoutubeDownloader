@@ -176,6 +176,7 @@ struct ButtonState {
     bool enabled = true;
     bool hot = false;
     bool pressed = false;
+    std::wstring textKey;
     std::wstring text;
 };
 
@@ -230,6 +231,13 @@ struct ProgressUpdate {
     std::wstring status;
 };
 
+struct DialogTooltipState {
+    HWND tooltip = nullptr;
+    HWND tool = nullptr;
+    std::wstring key;
+    std::wstring text;
+};
+
 struct DialogState {
     DialogType type = DialogType::Info;
     HINSTANCE instance = nullptr;
@@ -258,7 +266,7 @@ struct DialogState {
     std::uint64_t progressTotal = 0;
     HWND tooltip = nullptr;
     std::vector<HWND> tooltips;
-    std::deque<std::wstring> tooltipTexts;
+    std::vector<DialogTooltipState> tooltipStates;
     HANDLE cancelEvent = nullptr;
     bool progressDone = false;
     bool progressSuccess = false;
@@ -276,9 +284,11 @@ struct DialogState {
     int selectedVotExecutableIndex = 0;
     std::filesystem::path* selectedVotExecutableResult = nullptr;
     std::vector<UiLanguage> uiLanguages;
+    std::wstring originalUiLanguage;
 };
 
 void ShowModal(DialogState* state, int width, int height);
+void RefreshSettingsButtons(DialogState* state);
 
 void CloseDialogWindow(HWND window) {
     ShowWindow(window, SW_HIDE);
@@ -779,8 +789,13 @@ void AddDialogTooltip(DialogState* state, HWND tool, std::wstring text) {
     if (!state || !tool) {
         return;
     }
-    state->tooltipTexts.push_back(Localization::UiText(text));
-    state->tooltips.push_back(CreateTooltip(state->window, tool, state->tooltipTexts.back().c_str()));
+    DialogTooltipState tooltipState;
+    tooltipState.tool = tool;
+    tooltipState.key = std::move(text);
+    tooltipState.text = Localization::UiText(tooltipState.key);
+    tooltipState.tooltip = CreateTooltip(state->window, tool, tooltipState.text.c_str());
+    state->tooltips.push_back(tooltipState.tooltip);
+    state->tooltipStates.push_back(std::move(tooltipState));
 }
 
 const WhisperModelInfo* RecommendedWhisperModel(const std::vector<WhisperModelInfo>& catalog);
@@ -1136,6 +1151,7 @@ HWND CreateDarkButton(HWND parent, HINSTANCE instance, const wchar_t* text, int 
     state->commandId = id;
     state->primary = primary;
     state->onCard = onCard;
+    state->textKey = text ? text : L"";
     state->text = Localization::UiText(text);
 
     HWND button = CreateWindowExW(
@@ -1162,6 +1178,12 @@ ButtonState* GetButtonState(HWND button) {
     return reinterpret_cast<ButtonState*>(GetWindowLongPtrW(button, GWLP_USERDATA));
 }
 
+bool IsDialogButton(HWND window) {
+    wchar_t className[64] = {};
+    GetClassNameW(window, className, static_cast<int>(ARRAYSIZE(className)));
+    return wcscmp(className, kDialogButtonClassName) == 0;
+}
+
 void SetDarkButtonState(HWND parent, int id, bool primary, const std::wstring& text = L"") {
     HWND button = GetDlgItem(parent, id);
     if (!button) {
@@ -1173,6 +1195,9 @@ void SetDarkButtonState(HWND parent, int id, bool primary, const std::wstring& t
     }
     const std::wstring translated = text.empty() ? std::wstring{} : Localization::UiText(text);
     const bool textChanged = !translated.empty() && state->text != translated;
+    if (!text.empty()) {
+        state->textKey = text;
+    }
     if (state->primary == primary && !textChanged) {
         return;
     }
@@ -1198,6 +1223,48 @@ void SetDarkButtonEnabled(HWND parent, int id, bool enabled) {
         state->hot = false;
     }
     InvalidateRect(button, nullptr, TRUE);
+}
+
+void UpdateDialogTooltipText(HWND tooltip, HWND owner, HWND tool, const std::wstring& text) {
+    if (!tooltip || !tool) {
+        return;
+    }
+    TOOLINFOW info = {};
+    info.cbSize = TooltipInfoSize();
+    info.uFlags = TTF_IDISHWND;
+    info.hwnd = owner;
+    info.uId = reinterpret_cast<UINT_PTR>(tool);
+    info.lpszText = const_cast<LPWSTR>(text.c_str());
+    SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&info));
+}
+
+void RelocalizeChildButtons(HWND parent) {
+    for (HWND child = GetWindow(parent, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
+        if (!IsDialogButton(child)) {
+            continue;
+        }
+        ButtonState* state = GetButtonState(child);
+        if (state && !state->textKey.empty()) {
+            state->text = Localization::UiText(state->textKey);
+            InvalidateRect(child, nullptr, TRUE);
+        }
+    }
+}
+
+void RelocalizeDialog(DialogState* state) {
+    if (!state || !state->window) {
+        return;
+    }
+    SetWindowTextW(state->window, Localization::UiText(state->title).c_str());
+    RelocalizeChildButtons(state->window);
+    for (DialogTooltipState& tooltip : state->tooltipStates) {
+        tooltip.text = Localization::UiText(tooltip.key);
+        UpdateDialogTooltipText(tooltip.tooltip, state->window, tooltip.tool, tooltip.text);
+    }
+    if (state->type == DialogType::Settings) {
+        RefreshSettingsButtons(state);
+    }
+    InvalidateRect(state->window, nullptr, FALSE);
 }
 
 void RefreshWhisperModelButtons(DialogState* state) {
@@ -4014,6 +4081,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             CloseHandle(state->cancelEvent);
             state->cancelEvent = nullptr;
         }
+        if (state &&
+            state->type == DialogType::Settings &&
+            state->paths &&
+            state->savedResult &&
+            !*state->savedResult) {
+            Localization::SetActive(Localization::Load(*state->paths, state->originalUiLanguage));
+        }
         delete state;
         SetWindowLongPtrW(window, GWLP_USERDATA, 0);
         return 0;
@@ -4525,9 +4599,12 @@ void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, i
         ownerState->workingConfig.voiceOverLanguage = value;
     } else {
         ownerState->workingConfig.uiLanguage = value.empty() ? L"ru" : value;
+        if (ownerState->paths) {
+            Localization::SetActive(Localization::Load(*ownerState->paths, ownerState->workingConfig.uiLanguage));
+        }
     }
     RefreshSettingsButtons(ownerState);
-    InvalidateRect(ownerState->window, nullptr, FALSE);
+    RelocalizeDialog(ownerState);
     DestroyWindow(menu);
 }
 
@@ -4950,6 +5027,7 @@ bool ShowSettingsDialog(
     state->paths = paths.root().empty() ? nullptr : &paths;
     state->config = &config;
     state->workingConfig = config;
+    state->originalUiLanguage = config.uiLanguage.empty() ? L"ru" : config.uiLanguage;
     state->uiLanguages = Localization::AvailableLanguages(paths);
     state->settingsSection = ToSettingsSection(initialSection);
     bool saved = false;

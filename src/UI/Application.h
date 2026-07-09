@@ -108,6 +108,10 @@ private:
     void SetStatus(const std::wstring& text);
     void SetTransientStatus(const std::wstring& text);
     void RestoreStatusText();
+    void SetPreviewTitleKey(const std::wstring& key);
+    void SetPreviewTitleRaw(const std::wstring& text);
+    void RelocalizeUi();
+    void RelocalizeMainTooltips();
     void InitializeBackend();
     void LoadDownloadQueue();
     void SaveDownloadQueue(bool forShutdown = false);
@@ -154,6 +158,8 @@ private:
     HBRUSH m_panelBrush = nullptr;
     HWND m_tooltip = nullptr;
     std::deque<std::wstring> m_tooltipTexts;
+    std::deque<std::wstring> m_tooltipKeys;
+    std::vector<HWND> m_tooltipTools;
     ULONG_PTR m_gdiplusToken = 0;
 
     std::unique_ptr<AppPaths> m_paths;
@@ -184,6 +190,8 @@ private:
     bool m_queueMouseTracking = false;
     bool m_shutdownStarted = false;
     bool m_comInitialized = false;
+    std::wstring m_statusTextKey;
+    std::wstring m_previewTitleKey;
     int m_previewLoadingDots = 3;
     int m_hotQueueTaskId = 0;
     int m_hotQueueAction = 0;

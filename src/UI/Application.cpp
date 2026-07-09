@@ -84,6 +84,7 @@ struct ButtonState {
     bool hot = false;
     bool pressed = false;
     bool enabled = true;
+    std::wstring textKey;
     std::wstring text;
 };
 
@@ -135,6 +136,32 @@ void StopAndJoin(std::jthread& worker) {
     }
     worker.request_stop();
     worker.join();
+}
+
+ButtonState* GetButtonState(HWND button) {
+    return reinterpret_cast<ButtonState*>(GetWindowLongPtrW(button, GWLP_USERDATA));
+}
+
+void RelocalizeButton(HWND button) {
+    ButtonState* state = GetButtonState(button);
+    if (!state || state->textKey.empty()) {
+        return;
+    }
+    state->text = Localization::UiText(state->textKey);
+    InvalidateRect(button, nullptr, TRUE);
+}
+
+void UpdateTooltipText(HWND tooltip, HWND owner, HWND tool, const std::wstring& text) {
+    if (!tooltip || !tool) {
+        return;
+    }
+    TOOLINFOW info = {};
+    info.cbSize = sizeof(info);
+    info.uFlags = TTF_IDISHWND;
+    info.hwnd = owner;
+    info.uId = reinterpret_cast<UINT_PTR>(tool);
+    info.lpszText = const_cast<LPWSTR>(text.c_str());
+    SendMessageW(tooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&info));
 }
 
 HWND CreateChild(HWND parent, const wchar_t* className, const wchar_t* text, DWORD style, DWORD exStyle, int id) {
@@ -1647,12 +1674,21 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     std::lock_guard lock(m_previewMutex);
                     m_preview = result.preview;
                 }
-                std::wstring title = result.preview.title.empty() ? L"app.video_found" : result.preview.title;
-                if (result.preview.isPlaylist) {
-                    title += L"app.playlist" + std::to_wstring(result.preview.entries.size()) + L"app.videos";
+                if (result.preview.title.empty()) {
+                    std::wstring title = L"app.video_found";
+                    if (result.preview.isPlaylist) {
+                        title += L"app.playlist" + std::to_wstring(result.preview.entries.size()) + L"app.videos";
+                    }
+                    SetPreviewTitleKey(title);
+                } else {
+                    std::wstring title = result.preview.title;
+                    if (result.preview.isPlaylist) {
+                        title += Localization::UiText(L"app.playlist") +
+                            std::to_wstring(result.preview.entries.size()) +
+                            Localization::UiText(L"app.videos");
+                    }
+                    SetPreviewTitleRaw(title);
                 }
-                const std::wstring translatedTitle = Localization::UiText(title);
-                SetWindowTextW(m_previewTitle, translatedTitle.c_str());
                 if (m_downloadQueue) {
                     bool enriched = m_downloadQueue->EnrichMetadata(
                         result.url,
@@ -1680,8 +1716,11 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                     std::lock_guard lock(m_previewMutex);
                     m_preview = {};
                 }
-                const std::wstring previewError = Localization::UiText(result.error.empty() ? L"app.failed_to_fetch_preview" : result.error);
-                SetWindowTextW(m_previewTitle, previewError.c_str());
+                if (result.error.empty()) {
+                    SetPreviewTitleKey(L"app.failed_to_fetch_preview");
+                } else {
+                    SetPreviewTitleRaw(Localization::UiText(result.error));
+                }
                 if (m_logger) {
                     m_logger->Error(L"Preview failed: url=" + result.url + L" error=" + result.error);
                 }
@@ -1722,6 +1761,7 @@ HWND Application::CreateButton(const wchar_t* text, int id, bool primary, bool o
     state->commandId = id;
     state->primary = primary;
     state->onPanel = onPanel;
+    state->textKey = text ? text : L"";
     state->text = Localization::UiText(text);
 
     HWND button = CreateWindowExW(
@@ -1768,6 +1808,7 @@ void Application::CreateControls() {
         0,
         0
     );
+    m_previewTitleKey = L"app.paste_a_video_or_playlist_link_above";
     m_folderEdit = CreateChild(m_window, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, 0, 0);
     InstallCustomEditContextMenu(m_folderEdit, m_window, m_instance);
     SendMessageW(m_folderEdit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
@@ -1781,12 +1822,15 @@ void Application::CreateControls() {
     m_clearFinishedButton = CreateButton(L"X", IdClearFinishedButton, false, false);
     m_settingsButton = CreateButton(L"app.settings", IdSettingsButton, false, false);
     m_statusLabel = CreateChild(m_window, L"STATIC", L"app.preparing_interface", SS_LEFT, 0, 0);
+    m_statusTextKey = L"app.preparing_interface";
     m_queueLabel = CreateChild(m_window, L"STATIC", L"app.download_queue", SS_LEFT, 0, 0);
     m_queuePlaceholder = CreateChild(m_window, L"STATIC", L"app.no_tasks_yet", SS_CENTER, 0, 0);
 
     SetControlFonts();
     m_tooltip = CreateTooltipWindow(m_window);
     const auto addTooltip = [this](HWND tool, const wchar_t* text) {
+        m_tooltipTools.push_back(tool);
+        m_tooltipKeys.push_back(text ? text : L"");
         m_tooltipTexts.push_back(Localization::UiText(text));
         AddTooltip(m_tooltip, m_window, tool, m_tooltipTexts.back().c_str());
     };
@@ -2395,6 +2439,7 @@ void Application::SetControlFonts() {
 }
 
 void Application::SetStatus(const std::wstring& text) {
+    m_statusTextKey = text;
     if (m_statusLabel) {
         const std::wstring translated = Localization::UiText(text);
         SetWindowTextW(m_statusLabel, translated.c_str());
@@ -2423,6 +2468,60 @@ void Application::RestoreStatusText() {
     } else {
         SetStatus(L"app.checking_yt_dlp");
     }
+}
+
+void Application::SetPreviewTitleKey(const std::wstring& key) {
+    m_previewTitleKey = key;
+    if (m_previewTitle) {
+        const std::wstring translated = Localization::UiText(key);
+        SetWindowTextW(m_previewTitle, translated.c_str());
+    }
+}
+
+void Application::SetPreviewTitleRaw(const std::wstring& text) {
+    m_previewTitleKey.clear();
+    if (m_previewTitle) {
+        SetWindowTextW(m_previewTitle, text.c_str());
+    }
+}
+
+void Application::RelocalizeMainTooltips() {
+    const size_t count = std::min({m_tooltipTools.size(), m_tooltipKeys.size(), m_tooltipTexts.size()});
+    for (size_t i = 0; i < count; ++i) {
+        m_tooltipTexts[i] = Localization::UiText(m_tooltipKeys[i]);
+        UpdateTooltipText(m_tooltip, m_window, m_tooltipTools[i], m_tooltipTexts[i]);
+    }
+}
+
+void Application::RelocalizeUi() {
+    if (!m_window) {
+        return;
+    }
+
+    const std::wstring urlCue = Localization::UiText(L"app.video_or_playlist_url");
+    SendMessageW(m_urlEdit, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(urlCue.c_str()));
+    for (HWND button : {
+        m_pasteButton,
+        m_chooseFolderButton,
+        m_downloadButton,
+        m_clearButton,
+        m_openFolderButton,
+        m_logsButton,
+        m_clearFinishedButton,
+        m_settingsButton
+    }) {
+        RelocalizeButton(button);
+    }
+    if (!m_statusTextKey.empty()) {
+        SetStatus(m_statusTextKey);
+    }
+    if (!m_previewTitleKey.empty()) {
+        SetPreviewTitleKey(m_previewTitleKey);
+    }
+    SetWindowTextW(m_queueLabel, Localization::UiText(L"app.download_queue").c_str());
+    SetWindowTextW(m_queuePlaceholder, Localization::UiText(L"app.no_tasks_yet").c_str());
+    RelocalizeMainTooltips();
+    InvalidateRect(m_window, nullptr, FALSE);
 }
 
 void Application::StartPreviewLoadingText() {
@@ -2459,7 +2558,8 @@ void Application::UpdatePreviewLoadingText() {
 
     std::wstring text = L"app.reading_information_please_wait";
     text.append(static_cast<size_t>(m_previewLoadingDots), L'.');
-    SetWindowTextW(m_previewTitle, text.c_str());
+    SetPreviewTitleRaw(Localization::UiText(text));
+    m_previewTitleKey = L"app.reading_information_please_wait";
     m_previewLoadingDots = m_previewLoadingDots <= 1 ? 3 : m_previewLoadingDots - 1;
 }
 
@@ -2696,8 +2796,7 @@ void Application::StartPreviewFetch() {
             m_preview = {};
         }
         if (m_previewTitle) {
-            const std::wstring previewText = Localization::UiText(L"app.paste_a_link_to_fetch_the_title_and_preview");
-            SetWindowTextW(m_previewTitle, previewText.c_str());
+            SetPreviewTitleKey(L"app.paste_a_link_to_fetch_the_title_and_preview");
         }
         InvalidateRect(m_window, nullptr, FALSE);
         return;
@@ -2833,6 +2932,8 @@ bool Application::ShowAndSaveSettings(SettingsInitialSection initialSection) {
     }
 
     ConfigStore::Save(*m_paths, m_config);
+    Localization::SetActive(Localization::Load(*m_paths, m_config.uiLanguage));
+    RelocalizeUi();
     m_ffmpeg = FfmpegManager::Resolve(*m_paths, m_config);
     if (m_downloadQueue) {
         m_downloadQueue->SetMaxParallelDownloads(m_config.maxParallelDownloads);
