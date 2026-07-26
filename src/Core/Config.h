@@ -50,6 +50,7 @@ struct AppConfig {
     std::wstring votExeVersion;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
+    std::wstring sponsorBlockMode = L"off";
     std::wstring uiLanguage = L"ru";
     TranscriptionEngine transcriptionEngine = TranscriptionEngine::Whisper;
     WhisperBackend whisperBackend = WhisperBackend::Auto;

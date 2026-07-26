@@ -77,6 +77,14 @@ std::wstring LowerAscii(std::wstring value) {
     return value;
 }
 
+std::wstring NormalizeSponsorBlockMode(const std::wstring& value) {
+    const std::wstring normalized = LowerAscii(value);
+    if (normalized == L"sponsor" || normalized == L"sponsor_selfpromo") {
+        return normalized;
+    }
+    return L"off";
+}
+
 TranscriptionEngine TranscriptionEngineFromJson(
     const nlohmann::json& json,
     const char* key,
@@ -296,6 +304,9 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.votExeVersion = WStringFromJson(json, "vot_exe_version", config.votExeVersion);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
+        config.sponsorBlockMode = NormalizeSponsorBlockMode(
+            WStringFromJson(json, "sponsorblock_mode", config.sponsorBlockMode)
+        );
         config.uiLanguage = WStringFromJson(json, "ui_language", config.uiLanguage);
         config.transcriptionEngine = TranscriptionEngineFromJson(json, "transcription_engine", config.transcriptionEngine);
         config.whisperBackend = WhisperBackendFromJson(json, "whisper_backend", config.whisperBackend);
@@ -343,6 +354,7 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["vot_exe_version"] = WideToUtf8(config.votExeVersion);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
+    json["sponsorblock_mode"] = WideToUtf8(NormalizeSponsorBlockMode(config.sponsorBlockMode));
     json["ui_language"] = WideToUtf8(config.uiLanguage.empty() ? L"ru" : config.uiLanguage);
     json["transcription_engine"] = WideToUtf8(TranscriptionEngineToConfigValue(config.transcriptionEngine));
     json["whisper_backend"] = WideToUtf8(WhisperBackendToConfigValue(config.whisperBackend));

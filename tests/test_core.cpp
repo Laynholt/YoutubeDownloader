@@ -95,6 +95,7 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(fs::is_regular_file(paths.configPath()), "default config should be created on first load");
     Require(defaults.quality == L"max", "default quality mismatch");
     Require(defaults.container == L"auto", "default container mismatch");
+    Require(defaults.sponsorBlockMode == L"off", "default SponsorBlock mode mismatch");
     Require(defaults.uiLanguage == L"ru", "default UI language mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
     Require(defaults.autoUpdateApp == true, "default app auto update mismatch");
@@ -131,6 +132,7 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.subtitleFfmpegMode = SubtitleFfmpegMode::BurnIn;
     saved.quality = L"720p";
     saved.container = L"mp4";
+    saved.sponsorBlockMode = L"sponsor_selfpromo";
     saved.uiLanguage = L"en";
     saved.maxParallelDownloads = 5;
     saved.autoUpdateApp = true;
@@ -160,11 +162,27 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.subtitleFfmpegMode == SubtitleFfmpegMode::BurnIn, "subtitle ffmpeg mode round-trip mismatch");
     Require(loaded.quality == L"720p", "quality round-trip mismatch");
     Require(loaded.container == L"mp4", "container round-trip mismatch");
+    Require(loaded.sponsorBlockMode == L"sponsor_selfpromo", "SponsorBlock mode round-trip mismatch");
     Require(loaded.uiLanguage == L"en", "UI language round-trip mismatch");
     Require(loaded.maxParallelDownloads == 5, "max parallel round-trip mismatch");
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
+}
+
+void TestConfigNormalizesSponsorBlockMode() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_SponsorBlockMode");
+    const AppPaths paths(root);
+    fs::create_directories(paths.configPath().parent_path());
+    {
+        std::ofstream out(paths.configPath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"sponsorblock_mode":"unexpected"})json";
+    }
+
+    Require(
+        ConfigStore::Load(paths).sponsorBlockMode == L"off",
+        "unknown SponsorBlock mode should normalize to off"
+    );
 }
 
 void TestConfigNormalizesPostProcessingLanguageOptions() {
@@ -3672,6 +3690,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreRoundTripSnapshots();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
+    TestConfigNormalizesSponsorBlockMode();
     TestConfigNormalizesPostProcessingLanguageOptions();
     TestLocalizationLoadsExternalLanguageWithRussianFallback();
     TestDownloadAttemptResolution();
