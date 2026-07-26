@@ -439,6 +439,16 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
         args.push_back(request.container);
     }
 
+    if (request.sponsorBlockMode == L"sponsor" ||
+        request.sponsorBlockMode == L"sponsor_selfpromo") {
+        args.push_back(L"--sponsorblock-remove");
+        args.push_back(
+            request.sponsorBlockMode == L"sponsor_selfpromo"
+                ? L"sponsor,selfpromo"
+                : L"sponsor"
+        );
+    }
+
     args.push_back(request.url);
     return args;
 }

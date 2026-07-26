@@ -1277,7 +1277,26 @@ void TestYtDlpDownloadArguments() {
             L"bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]",
         "mp4 container should request mp4-compatible streams"
     );
+    Require(
+        !ContainsArg(args, L"--sponsorblock-remove"),
+        "SponsorBlock should be disabled by default"
+    );
     Require(args.back() == request.url, "url should be last argument");
+
+    request.sponsorBlockMode = L"sponsor";
+    const std::vector<std::wstring> sponsorArgs = BuildDownloadArguments(request);
+    Require(
+        sponsorArgs.at(ArgIndex(sponsorArgs, L"--sponsorblock-remove") + 1) == L"sponsor",
+        "sponsor mode argument mismatch"
+    );
+
+    request.sponsorBlockMode = L"sponsor_selfpromo";
+    const std::vector<std::wstring> allPromoArgs = BuildDownloadArguments(request);
+    Require(
+        allPromoArgs.at(ArgIndex(allPromoArgs, L"--sponsorblock-remove") + 1) ==
+            L"sponsor,selfpromo",
+        "sponsor and self-promotion argument mismatch"
+    );
 
     request.container = L"webm";
     const std::vector<std::wstring> webmArgs = BuildDownloadArguments(request);
@@ -2312,6 +2331,7 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     task.request.ffmpegExePath = root / L"tools" / L"ffmpeg.exe";
     task.request.quality = L"1080p";
     task.request.container = L"mp4";
+    task.request.sponsorBlockMode = L"sponsor_selfpromo";
     task.request.ffmpegAvailable = true;
     task.title = L"Round Trip";
     task.thumbnailPath = root / L"stuff" / L"thumb_cache" / L"thumb.jpg";
@@ -2342,6 +2362,10 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     Require(restored.request.ffmpegExePath == task.request.ffmpegExePath, "restored ffmpeg path mismatch");
     Require(restored.request.quality == L"1080p", "restored quality mismatch");
     Require(restored.request.container == L"mp4", "restored container mismatch");
+    Require(
+        restored.request.sponsorBlockMode == L"sponsor_selfpromo",
+        "restored SponsorBlock mode mismatch"
+    );
     Require(restored.request.ffmpegAvailable, "restored ffmpeg flag mismatch");
     Require(restored.title == L"Round Trip", "restored title mismatch");
     Require(restored.thumbnailPath == task.thumbnailPath, "restored thumbnail path mismatch");
@@ -2358,6 +2382,28 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     Require(restored.extension == L"mp4", "restored extension mismatch");
     Require(restored.resolution == L"1080p", "restored resolution mismatch");
     Require(restored.outputFiles == task.outputFiles, "restored output files mismatch");
+}
+
+void TestDownloadQueueStoreNormalizesSponsorBlockMode() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStoreSponsorBlockMode");
+    const AppPaths paths(root);
+    fs::create_directories(paths.stuffDir());
+    {
+        std::ofstream out(paths.downloadQueuePath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"version":1,"tasks":[{"id":1,"url":"https://example.invalid/default"},{"id":2,"url":"https://example.invalid/unknown","sponsorblock_mode":"unexpected"}]})json";
+    }
+
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+
+    Require(loaded.size() == 2, "queue store should load SponsorBlock compatibility fixtures");
+    Require(
+        loaded[0].request.sponsorBlockMode == L"off",
+        "missing SponsorBlock mode should default to off"
+    );
+    Require(
+        loaded[1].request.sponsorBlockMode == L"off",
+        "unknown SponsorBlock mode should normalize to off"
+    );
 }
 
 void TestDownloadQueueStoreSkipsInvalidEntries() {
@@ -3688,6 +3734,7 @@ int main(int argc, char** argv) {
     }
     TestAppPaths();
     TestDownloadQueueStoreRoundTripSnapshots();
+    TestDownloadQueueStoreNormalizesSponsorBlockMode();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigNormalizesSponsorBlockMode();

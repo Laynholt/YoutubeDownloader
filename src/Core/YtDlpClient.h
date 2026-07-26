@@ -19,6 +19,7 @@ struct YtDlpDownloadRequest {
     std::filesystem::path ffmpegExePath;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
+    std::wstring sponsorBlockMode = L"off";
     bool ffmpegAvailable = false;
 };
 

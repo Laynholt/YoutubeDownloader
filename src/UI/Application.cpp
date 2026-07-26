@@ -2891,6 +2891,7 @@ void Application::EnqueueCurrentUrl() {
         request.ffmpegAvailable = m_ffmpeg.available;
         request.quality = m_config.quality;
         request.container = m_config.container;
+        request.sponsorBlockMode = m_config.sponsorBlockMode;
         return request;
     };
 

@@ -39,6 +39,13 @@ std::wstring WStringFromJson(const nlohmann::json& json, const char* key, const 
     return Utf8ToWide(it->get<std::string>());
 }
 
+std::wstring NormalizeSponsorBlockMode(const std::wstring& value) {
+    if (value == L"sponsor" || value == L"sponsor_selfpromo") {
+        return value;
+    }
+    return L"off";
+}
+
 std::uint64_t UInt64FromJson(const nlohmann::json& json, const char* key) {
     const auto it = json.find(key);
     if (it == json.end() || !it->is_number_unsigned()) {
@@ -129,6 +136,7 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["ffmpeg_exe_path"] = PathToJsonString(task.request.ffmpegExePath);
     json["quality"] = WideToUtf8(task.request.quality);
     json["container"] = WideToUtf8(task.request.container);
+    json["sponsorblock_mode"] = WideToUtf8(task.request.sponsorBlockMode);
     json["ffmpeg_available"] = task.request.ffmpegAvailable;
     json["title"] = WideToUtf8(task.title);
     json["thumbnail_path"] = PathToJsonString(task.thumbnailPath);
@@ -169,6 +177,9 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     task.request.ffmpegExePath = PathFromJsonString(json, "ffmpeg_exe_path");
     task.request.quality = WStringFromJson(json, "quality", L"max");
     task.request.container = WStringFromJson(json, "container", L"auto");
+    task.request.sponsorBlockMode = NormalizeSponsorBlockMode(
+        WStringFromJson(json, "sponsorblock_mode", L"off")
+    );
     task.request.ffmpegAvailable = BoolFromJson(json, "ffmpeg_available");
     task.title = WStringFromJson(json, "title");
     task.thumbnailPath = PathFromJsonString(json, "thumbnail_path");
