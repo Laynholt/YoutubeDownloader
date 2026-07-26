@@ -1632,6 +1632,10 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     "dialog.application_language": "Application language",
     "app.queue_cleared_removed": "Queue cleared: removed ",
     "app.tasks": " tasks",
+    "dialog.sponsorblock": "SponsorBlock",
+    "dialog.sponsorblock_off": "Do not remove",
+    "dialog.sponsorblock_sponsor": "Sponsor integrations only",
+    "dialog.sponsorblock_sponsor_selfpromo": "Integrations and self-promotion",
     "Настройки": "Settings"
   }
 })json";
@@ -1650,9 +1654,18 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     const Localization english = Localization::Load(paths, L"en");
     Require(english.currentLanguageId() == L"en", "selected external language mismatch");
     Require(english.Text(L"dialog.application_language") == L"Application language", "external text mismatch");
+    Require(
+        english.Text(L"dialog.sponsorblock_sponsor_selfpromo") ==
+            L"Integrations and self-promotion",
+        "external SponsorBlock mode text mismatch"
+    );
     Require(english.Text(L"dialog.language_will_apply_after_restart") == L"Язык будет применён сразу после сохранения.", "missing key should fall back to Russian");
     Require(english.Text(L"app.queue_cleared_removed2app.tasks") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known key fragments");
     Require(english.Text(L"Настройки") == L"Настройки", "legacy Russian-key translation should be ignored");
+    Require(
+        Localization().Text(L"dialog.sponsorblock_off") == L"Ничего не вырезать",
+        "Russian SponsorBlock mode text mismatch"
+    );
 
     const Localization missing = Localization::Load(paths, L"zz");
     Require(missing.currentLanguageId() == L"ru", "missing language should fall back to Russian");

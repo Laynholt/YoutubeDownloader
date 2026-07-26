@@ -165,6 +165,7 @@ enum DialogCommand {
     IdWhisperModelChooseFolder = 156,
     IdUiLanguage = 157,
     IdSettingsNavAdditional = 158,
+    IdSponsorBlock = 159,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -211,15 +212,16 @@ struct LogCopyMenuState {
     bool hot = false;
 };
 
-enum class SettingsLanguageTarget {
+enum class SettingsComboTarget {
     VotSubtitle,
     VoiceOver,
-    Interface
+    Interface,
+    SponsorBlock
 };
 
 struct SettingsComboMenuState {
     HWND owner = nullptr;
-    SettingsLanguageTarget target = SettingsLanguageTarget::VotSubtitle;
+    SettingsComboTarget target = SettingsComboTarget::VotSubtitle;
     std::vector<std::wstring> values;
     std::vector<std::wstring> labels;
     int hotIndex = -1;
@@ -363,8 +365,12 @@ RECT SettingsStackCardRect(const DialogState* state, int width, int height, int 
 }
 
 RECT SettingsDownloadsParallelCardRect(const DialogState* state, int width, int height) {
-    const RECT previous = SettingsStackCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
+    const RECT previous = SettingsStackCardRect(state, width, height, 2, kSettingsChoiceCardHeight);
     return {previous.left, previous.bottom + kSettingsCardGap, previous.right, previous.bottom + kSettingsCardGap + kSettingsParallelCardHeight};
+}
+
+RECT SettingsSponsorBlockCardRect(const DialogState* state, int width, int height) {
+    return SettingsStackCardRect(state, width, height, 2, kSettingsChoiceCardHeight);
 }
 
 RECT SettingsCardBelow(const RECT& previous, int cardHeight) {
@@ -669,6 +675,16 @@ std::vector<std::wstring> VoiceLanguageOptions() {
 
 std::wstring SettingsLanguageButtonText(const std::wstring& value) {
     return (value.empty() ? L"auto" : value) + L"  ▾";
+}
+
+std::wstring SponsorBlockModeButtonText(const std::wstring& mode) {
+    const wchar_t* key =
+        mode == L"sponsor"
+            ? L"dialog.sponsorblock_sponsor"
+            : mode == L"sponsor_selfpromo"
+                ? L"dialog.sponsorblock_sponsor_selfpromo"
+                : L"dialog.sponsorblock_off";
+    return Localization::UiText(key) + L"  ▾";
 }
 
 std::wstring InterfaceLanguageButtonText(const DialogState* state) {
@@ -1334,6 +1350,7 @@ void RefreshSettingsButtons(DialogState* state) {
         state->workingConfig.autoUpdateApp ? L"dialog.auto_check_on" : L"dialog.auto_check_off"
     );
     SetDarkButtonState(state->window, IdUiLanguage, false, InterfaceLanguageButtonText(state));
+    SetDarkButtonState(state->window, IdSponsorBlock, false, SponsorBlockModeButtonText(state->workingConfig.sponsorBlockMode));
     SetDarkButtonState(state->window, IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
     SetDarkButtonState(state->window, IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
     SetDarkButtonState(state->window, IdVotSubtitleLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.votSubtitleLanguage));
@@ -1759,6 +1776,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND checkUpdates = GetDlgItem(state->window, IdCheckUpdates);
     HWND autoUpdate = GetDlgItem(state->window, IdAutoUpdate);
     HWND uiLanguage = GetDlgItem(state->window, IdUiLanguage);
+    HWND sponsorBlock = GetDlgItem(state->window, IdSponsorBlock);
     HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
     HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
     HWND transcriptionWhisper = GetDlgItem(state->window, IdTranscriptionWhisper);
@@ -1791,6 +1809,10 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     }
     if (parallelPlus) {
         MoveWindow(parallelPlus, parallelValue.right + kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
+    }
+    card = SettingsSponsorBlockCardRect(state, width, height);
+    if (sponsorBlock) {
+        MoveWindow(sponsorBlock, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 300, 34, TRUE);
     }
 
     card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
@@ -1915,7 +1937,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
 
     SetControlsVisible(state->window, {
         101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
-        IdParallelMinus, IdParallelPlus
+        IdParallelMinus, IdParallelPlus, IdSponsorBlock
     }, state->settingsSection == SettingsSection::Downloads);
     SetControlsVisible(state->window, {
         IdAutoUpdate, IdUiLanguage
@@ -2479,6 +2501,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     if (state->settingsSection == SettingsSection::Downloads) {
         DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight), L"dialog.quality", L"dialog.default_quality_for_new_downloads", labelFont, textFont);
         DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 1, kSettingsChoiceCardHeight), L"dialog.container", L"dialog.final_file_container_without_changing_naming", labelFont, textFont);
+        DrawSettingsCard(dc, SettingsSponsorBlockCardRect(state, client.right, client.bottom), L"dialog.sponsorblock", L"dialog.sponsorblock_segments_to_remove", labelFont, textFont);
         const RECT behaviorCard = SettingsDownloadsParallelCardRect(state, client.right, client.bottom);
         DrawSettingsCard(dc, behaviorCard, L"dialog.parallelism", L"dialog.how_many_tasks_can_download_at_the_same_time", labelFont, textFont);
         DrawTextBlock(
@@ -3100,6 +3123,13 @@ void CreateSettingsControls(DialogState* state) {
         IdUiLanguage,
         false
     );
+    HWND sponsorBlockButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        SponsorBlockModeButtonText(state->workingConfig.sponsorBlockMode).c_str(),
+        IdSponsorBlock,
+        false
+    );
     HWND minusButton = CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
     HWND plusButton = CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
     HWND checkUpdatesButton = CreateDarkButton(state->window, state->instance, L"dialog.check_for_updates", IdCheckUpdates, false);
@@ -3139,6 +3169,7 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, whisperDetailsButton, L"dialog.shows_or_hides_whisper_cpp_and_model_paths");
     AddDialogTooltip(state, votDetailsButton, L"dialog.shows_or_hides_the_vot_helper_exe_path");
     AddDialogTooltip(state, autoUpdateButton, L"dialog.enables_or_disables_automatic_application_update_checks");
+    AddDialogTooltip(state, sponsorBlockButton, L"dialog.selects_sponsorblock_segments_for_new_downloads");
     AddDialogTooltip(state, minusButton, L"dialog.decreases_the_number_of_parallel_downloads");
     AddDialogTooltip(state, plusButton, L"dialog.increases_the_number_of_parallel_downloads");
     AddDialogTooltip(state, checkUpdatesButton, L"dialog.checks_for_a_new_application_version");
@@ -3205,7 +3236,7 @@ void RegisterDialogClasses(HINSTANCE instance) {
     RegisterClassExW(&comboMenuClass);
 }
 
-void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, SettingsLanguageTarget target) {
+void ShowSettingsComboMenu(DialogState* state, HWND anchor, SettingsComboTarget target) {
     if (!state || !state->window || !anchor) {
         return;
     }
@@ -3214,17 +3245,25 @@ void ShowSettingsLanguageMenu(DialogState* state, HWND anchor, SettingsLanguageT
     menuState->owner = state->window;
     menuState->target = target;
     switch (target) {
-    case SettingsLanguageTarget::VotSubtitle:
+    case SettingsComboTarget::VotSubtitle:
         menuState->values = VotSubtitleLanguageOptions();
         break;
-    case SettingsLanguageTarget::VoiceOver:
+    case SettingsComboTarget::VoiceOver:
         menuState->values = VoiceLanguageOptions();
         break;
-    case SettingsLanguageTarget::Interface:
+    case SettingsComboTarget::Interface:
         for (const UiLanguage& language : state->uiLanguages) {
             menuState->values.push_back(language.id);
             menuState->labels.push_back(language.name);
         }
+        break;
+    case SettingsComboTarget::SponsorBlock:
+        menuState->values = {L"off", L"sponsor", L"sponsor_selfpromo"};
+        menuState->labels = {
+            L"dialog.sponsorblock_off",
+            L"dialog.sponsorblock_sponsor",
+            L"dialog.sponsorblock_sponsor_selfpromo"
+        };
         break;
     default:
         menuState->values = VotSubtitleLanguageOptions();
@@ -3584,7 +3623,10 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 RefreshSettingsButtons(state);
                 return 0;
             case IdUiLanguage:
-                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdUiLanguage), SettingsLanguageTarget::Interface);
+                ShowSettingsComboMenu(state, GetDlgItem(window, IdUiLanguage), SettingsComboTarget::Interface);
+                return 0;
+            case IdSponsorBlock:
+                ShowSettingsComboMenu(state, GetDlgItem(window, IdSponsorBlock), SettingsComboTarget::SponsorBlock);
                 return 0;
             case IdParallelMinus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 1, 10);
@@ -3614,13 +3656,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (!IsVotReady(state)) {
                     return 0;
                 }
-                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVotSubtitleLanguageEdit), SettingsLanguageTarget::VotSubtitle);
+                ShowSettingsComboMenu(state, GetDlgItem(window, IdVotSubtitleLanguageEdit), SettingsComboTarget::VotSubtitle);
                 return 0;
             case IdVoiceLanguageEdit:
                 if (!IsVotReady(state)) {
                     return 0;
                 }
-                ShowSettingsLanguageMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), SettingsLanguageTarget::VoiceOver);
+                ShowSettingsComboMenu(state, GetDlgItem(window, IdVoiceLanguageEdit), SettingsComboTarget::VoiceOver);
                 return 0;
             case IdVoiceModeOff:
                 if (!IsVotReady(state)) {
@@ -4516,15 +4558,22 @@ void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, i
     }
 
     const std::wstring value = menuState->values[static_cast<size_t>(index)];
-    if (menuState->target == SettingsLanguageTarget::VotSubtitle) {
+    switch (menuState->target) {
+    case SettingsComboTarget::VotSubtitle:
         ownerState->workingConfig.votSubtitleLanguage = value;
-    } else if (menuState->target == SettingsLanguageTarget::VoiceOver) {
+        break;
+    case SettingsComboTarget::VoiceOver:
         ownerState->workingConfig.voiceOverLanguage = value;
-    } else {
+        break;
+    case SettingsComboTarget::Interface:
         ownerState->workingConfig.uiLanguage = value.empty() ? L"ru" : value;
         if (ownerState->paths) {
             Localization::SetActive(Localization::Load(*ownerState->paths, ownerState->workingConfig.uiLanguage));
         }
+        break;
+    case SettingsComboTarget::SponsorBlock:
+        ownerState->workingConfig.sponsorBlockMode = value;
+        break;
     }
     RefreshSettingsButtons(ownerState);
     RelocalizeDialog(ownerState);
