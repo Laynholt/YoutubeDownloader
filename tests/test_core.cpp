@@ -1633,9 +1633,11 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     "app.queue_cleared_removed": "Queue cleared: removed ",
     "app.tasks": " tasks",
     "dialog.sponsorblock": "SponsorBlock",
+    "dialog.sponsorblock_segments_to_remove": "Which promotional segments to remove after downloading.",
     "dialog.sponsorblock_off": "Do not remove",
     "dialog.sponsorblock_sponsor": "Sponsor integrations only",
     "dialog.sponsorblock_sponsor_selfpromo": "Integrations and self-promotion",
+    "dialog.selects_sponsorblock_segments_for_new_downloads": "Selects SponsorBlock segments for new downloads.",
     "Настройки": "Settings"
   }
 })json";
@@ -1654,17 +1656,48 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     const Localization english = Localization::Load(paths, L"en");
     Require(english.currentLanguageId() == L"en", "selected external language mismatch");
     Require(english.Text(L"dialog.application_language") == L"Application language", "external text mismatch");
+    Require(english.Text(L"dialog.sponsorblock") == L"SponsorBlock", "external SponsorBlock label mismatch");
     Require(
-        english.Text(L"dialog.sponsorblock_sponsor_selfpromo") ==
-            L"Integrations and self-promotion",
-        "external SponsorBlock mode text mismatch"
+        english.Text(L"dialog.sponsorblock_segments_to_remove") ==
+            L"Which promotional segments to remove after downloading.",
+        "external SponsorBlock description mismatch"
+    );
+    Require(english.Text(L"dialog.sponsorblock_off") == L"Do not remove", "external SponsorBlock off mode mismatch");
+    Require(
+        english.Text(L"dialog.sponsorblock_sponsor") == L"Sponsor integrations only",
+        "external SponsorBlock sponsor mode mismatch"
+    );
+    Require(
+        english.Text(L"dialog.sponsorblock_sponsor_selfpromo") == L"Integrations and self-promotion",
+        "external SponsorBlock self-promotion mode mismatch"
+    );
+    Require(
+        english.Text(L"dialog.selects_sponsorblock_segments_for_new_downloads") ==
+            L"Selects SponsorBlock segments for new downloads.",
+        "external SponsorBlock tooltip mismatch"
     );
     Require(english.Text(L"dialog.language_will_apply_after_restart") == L"Язык будет применён сразу после сохранения.", "missing key should fall back to Russian");
     Require(english.Text(L"app.queue_cleared_removed2app.tasks") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known key fragments");
     Require(english.Text(L"Настройки") == L"Настройки", "legacy Russian-key translation should be ignored");
+    const Localization russian;
+    Require(russian.Text(L"dialog.sponsorblock") == L"SponsorBlock", "Russian SponsorBlock label mismatch");
     Require(
-        Localization().Text(L"dialog.sponsorblock_off") == L"Ничего не вырезать",
-        "Russian SponsorBlock mode text mismatch"
+        russian.Text(L"dialog.sponsorblock_segments_to_remove") == L"Какие рекламные сегменты удалять после загрузки.",
+        "Russian SponsorBlock description mismatch"
+    );
+    Require(russian.Text(L"dialog.sponsorblock_off") == L"Ничего не вырезать", "Russian SponsorBlock off mode mismatch");
+    Require(
+        russian.Text(L"dialog.sponsorblock_sponsor") == L"Только спонсорские интеграции",
+        "Russian SponsorBlock sponsor mode mismatch"
+    );
+    Require(
+        russian.Text(L"dialog.sponsorblock_sponsor_selfpromo") == L"Интеграции и самореклама",
+        "Russian SponsorBlock self-promotion mode mismatch"
+    );
+    Require(
+        russian.Text(L"dialog.selects_sponsorblock_segments_for_new_downloads") ==
+            L"Выбирает сегменты SponsorBlock для новых загрузок.",
+        "Russian SponsorBlock tooltip mismatch"
     );
 
     const Localization missing = Localization::Load(paths, L"zz");
