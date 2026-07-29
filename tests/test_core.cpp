@@ -1285,6 +1285,7 @@ void TestYtDlpDownloadArguments() {
     request.outputDirectory = root / L"Downloads";
     request.quality = L"720p";
     request.container = L"mp4";
+    request.cookieSource = L"file";
     request.cookiesPath = cookies;
     request.ffmpegExePath = root / L"tools" / L"ffmpeg" / L"bin" / L"ffmpeg.exe";
     request.ffmpegAvailable = true;
@@ -1310,6 +1311,36 @@ void TestYtDlpDownloadArguments() {
         "SponsorBlock should be disabled by default"
     );
     Require(args.back() == request.url, "url should be last argument");
+
+    request.cookieSource = L"file";
+    request.cookiesPath = cookies;
+    const std::vector<std::wstring> fileArgs = BuildDownloadArguments(request);
+    Require(ContainsArg(fileArgs, L"--cookies"), "file cookie argument missing");
+    Require(fileArgs.at(ArgIndex(fileArgs, L"--cookies") + 1) == cookies.wstring(), "file cookie path mismatch");
+    Require(!ContainsArg(fileArgs, L"--cookies-from-browser"), "file mode should not use browser cookies");
+
+    request.cookieSource = L"browser";
+    request.cookiesBrowser = L"edge";
+    const std::vector<std::wstring> browserArgs = BuildDownloadArguments(request);
+    Require(ContainsArg(browserArgs, L"--cookies-from-browser"), "browser cookie argument missing");
+    Require(browserArgs.at(ArgIndex(browserArgs, L"--cookies-from-browser") + 1) == L"edge", "browser cookie value mismatch");
+    Require(!ContainsArg(browserArgs, L"--cookies"), "browser mode should not use cookie file");
+
+    const std::vector<std::wstring> metadataArgs =
+        BuildMetadataArguments(request.url, L"browser", L"edge", cookies);
+    Require(
+        ContainsArg(metadataArgs, L"--cookies-from-browser"),
+        "metadata browser cookie argument missing"
+    );
+    Require(
+        metadataArgs.at(ArgIndex(metadataArgs, L"--cookies-from-browser") + 1) == L"edge",
+        "metadata should use the same browser cookie source"
+    );
+
+    request.cookieSource = L"off";
+    const std::vector<std::wstring> offArgs = BuildDownloadArguments(request);
+    Require(!ContainsArg(offArgs, L"--cookies"), "off mode should omit cookie file");
+    Require(!ContainsArg(offArgs, L"--cookies-from-browser"), "off mode should omit browser cookies");
 
     request.sponsorBlockMode = L"sponsor";
     const std::vector<std::wstring> sponsorArgs = BuildDownloadArguments(request);

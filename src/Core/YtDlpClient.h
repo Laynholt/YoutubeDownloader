@@ -72,6 +72,12 @@ struct YtDlpClientOptions {
 };
 
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request);
+std::vector<std::wstring> BuildMetadataArguments(
+    const std::wstring& url,
+    const std::wstring& cookieSource,
+    const std::wstring& cookiesBrowser,
+    const std::filesystem::path& cookiesPath
+);
 std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line);
 std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory);
 std::filesystem::path FindDownloadedMediaFile(

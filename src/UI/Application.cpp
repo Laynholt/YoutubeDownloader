@@ -2891,6 +2891,8 @@ void Application::EnqueueCurrentUrl() {
         request.ytDlpExePath = m_ytDlpStatus.executable;
         request.url = itemUrl;
         request.outputDirectory = m_config.downloadDir;
+        request.cookieSource = m_config.cookieSource;
+        request.cookiesBrowser = m_config.cookiesBrowser;
         request.cookiesPath = m_config.cookiesPath;
         request.ffmpegExePath = m_ffmpeg.ffmpegExe;
         request.ffmpegAvailable = m_ffmpeg.available;

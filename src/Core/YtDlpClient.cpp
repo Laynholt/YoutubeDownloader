@@ -1,6 +1,7 @@
 #include "YtDlpClient.h"
 
 #include "BackendText.h"
+#include "Config.h"
 #include "ProcessRunner.h"
 #include "WinHttpClient.h"
 
@@ -373,17 +374,23 @@ VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     return preview;
 }
 
-std::vector<std::wstring> BuildMetadataArguments(const std::wstring& url, const std::filesystem::path& cookiesPath) {
-    std::vector<std::wstring> args;
-    args.push_back(L"--dump-single-json");
-    args.push_back(L"--no-playlist");
-    args.push_back(L"--no-warnings");
-    if (!cookiesPath.empty() && std::filesystem::is_regular_file(cookiesPath)) {
+void AppendCookieArguments(
+    std::vector<std::wstring>& args,
+    const std::wstring& source,
+    const std::wstring& browser,
+    const std::filesystem::path& path
+) {
+    const std::wstring normalizedSource = NormalizeCookieSource(source);
+    if (normalizedSource == L"browser") {
+        const std::wstring normalizedBrowser = NormalizeCookieBrowser(browser);
+        if (!normalizedBrowser.empty()) {
+            args.push_back(L"--cookies-from-browser");
+            args.push_back(normalizedBrowser);
+        }
+    } else if (normalizedSource == L"file" && !path.empty()) {
         args.push_back(L"--cookies");
-        args.push_back(cookiesPath.wstring());
+        args.push_back(path.wstring());
     }
-    args.push_back(url);
-    return args;
 }
 
 std::filesystem::path ThumbnailPathFor(const std::filesystem::path& dir, const VideoPreview& preview) {
@@ -406,6 +413,21 @@ std::filesystem::path ThumbnailPathFor(const std::filesystem::path& dir, const V
 
 } // namespace
 
+std::vector<std::wstring> BuildMetadataArguments(
+    const std::wstring& url,
+    const std::wstring& cookieSource,
+    const std::wstring& cookiesBrowser,
+    const std::filesystem::path& cookiesPath
+) {
+    std::vector<std::wstring> args;
+    args.push_back(L"--dump-single-json");
+    args.push_back(L"--no-playlist");
+    args.push_back(L"--no-warnings");
+    AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath);
+    args.push_back(url);
+    return args;
+}
+
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request) {
     std::vector<std::wstring> args;
     args.push_back(L"--newline");
@@ -424,10 +446,7 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     args.push_back(L"--progress-template");
     args.push_back(L"__YTDLP_PROGRESS__ status=%(progress.status)s downloaded=%(progress.downloaded_bytes)s total=%(progress.total_bytes)s total_estimate=%(progress.total_bytes_estimate)s speed=%(progress.speed)s eta=%(progress.eta)s part=%(info.format_note)s vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s format=%(info.format_id)s height=%(info.height)s");
 
-    if (!request.cookiesPath.empty() && std::filesystem::is_regular_file(request.cookiesPath)) {
-        args.push_back(L"--cookies");
-        args.push_back(request.cookiesPath.wstring());
-    }
+    AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath);
 
     if (request.ffmpegAvailable && !request.ffmpegExePath.empty()) {
         args.push_back(L"--ffmpeg-location");
@@ -680,7 +699,12 @@ YtDlpClient::YtDlpClient(YtDlpClientOptions options)
 VideoPreview YtDlpClient::FetchPreview(const std::wstring& url, HANDLE cancelEvent) const {
     ProcessRunOptions options;
     options.executable = m_options.ytDlpExePath;
-    options.arguments = BuildMetadataArguments(url, m_options.cookiesPath);
+    options.arguments = BuildMetadataArguments(
+        url,
+        m_options.cookieSource,
+        m_options.cookiesBrowser,
+        m_options.cookiesPath
+    );
     options.timeoutMs = 30000;
     options.cancelEvent = cancelEvent;
 
