@@ -15,6 +15,8 @@ struct YtDlpDownloadRequest {
     std::filesystem::path ytDlpExePath;
     std::wstring url;
     std::filesystem::path outputDirectory;
+    std::wstring cookieSource = L"off";
+    std::wstring cookiesBrowser;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegExePath;
     std::wstring quality = L"max";
@@ -64,6 +66,8 @@ struct VideoPreview {
 struct YtDlpClientOptions {
     std::filesystem::path ytDlpExePath;
     std::filesystem::path thumbCacheDir;
+    std::wstring cookieSource = L"off";
+    std::wstring cookiesBrowser;
     std::filesystem::path cookiesPath;
 };
 

@@ -95,6 +95,8 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(fs::is_regular_file(paths.configPath()), "default config should be created on first load");
     Require(defaults.quality == L"max", "default quality mismatch");
     Require(defaults.container == L"auto", "default container mismatch");
+    Require(defaults.cookieSource == L"off", "default cookie source mismatch");
+    Require(defaults.cookiesBrowser.empty(), "default cookie browser should be empty");
     Require(defaults.sponsorBlockMode == L"off", "default SponsorBlock mode mismatch");
     Require(defaults.uiLanguage == L"ru", "default UI language mismatch");
     Require(defaults.maxParallelDownloads == 3, "default max parallel mismatch");
@@ -114,6 +116,8 @@ void TestConfigDefaultsAndRoundTrip() {
 
     AppConfig saved = defaults;
     saved.downloadDir = root / L"Downloads";
+    saved.cookieSource = L"browser";
+    saved.cookiesBrowser = L"edge";
     saved.cookiesPath = root / L"cookies.txt";
     saved.ffmpegPath = root / L"ffmpeg.exe";
     saved.ffmpegVersion = L"6.1";
@@ -144,6 +148,8 @@ void TestConfigDefaultsAndRoundTrip() {
 
     const AppConfig loaded = ConfigStore::Load(paths);
     Require(loaded.downloadDir == saved.downloadDir, "download dir round-trip mismatch");
+    Require(loaded.cookieSource == L"browser", "cookie source round-trip mismatch");
+    Require(loaded.cookiesBrowser == L"edge", "cookie browser round-trip mismatch");
     Require(loaded.cookiesPath == saved.cookiesPath, "cookies path round-trip mismatch");
     Require(loaded.ffmpegPath == saved.ffmpegPath, "ffmpeg path round-trip mismatch");
     Require(loaded.ffmpegVersion == saved.ffmpegVersion, "ffmpeg version round-trip mismatch");
@@ -168,6 +174,28 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.autoUpdateApp == true, "auto update round-trip mismatch");
     Require(loaded.lastYtDlpCheckAt == L"2026-06-17T20:00:00Z", "yt-dlp check timestamp mismatch");
     Require(loaded.lastYtDlpVersion == L"2026.06.09", "yt-dlp version mismatch");
+}
+
+void TestConfigNormalizesCookieSettings() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ConfigCookies");
+    const AppPaths paths(root);
+    fs::create_directories(paths.stuffDir());
+
+    {
+        std::ofstream out(paths.configPath(), std::ios::trunc);
+        out << R"json({"cookie_source":"unexpected","cookies_browser":"EDGE"})json";
+    }
+    AppConfig loaded = ConfigStore::Load(paths);
+    Require(loaded.cookieSource == L"off", "unknown cookie source should normalize to off");
+    Require(loaded.cookiesBrowser == L"edge", "supported cookie browser should normalize to lowercase");
+
+    {
+        std::ofstream out(paths.configPath(), std::ios::trunc);
+        out << R"json({"cookie_source":"browser","cookies_browser":"unknown"})json";
+    }
+    loaded = ConfigStore::Load(paths);
+    Require(loaded.cookieSource == L"browser", "valid browser cookie source should be preserved");
+    Require(loaded.cookiesBrowser.empty(), "unknown cookie browser should normalize to empty");
 }
 
 void TestConfigNormalizesSponsorBlockMode() {
@@ -2373,6 +2401,8 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     task.request.ytDlpExePath = root / L"tools" / L"yt-dlp.exe";
     task.request.url = L"https://www.youtube.com/watch?v=roundtrip";
     task.request.outputDirectory = root / L"Downloads";
+    task.request.cookieSource = L"browser";
+    task.request.cookiesBrowser = L"firefox";
     task.request.cookiesPath = root / L"cookies.txt";
     task.request.ffmpegExePath = root / L"tools" / L"ffmpeg.exe";
     task.request.quality = L"1080p";
@@ -2404,6 +2434,8 @@ void TestDownloadQueueStoreRoundTripSnapshots() {
     Require(restored.request.ytDlpExePath == task.request.ytDlpExePath, "restored yt-dlp path mismatch");
     Require(restored.request.url == task.request.url, "restored url mismatch");
     Require(restored.request.outputDirectory == task.request.outputDirectory, "restored output directory mismatch");
+    Require(restored.request.cookieSource == L"browser", "restored cookie source mismatch");
+    Require(restored.request.cookiesBrowser == L"firefox", "restored cookie browser mismatch");
     Require(restored.request.cookiesPath == task.request.cookiesPath, "restored cookies path mismatch");
     Require(restored.request.ffmpegExePath == task.request.ffmpegExePath, "restored ffmpeg path mismatch");
     Require(restored.request.quality == L"1080p", "restored quality mismatch");
@@ -3783,6 +3815,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreNormalizesSponsorBlockMode();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
+    TestConfigNormalizesCookieSettings();
     TestConfigNormalizesSponsorBlockMode();
     TestConfigNormalizesPostProcessingLanguageOptions();
     TestLocalizationLoadsExternalLanguageWithRussianFallback();

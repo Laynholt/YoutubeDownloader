@@ -1,6 +1,7 @@
 #include "DownloadQueueStore.h"
 
 #include "BackendText.h"
+#include "Config.h"
 
 #include <nlohmann/json.hpp>
 
@@ -132,6 +133,8 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["yt_dlp_exe_path"] = PathToJsonString(task.request.ytDlpExePath);
     json["url"] = WideToUtf8(task.request.url);
     json["output_directory"] = PathToJsonString(task.request.outputDirectory);
+    json["cookie_source"] = WideToUtf8(NormalizeCookieSource(task.request.cookieSource));
+    json["cookies_browser"] = WideToUtf8(NormalizeCookieBrowser(task.request.cookiesBrowser));
     json["cookies_path"] = PathToJsonString(task.request.cookiesPath);
     json["ffmpeg_exe_path"] = PathToJsonString(task.request.ffmpegExePath);
     json["quality"] = WideToUtf8(task.request.quality);
@@ -173,6 +176,12 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     task.request.ytDlpExePath = PathFromJsonString(json, "yt_dlp_exe_path");
     task.request.url = Utf8ToWide(url->get<std::string>());
     task.request.outputDirectory = PathFromJsonString(json, "output_directory");
+    task.request.cookieSource = NormalizeCookieSource(
+        WStringFromJson(json, "cookie_source", L"off")
+    );
+    task.request.cookiesBrowser = NormalizeCookieBrowser(
+        WStringFromJson(json, "cookies_browser")
+    );
     task.request.cookiesPath = PathFromJsonString(json, "cookies_path");
     task.request.ffmpegExePath = PathFromJsonString(json, "ffmpeg_exe_path");
     task.request.quality = WStringFromJson(json, "quality", L"max");

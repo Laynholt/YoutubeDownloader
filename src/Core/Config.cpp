@@ -272,6 +272,27 @@ SubtitleFfmpegMode SubtitleFfmpegModeFromConfigValue(const std::wstring& value) 
     return SubtitleFfmpegMode::Off;
 }
 
+std::wstring NormalizeCookieSource(const std::wstring& value) {
+    const std::wstring normalized = LowerAscii(value);
+    return normalized == L"browser" || normalized == L"file" ? normalized : L"off";
+}
+
+bool IsSupportedCookieBrowser(const std::wstring& value) {
+    static constexpr std::array<std::wstring_view, 6> browsers = {
+        L"chrome", L"edge", L"firefox", L"brave", L"opera", L"vivaldi"
+    };
+    const std::wstring normalized = LowerAscii(value);
+    return std::ranges::any_of(
+        browsers,
+        [&](std::wstring_view browser) { return browser == normalized; }
+    );
+}
+
+std::wstring NormalizeCookieBrowser(const std::wstring& value) {
+    const std::wstring normalized = LowerAscii(value);
+    return IsSupportedCookieBrowser(normalized) ? normalized : L"";
+}
+
 AppConfig ConfigStore::Defaults() {
     AppConfig config;
     config.downloadDir = DefaultDownloadDir();
@@ -294,6 +315,12 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         }
 
         config.downloadDir = PathFromJsonString(json, "download_dir", config.downloadDir);
+        config.cookieSource = NormalizeCookieSource(
+            WStringFromJson(json, "cookie_source", config.cookieSource)
+        );
+        config.cookiesBrowser = NormalizeCookieBrowser(
+            WStringFromJson(json, "cookies_browser", config.cookiesBrowser)
+        );
         config.cookiesPath = PathFromJsonString(json, "cookies_path", config.cookiesPath);
         config.ffmpegPath = PathFromJsonString(json, "ffmpeg_path", config.ffmpegPath);
         config.ffmpegVersion = WStringFromJson(json, "ffmpeg_version", config.ffmpegVersion);
@@ -344,6 +371,8 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
 
     nlohmann::json json;
     json["download_dir"] = PathToJsonString(config.downloadDir);
+    json["cookie_source"] = WideToUtf8(NormalizeCookieSource(config.cookieSource));
+    json["cookies_browser"] = WideToUtf8(NormalizeCookieBrowser(config.cookiesBrowser));
     json["cookies_path"] = PathToJsonString(config.cookiesPath);
     json["ffmpeg_path"] = PathToJsonString(config.ffmpegPath);
     json["ffmpeg_version"] = WideToUtf8(config.ffmpegVersion);

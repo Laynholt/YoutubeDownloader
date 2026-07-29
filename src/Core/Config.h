@@ -37,9 +37,14 @@ std::wstring VoiceOverFfmpegModeToConfigValue(VoiceOverFfmpegMode mode);
 VoiceOverFfmpegMode VoiceOverFfmpegModeFromConfigValue(const std::wstring& value);
 std::wstring SubtitleFfmpegModeToConfigValue(SubtitleFfmpegMode mode);
 SubtitleFfmpegMode SubtitleFfmpegModeFromConfigValue(const std::wstring& value);
+std::wstring NormalizeCookieSource(const std::wstring& value);
+std::wstring NormalizeCookieBrowser(const std::wstring& value);
+bool IsSupportedCookieBrowser(const std::wstring& value);
 
 struct AppConfig {
     std::filesystem::path downloadDir;
+    std::wstring cookieSource = L"off";
+    std::wstring cookiesBrowser;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegPath;
     std::wstring ffmpegVersion;
