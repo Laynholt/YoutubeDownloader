@@ -2803,7 +2803,12 @@ void Application::StartPreviewFetch() {
     if (m_logger) {
         m_logger->Info(L"Preview scheduled: url=" + url);
     }
-    const YtDlpClientOptions options{m_ytDlpStatus.executable, m_paths->thumbCacheDir(), m_config.cookiesPath};
+    YtDlpClientOptions options;
+    options.ytDlpExePath = m_ytDlpStatus.executable;
+    options.thumbCacheDir = m_paths->thumbCacheDir();
+    options.cookieSource = m_config.cookieSource;
+    options.cookiesBrowser = m_config.cookiesBrowser;
+    options.cookiesPath = m_config.cookiesPath;
     HWND window = m_window;
     m_previewWorker = std::jthread([this, requestId, url, options, window](std::stop_token stopToken) {
         if (!WaitForDelay(stopToken, std::chrono::milliseconds(300))) {
