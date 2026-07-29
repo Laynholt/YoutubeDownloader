@@ -77,6 +77,7 @@ constexpr int kSettingsCardGap = 14;
 constexpr int kSettingsCardPadding = 18;
 constexpr int kSettingsChoiceCardHeight = 112;
 constexpr int kSettingsParallelCardHeight = 120;
+constexpr int kSettingsCookieCardHeight = 160;
 constexpr int kSettingsBehaviorCardHeight = 158;
 constexpr int kSettingsWorkflowCardHeight = 128;
 constexpr int kSettingsWorkflowLanguageCardHeight = kSettingsChoiceCardHeight;
@@ -167,6 +168,12 @@ enum DialogCommand {
     IdUiLanguage = 157,
     IdSettingsNavAdditional = 158,
     IdSponsorBlock = 159,
+    IdCookieOff = 160,
+    IdCookieBrowser = 161,
+    IdCookieFile = 162,
+    IdCookieBrowserSelect = 163,
+    IdCookiePathEdit = 164,
+    IdCookieBrowse = 165,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -217,7 +224,8 @@ enum class SettingsComboTarget {
     VotSubtitle,
     VoiceOver,
     Interface,
-    SponsorBlock
+    SponsorBlock,
+    CookieBrowser
 };
 
 struct SettingsComboMenuState {
@@ -239,6 +247,11 @@ struct DialogTooltipState {
     HWND tool = nullptr;
     std::wstring key;
     std::wstring text;
+};
+
+struct CookieBrowserOption {
+    std::wstring id;
+    std::wstring label;
 };
 
 struct DialogState {
@@ -290,6 +303,7 @@ struct DialogState {
     int selectedVotExecutableIndex = 0;
     std::filesystem::path* selectedVotExecutableResult = nullptr;
     std::vector<UiLanguage> uiLanguages;
+    std::vector<CookieBrowserOption> cookieBrowsers;
     std::wstring originalUiLanguage;
 };
 
@@ -396,6 +410,10 @@ RECT SettingsCardBelow(const RECT& previous, int cardHeight) {
     return {previous.left, previous.bottom + kSettingsCardGap, previous.right, previous.bottom + kSettingsCardGap + cardHeight};
 }
 
+RECT SettingsCookiesCardRect(const DialogState* state, int width, int height) {
+    return SettingsCardBelow(SettingsDownloadsParallelCardRect(state, width, height), kSettingsCookieCardHeight);
+}
+
 RECT SettingsTranscriptionEngineCardRect(const DialogState* state, int width, int height) {
     return SettingsStackCardRect(state, width, height, 0, kSettingsWorkflowCardHeight);
 }
@@ -446,7 +464,8 @@ RECT SettingsToolCardRect(const DialogState* state, int width, int height, int i
 int SettingsDownloadsContentHeight() {
     return (3 * kSettingsChoiceCardHeight) +
         kSettingsParallelCardHeight +
-        (3 * kSettingsCardGap);
+        kSettingsCookieCardHeight +
+        (4 * kSettingsCardGap);
 }
 
 int SettingsToolsContentHeight(const DialogState* state) {
@@ -594,6 +613,16 @@ RECT SettingsParallelValueRect(const DialogState* state, int width, int height) 
     return {valueRight - 54, card.top + kSettingsCardControlTop, valueRight, card.top + kSettingsCardControlTop + kDialogButtonHeight};
 }
 
+RECT SettingsCookiePathFrameRect(const DialogState* state, int width, int height) {
+    const RECT card = SettingsCookiesCardRect(state, width, height);
+    return {
+        card.left + kSettingsCardPadding,
+        card.top + 108,
+        card.right - kSettingsCardPadding - 112 - 10,
+        card.top + 108 + kDialogButtonHeight
+    };
+}
+
 bool IsFfmpegReady(const DialogState* state) {
     if (!state || !state->config) {
         return false;
@@ -703,6 +732,129 @@ std::optional<std::filesystem::path> PickFolder(HWND owner, const wchar_t* title
     return result;
 }
 
+std::optional<std::filesystem::path> PickCookieFile(HWND owner) {
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog)))) {
+        return std::nullopt;
+    }
+
+    DWORD options = 0;
+    if (SUCCEEDED(dialog->GetOptions(&options))) {
+        dialog->SetOptions(options | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+    }
+    const COMDLG_FILTERSPEC filters[] = {
+        {L"Cookie files", L"*.txt"},
+        {L"All files", L"*.*"}
+    };
+    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
+    const std::wstring title = Localization::UiText(L"dialog.cookies");
+    dialog->SetTitle(title.c_str());
+
+    std::optional<std::filesystem::path> result;
+    if (SUCCEEDED(dialog->Show(owner))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                result = std::filesystem::path(path);
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    return result;
+}
+
+bool RegistryAppPathExists(const wchar_t* executableName) {
+    const std::wstring subkey =
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
+        std::wstring(executableName);
+    for (HKEY root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        DWORD size = 0;
+        if (RegGetValueW(
+                root,
+                subkey.c_str(),
+                nullptr,
+                RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                nullptr,
+                nullptr,
+                &size
+            ) == ERROR_SUCCESS) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::filesystem::path> EnvironmentDirectory(const wchar_t* name) {
+    const DWORD size = GetEnvironmentVariableW(name, nullptr, 0);
+    if (size == 0) {
+        return std::nullopt;
+    }
+    std::wstring value(size, L'\0');
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), size);
+    if (written == 0 || written >= size) {
+        return std::nullopt;
+    }
+    value.resize(written);
+    return std::filesystem::path(std::move(value));
+}
+
+std::vector<CookieBrowserOption> DetectCookieBrowsers() {
+    using Fallback = std::pair<const wchar_t*, const wchar_t*>;
+    struct BrowserSpec {
+        const wchar_t* id;
+        const wchar_t* label;
+        const wchar_t* executable;
+        std::array<Fallback, 2> fallbacks;
+    };
+    const std::array browsers = {
+        BrowserSpec{L"chrome", L"Chrome", L"chrome.exe", {{
+            {L"LOCALAPPDATA", L"Google\\Chrome\\Application\\chrome.exe"},
+            {L"ProgramFiles", L"Google\\Chrome\\Application\\chrome.exe"}
+        }}},
+        BrowserSpec{L"edge", L"Edge", L"msedge.exe", {{
+            {L"ProgramFiles", L"Microsoft\\Edge\\Application\\msedge.exe"},
+            {L"ProgramFiles(x86)", L"Microsoft\\Edge\\Application\\msedge.exe"}
+        }}},
+        BrowserSpec{L"firefox", L"Firefox", L"firefox.exe", {{
+            {L"ProgramFiles", L"Mozilla Firefox\\firefox.exe"},
+            {L"ProgramFiles(x86)", L"Mozilla Firefox\\firefox.exe"}
+        }}},
+        BrowserSpec{L"brave", L"Brave", L"brave.exe", {{
+            {L"LOCALAPPDATA", L"BraveSoftware\\Brave-Browser\\Application\\brave.exe"},
+            {L"ProgramFiles", L"BraveSoftware\\Brave-Browser\\Application\\brave.exe"}
+        }}},
+        BrowserSpec{L"opera", L"Opera", L"opera.exe", {{
+            {L"LOCALAPPDATA", L"Programs\\Opera\\launcher.exe"},
+            {nullptr, nullptr}
+        }}},
+        BrowserSpec{L"vivaldi", L"Vivaldi", L"vivaldi.exe", {{
+            {L"LOCALAPPDATA", L"Vivaldi\\Application\\vivaldi.exe"},
+            {L"ProgramFiles", L"Vivaldi\\Application\\vivaldi.exe"}
+        }}}
+    };
+
+    std::vector<CookieBrowserOption> result;
+    for (const BrowserSpec& browser : browsers) {
+        bool installed = RegistryAppPathExists(browser.executable);
+        for (const auto& [environment, relative] : browser.fallbacks) {
+            if (installed || !environment) {
+                break;
+            }
+            const std::optional<std::filesystem::path> directory = EnvironmentDirectory(environment);
+            std::error_code error;
+            installed = directory &&
+                std::filesystem::is_regular_file(*directory / relative, error);
+        }
+        if (installed) {
+            result.push_back({browser.id, browser.label});
+        }
+    }
+    return result;
+}
+
 std::optional<std::filesystem::path> PickFfmpegFolder(HWND owner) {
     return PickFolder(owner, L"dialog.choose_the_ffmpeg_folder_or_the_bin_folder");
 }
@@ -723,7 +875,7 @@ std::wstring GetChildText(HWND parent, int id) {
 
 HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
     HWND edit = CreateWindowExW(
-        WS_EX_CLIENTEDGE,
+        0,
         L"EDIT",
         text.c_str(),
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
@@ -738,6 +890,7 @@ HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
     );
     if (edit) {
         SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     }
     return edit;
 }
@@ -776,6 +929,21 @@ std::wstring InterfaceLanguageButtonText(const DialogState* state) {
         }
     }
     return L"dialog.russian";
+}
+
+std::wstring CookieBrowserButtonText(const DialogState* state) {
+    const std::wstring selected = state
+        ? NormalizeCookieBrowser(state->workingConfig.cookiesBrowser)
+        : std::wstring{};
+    if (state) {
+        for (const CookieBrowserOption& browser : state->cookieBrowsers) {
+            if (browser.id == selected) {
+                return browser.label + L"  \u25BE";
+            }
+        }
+    }
+    const std::wstring required = Localization::UiText(L"dialog.cookies_browser_required");
+    return (selected.empty() ? required : selected + L": " + required) + L"  \u25BE";
 }
 
 void SetControlsVisible(HWND parent, std::initializer_list<int> ids, bool visible) {
@@ -1428,6 +1596,10 @@ void RefreshSettingsButtons(DialogState* state) {
     );
     SetDarkButtonState(state->window, IdUiLanguage, false, InterfaceLanguageButtonText(state));
     SetDarkButtonState(state->window, IdSponsorBlock, false, SponsorBlockModeButtonText(state->workingConfig.sponsorBlockMode));
+    SetDarkButtonState(state->window, IdCookieOff, state->workingConfig.cookieSource == L"off");
+    SetDarkButtonState(state->window, IdCookieBrowser, state->workingConfig.cookieSource == L"browser");
+    SetDarkButtonState(state->window, IdCookieFile, state->workingConfig.cookieSource == L"file");
+    SetDarkButtonState(state->window, IdCookieBrowserSelect, false, CookieBrowserButtonText(state));
     SetDarkButtonState(state->window, IdTranscriptionWhisper, state->workingConfig.transcriptionEngine == TranscriptionEngine::Whisper);
     SetDarkButtonState(state->window, IdTranscriptionVot, state->workingConfig.transcriptionEngine == TranscriptionEngine::Vot);
     SetDarkButtonState(state->window, IdVotSubtitleLanguageEdit, false, SettingsLanguageButtonText(state->workingConfig.votSubtitleLanguage));
@@ -1829,6 +2001,12 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     }
 
     HWND sponsorBlock = GetDlgItem(state->window, IdSponsorBlock);
+    HWND cookieOff = GetDlgItem(state->window, IdCookieOff);
+    HWND cookieBrowser = GetDlgItem(state->window, IdCookieBrowser);
+    HWND cookieFile = GetDlgItem(state->window, IdCookieFile);
+    HWND cookieBrowserSelect = GetDlgItem(state->window, IdCookieBrowserSelect);
+    HWND cookiePathEdit = GetDlgItem(state->window, IdCookiePathEdit);
+    HWND cookieBrowse = GetDlgItem(state->window, IdCookieBrowse);
     HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
     HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
     HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
@@ -1850,6 +2028,42 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     card = SettingsSponsorBlockCardRect(state, width, height);
     if (sponsorBlock) {
         MoveWindow(sponsorBlock, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 300, 34, FALSE);
+    }
+    card = SettingsCookiesCardRect(state, width, height);
+    const int cookieModeWidth = std::max(
+        90,
+        static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 2 * 10) / 3)
+    );
+    x = card.left + kSettingsCardPadding;
+    for (HWND button : {cookieOff, cookieBrowser, cookieFile}) {
+        if (button) {
+            MoveWindow(button, x, card.top + 66, cookieModeWidth, 34, FALSE);
+            x += cookieModeWidth + 10;
+        }
+    }
+    if (cookieBrowserSelect) {
+        MoveWindow(
+            cookieBrowserSelect,
+            card.left + kSettingsCardPadding,
+            card.top + 108,
+            card.right - card.left - 2 * kSettingsCardPadding,
+            34,
+            FALSE
+        );
+    }
+    const RECT cookiePathFrame = SettingsCookiePathFrameRect(state, width, height);
+    if (cookiePathEdit) {
+        MoveWindow(
+            cookiePathEdit,
+            cookiePathFrame.left + 12,
+            cookiePathFrame.top + 5,
+            std::max(96, static_cast<int>(cookiePathFrame.right - cookiePathFrame.left - 24)),
+            24,
+            FALSE
+        );
+    }
+    if (cookieBrowse) {
+        MoveWindow(cookieBrowse, cookiePathFrame.right + 10, cookiePathFrame.top, 112, 34, FALSE);
     }
 
     auto layoutToolCard = [&](int index, HWND action, HWND details) {
@@ -1891,8 +2105,16 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
 
     SetSettingsControlsVisibleInViewport(state->window, {
         101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
-        IdParallelMinus, IdParallelPlus, IdSponsorBlock
+        IdParallelMinus, IdParallelPlus, IdSponsorBlock,
+        IdCookieOff, IdCookieBrowser, IdCookieFile, IdCookieBrowserSelect,
+        IdCookiePathEdit, IdCookieBrowse
     }, state->settingsSection == SettingsSection::Downloads, viewport);
+    if (state->workingConfig.cookieSource != L"browser") {
+        SetControlsVisible(state->window, {IdCookieBrowserSelect}, false);
+    }
+    if (state->workingConfig.cookieSource != L"file") {
+        SetControlsVisible(state->window, {IdCookiePathEdit, IdCookieBrowse}, false);
+    }
     SetSettingsControlsVisibleInViewport(state->window, {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
         IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
@@ -2618,6 +2840,20 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
         );
         DrawTextBlock(dc, std::to_wstring(state->workingConfig.maxParallelDownloads), SettingsParallelValueRect(state, client.right, client.bottom), kTextColor, labelFont, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawSettingsCard(
+            dc,
+            SettingsCookiesCardRect(state, client.right, client.bottom),
+            L"dialog.cookies",
+            L"dialog.cookies_description",
+            labelFont,
+            textFont
+        );
+        if (state->workingConfig.cookieSource == L"file") {
+            UiRenderer::DrawInputFrame(
+                dc,
+                SettingsCookiePathFrameRect(state, client.right, client.bottom)
+            );
+        }
     } else if (state->settingsSection == SettingsSection::Additional) {
         const RECT languageCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight);
         DrawSettingsCard(dc, languageCard, L"dialog.application_language", L"dialog.interface_language_applies_after_restart", labelFont, textFont);
@@ -3252,6 +3488,42 @@ void CreateSettingsControls(DialogState* state) {
         IdSponsorBlock,
         false
     );
+    HWND cookieOffButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        L"dialog.cookies_off",
+        IdCookieOff,
+        state->workingConfig.cookieSource == L"off"
+    );
+    HWND cookieBrowserButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        L"dialog.cookies_browser",
+        IdCookieBrowser,
+        state->workingConfig.cookieSource == L"browser"
+    );
+    HWND cookieFileButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        L"dialog.cookies_file",
+        IdCookieFile,
+        state->workingConfig.cookieSource == L"file"
+    );
+    HWND cookieBrowserSelectButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        CookieBrowserButtonText(state).c_str(),
+        IdCookieBrowserSelect,
+        false
+    );
+    HWND cookiePathEdit = CreateSettingsEdit(state, IdCookiePathEdit, state->workingConfig.cookiesPath.wstring());
+    HWND cookieBrowseButton = CreateDarkButton(
+        state->window,
+        state->instance,
+        L"dialog.cookies_browse",
+        IdCookieBrowse,
+        false
+    );
     HWND minusButton = CreateDarkButton(state->window, state->instance, L"-", IdParallelMinus, false);
     HWND plusButton = CreateDarkButton(state->window, state->instance, L"+", IdParallelPlus, false);
     HWND checkUpdatesButton = CreateDarkButton(state->window, state->instance, L"dialog.check_for_updates", IdCheckUpdates, false);
@@ -3292,6 +3564,16 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, votDetailsButton, L"dialog.shows_or_hides_the_vot_helper_exe_path");
     AddDialogTooltip(state, autoUpdateButton, L"dialog.enables_or_disables_automatic_application_update_checks");
     AddDialogTooltip(state, sponsorBlockButton, L"dialog.selects_sponsorblock_segments_for_new_downloads");
+    for (HWND control : {
+             cookieOffButton,
+             cookieBrowserButton,
+             cookieFileButton,
+             cookieBrowserSelectButton,
+             cookiePathEdit,
+             cookieBrowseButton
+         }) {
+        AddDialogTooltip(state, control, L"dialog.cookies_description");
+    }
     AddDialogTooltip(state, minusButton, L"dialog.decreases_the_number_of_parallel_downloads");
     AddDialogTooltip(state, plusButton, L"dialog.increases_the_number_of_parallel_downloads");
     AddDialogTooltip(state, checkUpdatesButton, L"dialog.checks_for_a_new_application_version");
@@ -3387,12 +3669,22 @@ void ShowSettingsComboMenu(DialogState* state, HWND anchor, SettingsComboTarget 
             L"dialog.sponsorblock_sponsor_selfpromo"
         };
         break;
+    case SettingsComboTarget::CookieBrowser:
+        for (const CookieBrowserOption& browser : state->cookieBrowsers) {
+            menuState->values.push_back(browser.id);
+            menuState->labels.push_back(browser.label);
+        }
+        break;
     default:
         menuState->values = VotSubtitleLanguageOptions();
         break;
     }
     if (menuState->labels.empty()) {
         menuState->labels = menuState->values;
+    }
+    if (menuState->values.empty()) {
+        delete menuState;
+        return;
     }
 
     RECT anchorRect = {};
@@ -3500,6 +3792,18 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 
     case WM_ERASEBKGND:
         return 1;
+
+    case WM_CTLCOLOREDIT:
+        if (state &&
+            state->type == DialogType::Settings &&
+            reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IdCookiePathEdit)) {
+            HDC editDc = reinterpret_cast<HDC>(wParam);
+            SetBkColor(editDc, kInputColor);
+            SetTextColor(editDc, kTextColor);
+            SetDCBrushColor(editDc, kInputColor);
+            return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
+        }
+        break;
 
     case WM_PAINT:
         if (state) {
@@ -3830,6 +4134,34 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             case IdSponsorBlock:
                 ShowSettingsComboMenu(state, GetDlgItem(window, IdSponsorBlock), SettingsComboTarget::SponsorBlock);
                 return 0;
+            case IdCookieOff:
+                state->workingConfig.cookieSource = NormalizeCookieSource(L"off");
+                relayoutSettingsCards();
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdCookieBrowser:
+                state->workingConfig.cookieSource = NormalizeCookieSource(L"browser");
+                relayoutSettingsCards();
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdCookieFile:
+                state->workingConfig.cookieSource = NormalizeCookieSource(L"file");
+                relayoutSettingsCards();
+                RefreshSettingsButtons(state);
+                return 0;
+            case IdCookieBrowserSelect:
+                ShowSettingsComboMenu(
+                    state,
+                    GetDlgItem(window, IdCookieBrowserSelect),
+                    SettingsComboTarget::CookieBrowser
+                );
+                return 0;
+            case IdCookieBrowse:
+                if (const std::optional<std::filesystem::path> selected = PickCookieFile(window)) {
+                    state->workingConfig.cookiesPath = *selected;
+                    SetWindowTextW(GetDlgItem(window, IdCookiePathEdit), selected->c_str());
+                }
+                return 0;
             case IdParallelMinus:
                 state->workingConfig.maxParallelDownloads = std::clamp(state->workingConfig.maxParallelDownloads - 1, 1, 10);
                 RefreshSettingsButtons(state);
@@ -4116,6 +4448,34 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 return 0;
             case IdOk:
                 if (state->type == DialogType::Settings && state->config) {
+                    state->workingConfig.cookiesPath = GetChildText(window, IdCookiePathEdit);
+                    if (state->workingConfig.cookieSource == L"browser" &&
+                        (state->workingConfig.cookiesBrowser.empty() ||
+                         std::ranges::none_of(
+                             state->cookieBrowsers,
+                             [&](const CookieBrowserOption& item) {
+                                 return item.id == state->workingConfig.cookiesBrowser;
+                             }))) {
+                        ShowErrorDialog(
+                            window,
+                            state->instance,
+                            L"dialog.cookies",
+                            L"dialog.cookies_browser_required"
+                        );
+                        return 0;
+                    }
+
+                    std::error_code cookieError;
+                    if (state->workingConfig.cookieSource == L"file" &&
+                        !std::filesystem::is_regular_file(state->workingConfig.cookiesPath, cookieError)) {
+                        ShowErrorDialog(
+                            window,
+                            state->instance,
+                            L"dialog.cookies",
+                            L"dialog.cookies_file_required"
+                        );
+                        return 0;
+                    }
                     if (state->workingConfig.whisperLanguage.empty()) {
                         state->workingConfig.whisperLanguage = L"auto";
                     }
@@ -4772,6 +5132,9 @@ void ApplySettingsComboSelection(SettingsComboMenuState* menuState, HWND menu, i
     case SettingsComboTarget::SponsorBlock:
         ownerState->workingConfig.sponsorBlockMode = value;
         break;
+    case SettingsComboTarget::CookieBrowser:
+        ownerState->workingConfig.cookiesBrowser = NormalizeCookieBrowser(value);
+        break;
     }
     RefreshSettingsButtons(ownerState);
     RelocalizeDialog(ownerState);
@@ -5199,6 +5562,7 @@ bool ShowSettingsDialog(
     state->workingConfig = config;
     state->originalUiLanguage = config.uiLanguage.empty() ? L"ru" : config.uiLanguage;
     state->uiLanguages = Localization::AvailableLanguages(paths);
+    state->cookieBrowsers = DetectCookieBrowsers();
     state->settingsSection = ToSettingsSection(initialSection);
     bool saved = false;
     state->savedResult = &saved;

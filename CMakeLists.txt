@@ -80,6 +80,7 @@ target_link_libraries(YoutubeDownloader PRIVATE
     gdi32
     user32
     shell32
+    advapi32
 )
 
 if(MSVC)

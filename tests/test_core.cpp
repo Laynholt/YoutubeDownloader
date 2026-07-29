@@ -1697,6 +1697,14 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     "dialog.sponsorblock_sponsor": "Sponsor integrations only",
     "dialog.sponsorblock_sponsor_selfpromo": "Integrations and self-promotion",
     "dialog.selects_sponsorblock_segments_for_new_downloads": "Selects SponsorBlock segments for new downloads.",
+    "dialog.cookies": "Cookies",
+    "dialog.cookies_description": "Authentication for videos with restricted access.",
+    "dialog.cookies_off": "Do not use",
+    "dialog.cookies_browser": "From browser",
+    "dialog.cookies_file": "File",
+    "dialog.cookies_browse": "Browse",
+    "dialog.cookies_browser_required": "Select an available browser.",
+    "dialog.cookies_file_required": "Select an existing cookie file.",
     "Настройки": "Settings"
   }
 })json";
@@ -1735,6 +1743,23 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
             L"Selects SponsorBlock segments for new downloads.",
         "external SponsorBlock tooltip mismatch"
     );
+    Require(english.Text(L"dialog.cookies") == L"Cookies", "external cookie label mismatch");
+    Require(
+        english.Text(L"dialog.cookies_description") == L"Authentication for videos with restricted access.",
+        "external cookie description mismatch"
+    );
+    Require(english.Text(L"dialog.cookies_off") == L"Do not use", "external cookie off mode mismatch");
+    Require(english.Text(L"dialog.cookies_browser") == L"From browser", "external cookie browser mode mismatch");
+    Require(english.Text(L"dialog.cookies_file") == L"File", "external cookie file mode mismatch");
+    Require(english.Text(L"dialog.cookies_browse") == L"Browse", "external cookie browse mismatch");
+    Require(
+        english.Text(L"dialog.cookies_browser_required") == L"Select an available browser.",
+        "external cookie browser validation mismatch"
+    );
+    Require(
+        english.Text(L"dialog.cookies_file_required") == L"Select an existing cookie file.",
+        "external cookie file validation mismatch"
+    );
     Require(english.Text(L"dialog.language_will_apply_after_restart") == L"Язык будет применён сразу после сохранения.", "missing key should fall back to Russian");
     Require(english.Text(L"app.queue_cleared_removed2app.tasks") == L"Queue cleared: removed 2 tasks", "dynamic UI text should translate known key fragments");
     Require(english.Text(L"Настройки") == L"Настройки", "legacy Russian-key translation should be ignored");
@@ -1757,6 +1782,23 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
         russian.Text(L"dialog.selects_sponsorblock_segments_for_new_downloads") ==
             L"Выбирает сегменты SponsorBlock для новых загрузок.",
         "Russian SponsorBlock tooltip mismatch"
+    );
+    Require(russian.Text(L"dialog.cookies") == L"Cookies", "Russian cookie label mismatch");
+    Require(
+        russian.Text(L"dialog.cookies_description") == L"Авторизация для видео с ограниченным доступом.",
+        "Russian cookie description mismatch"
+    );
+    Require(russian.Text(L"dialog.cookies_off") == L"Не использовать", "Russian cookie off mode mismatch");
+    Require(russian.Text(L"dialog.cookies_browser") == L"Из браузера", "Russian cookie browser mode mismatch");
+    Require(russian.Text(L"dialog.cookies_file") == L"Файл", "Russian cookie file mode mismatch");
+    Require(russian.Text(L"dialog.cookies_browse") == L"Обзор", "Russian cookie browse mismatch");
+    Require(
+        russian.Text(L"dialog.cookies_browser_required") == L"Выберите доступный браузер.",
+        "Russian cookie browser validation mismatch"
+    );
+    Require(
+        russian.Text(L"dialog.cookies_file_required") == L"Выберите существующий cookie-файл.",
+        "Russian cookie file validation mismatch"
     );
 
     const Localization missing = Localization::Load(paths, L"zz");
