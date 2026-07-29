@@ -53,7 +53,7 @@ constexpr const wchar_t* kSettingsComboMenuClassName = L"YoutubeDownloaderSettin
 
 constexpr COLORREF kBackgroundColor = RGB(20, 20, 22);
 constexpr COLORREF kPanelColor = RGB(28, 28, 31);
-constexpr COLORREF kInputColor = RGB(25, 25, 28);
+constexpr COLORREF kCookieInputColor = RGB(30, 30, 33);
 constexpr COLORREF kTextColor = RGB(242, 242, 242);
 constexpr COLORREF kMutedTextColor = RGB(172, 172, 178);
 constexpr int kDialogPanelInset = 12;
@@ -284,6 +284,7 @@ struct DialogState {
     std::uint64_t progressDownloaded = 0;
     std::uint64_t progressTotal = 0;
     HWND tooltip = nullptr;
+    HFONT settingsEditFont = nullptr;
     std::vector<HWND> tooltips;
     std::vector<DialogTooltipState> tooltipStates;
     HANDLE cancelEvent = nullptr;
@@ -619,7 +620,7 @@ RECT SettingsCookiePathFrameRect(const DialogState* state, int width, int height
         card.left + kSettingsCardPadding,
         card.top + 108,
         card.right - kSettingsCardPadding - 112 - 10,
-        card.top + 108 + kDialogButtonHeight
+        card.top + 108 + 36
     };
 }
 
@@ -889,7 +890,10 @@ HWND CreateSettingsEdit(DialogState* state, int id, const std::wstring& text) {
         nullptr
     );
     if (edit) {
-        SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+        if (!state->settingsEditFont) {
+            state->settingsEditFont = CreateUiFont(-16, FW_NORMAL);
+        }
+        SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(state->settingsEditFont), TRUE);
         SendMessageW(edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(10, 10));
     }
     return edit;
@@ -2053,12 +2057,13 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     }
     const RECT cookiePathFrame = SettingsCookiePathFrameRect(state, width, height);
     if (cookiePathEdit) {
+        const RECT cookiePathEditRect = CenteredMainInputEditRect(cookiePathFrame);
         MoveWindow(
             cookiePathEdit,
-            cookiePathFrame.left + 12,
-            cookiePathFrame.top + 5,
-            std::max(96, static_cast<int>(cookiePathFrame.right - cookiePathFrame.left - 24)),
-            24,
+            cookiePathEditRect.left,
+            cookiePathEditRect.top,
+            cookiePathEditRect.right - cookiePathEditRect.left,
+            cookiePathEditRect.bottom - cookiePathEditRect.top,
             FALSE
         );
     }
@@ -2851,7 +2856,8 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         if (state->workingConfig.cookieSource == L"file") {
             UiRenderer::DrawInputFrame(
                 dc,
-                SettingsCookiePathFrameRect(state, client.right, client.bottom)
+                SettingsCookiePathFrameRect(state, client.right, client.bottom),
+                kCookieInputColor
             );
         }
     } else if (state->settingsSection == SettingsSection::Additional) {
@@ -3798,9 +3804,9 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             state->type == DialogType::Settings &&
             reinterpret_cast<HWND>(lParam) == GetDlgItem(window, IdCookiePathEdit)) {
             HDC editDc = reinterpret_cast<HDC>(wParam);
-            SetBkColor(editDc, kInputColor);
+            SetBkColor(editDc, kCookieInputColor);
             SetTextColor(editDc, kTextColor);
-            SetDCBrushColor(editDc, kInputColor);
+            SetDCBrushColor(editDc, kCookieInputColor);
             return reinterpret_cast<INT_PTR>(GetStockObject(DC_BRUSH));
         }
         break;
@@ -4603,6 +4609,10 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         if (state && state->cancelEvent) {
             CloseHandle(state->cancelEvent);
             state->cancelEvent = nullptr;
+        }
+        if (state && state->settingsEditFont) {
+            DeleteObject(state->settingsEditFont);
+            state->settingsEditFont = nullptr;
         }
         if (state &&
             state->type == DialogType::Settings &&

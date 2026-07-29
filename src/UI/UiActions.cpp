@@ -547,6 +547,18 @@ bool HasOwnWindowVisibleStyle(HWND window) {
     return window && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
 }
 
+RECT CenteredMainInputEditRect(const RECT& frameRect) {
+    constexpr int horizontalInset = 12;
+    constexpr int editHeight = 24;
+    const int editTop = frameRect.top + ((frameRect.bottom - frameRect.top - editHeight) / 2);
+    return {
+        frameRect.left + horizontalInset,
+        editTop,
+        frameRect.right - horizontalInset,
+        editTop + editHeight
+    };
+}
+
 int ClampSettingsScrollOffset(int scrollY, int contentHeight, int viewportHeight) {
     return std::clamp(scrollY, 0, std::max(0, contentHeight - viewportHeight));
 }

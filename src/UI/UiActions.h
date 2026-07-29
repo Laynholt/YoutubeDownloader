@@ -166,6 +166,7 @@ void PasteReplacingEditText(HWND editControl);
 void CopyTextToClipboard(HWND owner, const std::wstring& text);
 void RestoreModalOwner(HWND owner, bool ownerWasEnabled);
 bool HasOwnWindowVisibleStyle(HWND window);
+RECT CenteredMainInputEditRect(const RECT& frameRect);
 int ClampSettingsScrollOffset(int scrollY, int contentHeight, int viewportHeight);
 int SettingsScrollOffsetAfterWheel(
     int scrollY,

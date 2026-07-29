@@ -24,7 +24,6 @@ const Color kBg(255, 20, 20, 22);
 const Color kPanel(255, 28, 28, 31);
 const Color kPanel2(255, 35, 35, 38);
 const Color kBorder(255, 46, 46, 50);
-const Color kInput(255, 25, 25, 28);
 const Color kAccent(255, 232, 72, 85);
 const Color kAccentPressed(255, 197, 45, 59);
 const Color kText(255, 242, 242, 242);
@@ -80,7 +79,7 @@ void UiRenderer::DrawPreviewCard(HDC dc, const RECT& rect) {
     graphics.FillPath(&thumbFill, &thumbPath);
 }
 
-void UiRenderer::DrawInputFrame(HDC dc, const RECT& rect) {
+void UiRenderer::DrawInputFrame(HDC dc, const RECT& rect, COLORREF fillColor) {
     Graphics graphics(dc);
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
 
@@ -88,7 +87,7 @@ void UiRenderer::DrawInputFrame(HDC dc, const RECT& rect) {
     GraphicsPath path;
     AddRoundedRect(path, inset, 8);
 
-    SolidBrush fill(kInput);
+    SolidBrush fill(Color(255, GetRValue(fillColor), GetGValue(fillColor), GetBValue(fillColor)));
     Pen border(kBorder, 1.0f);
     graphics.FillPath(&fill, &path);
     graphics.DrawPath(&border, &path);

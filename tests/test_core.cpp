@@ -3870,6 +3870,14 @@ void TestSettingsScrollBounds() {
     );
 }
 
+void TestMainInputEditGeometry() {
+    const RECT edit = CenteredMainInputEditRect({10, 20, 310, 56});
+    Require(edit.left == 22, "main input edit should have a 12px left inset");
+    Require(edit.top == 26, "main input edit should center 24px inside a 36px frame");
+    Require(edit.right == 298, "main input edit should have a 12px right inset");
+    Require(edit.bottom == 50, "main input edit should be 24px tall");
+}
+
 void TestOwnWindowVisibleStyleIgnoresHiddenParent() {
     HWND parent = CreateWindowExW(
         0,
@@ -4037,6 +4045,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueExportSkipsCompletedTasks();
     TestDownloadQueueDeletedTaskIsNotExported();
     TestSettingsScrollBounds();
+    TestMainInputEditGeometry();
     TestOwnWindowVisibleStyleIgnoresHiddenParent();
     return 0;
 }

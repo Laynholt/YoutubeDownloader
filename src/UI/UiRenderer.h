@@ -20,7 +20,7 @@ struct PopupMenuItem {
 void DrawBackground(HDC dc, const RECT& rect);
 void DrawPanel(HDC dc, const RECT& rect);
 void DrawPreviewCard(HDC dc, const RECT& rect);
-void DrawInputFrame(HDC dc, const RECT& rect);
+void DrawInputFrame(HDC dc, const RECT& rect, COLORREF fillColor = RGB(25, 25, 28));
 void DrawProgressBar(HDC dc, const RECT& rect, double percent);
 void DrawIndeterminateProgressBar(HDC dc, const RECT& rect, double phase);
 void DrawButton(
