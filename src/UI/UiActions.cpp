@@ -543,6 +543,10 @@ void RestoreModalOwner(HWND owner, bool ownerWasEnabled) {
     SetActiveWindow(owner);
 }
 
+bool HasOwnWindowVisibleStyle(HWND window) {
+    return window && (GetWindowLongPtrW(window, GWL_STYLE) & WS_VISIBLE) != 0;
+}
+
 int ClampSettingsScrollOffset(int scrollY, int contentHeight, int viewportHeight) {
     return std::clamp(scrollY, 0, std::max(0, contentHeight - viewportHeight));
 }

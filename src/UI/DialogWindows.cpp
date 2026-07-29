@@ -781,7 +781,7 @@ std::wstring InterfaceLanguageButtonText(const DialogState* state) {
 void SetControlsVisible(HWND parent, std::initializer_list<int> ids, bool visible) {
     for (int id : ids) {
         HWND control = GetDlgItem(parent, id);
-        if (control && (IsWindowVisible(control) != FALSE) != visible) {
+        if (control && HasOwnWindowVisibleStyle(control) != visible) {
             ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
         }
     }
@@ -1795,7 +1795,7 @@ void SetSettingsControlsVisibleInViewport(
         GetWindowRect(control, &rect);
         MapWindowPoints(HWND_DESKTOP, parent, reinterpret_cast<POINT*>(&rect), 2);
         const bool visible = sectionVisible && RectInside(rect, viewport);
-        if ((IsWindowVisible(control) != FALSE) != visible) {
+        if (HasOwnWindowVisibleStyle(control) != visible) {
             ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
         }
     }

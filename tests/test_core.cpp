@@ -3828,6 +3828,44 @@ void TestSettingsScrollBounds() {
     );
 }
 
+void TestOwnWindowVisibleStyleIgnoresHiddenParent() {
+    HWND parent = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"",
+        WS_OVERLAPPED,
+        0,
+        0,
+        100,
+        100,
+        nullptr,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+    Require(parent != nullptr, "hidden parent window fixture should be created");
+
+    HWND child = CreateWindowExW(
+        0,
+        L"STATIC",
+        L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        0,
+        20,
+        20,
+        parent,
+        nullptr,
+        GetModuleHandleW(nullptr),
+        nullptr
+    );
+    Require(child != nullptr, "visible child window fixture should be created");
+    Require(IsWindowVisible(child) == FALSE, "hidden parent should make effective child visibility false");
+    Require(HasOwnWindowVisibleStyle(child), "child should retain its own WS_VISIBLE style under a hidden parent");
+
+    DestroyWindow(parent);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3957,5 +3995,6 @@ int main(int argc, char** argv) {
     TestDownloadQueueExportSkipsCompletedTasks();
     TestDownloadQueueDeletedTaskIsNotExported();
     TestSettingsScrollBounds();
+    TestOwnWindowVisibleStyleIgnoresHiddenParent();
     return 0;
 }
