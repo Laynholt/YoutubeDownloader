@@ -165,3 +165,10 @@ UINT HitTestEditContextMenuItem(const std::vector<EditContextMenuItem>& items, i
 void PasteReplacingEditText(HWND editControl);
 void CopyTextToClipboard(HWND owner, const std::wstring& text);
 void RestoreModalOwner(HWND owner, bool ownerWasEnabled);
+int ClampSettingsScrollOffset(int scrollY, int contentHeight, int viewportHeight);
+int SettingsScrollOffsetAfterWheel(
+    int scrollY,
+    int contentHeight,
+    int viewportHeight,
+    int wheelDelta
+);

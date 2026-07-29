@@ -542,3 +542,20 @@ void RestoreModalOwner(HWND owner, bool ownerWasEnabled) {
     }
     SetActiveWindow(owner);
 }
+
+int ClampSettingsScrollOffset(int scrollY, int contentHeight, int viewportHeight) {
+    return std::clamp(scrollY, 0, std::max(0, contentHeight - viewportHeight));
+}
+
+int SettingsScrollOffsetAfterWheel(
+    int scrollY,
+    int contentHeight,
+    int viewportHeight,
+    int wheelDelta
+) {
+    return ClampSettingsScrollOffset(
+        scrollY - ((wheelDelta / WHEEL_DELTA) * 44),
+        contentHeight,
+        viewportHeight
+    );
+}

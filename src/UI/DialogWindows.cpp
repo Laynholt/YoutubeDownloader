@@ -84,6 +84,7 @@ constexpr int kSettingsToolCardHeight = 116;
 constexpr int kSettingsAboutCardHeight = 172;
 constexpr int kSettingsCardControlTop = 66;
 constexpr int kSettingsBottomButtonWidth = 128;
+constexpr int kSettingsScrollbarGutter = 18;
 constexpr UINT kProgressUpdateMessage = WM_APP + 40;
 constexpr UINT kProgressDoneMessage = WM_APP + 41;
 
@@ -258,6 +259,9 @@ struct DialogState {
     SettingsSection settingsSection = SettingsSection::Downloads;
     bool settingsSidebarCollapsed = false;
     int settingsScrollY = 0;
+    bool settingsScrollbarDragging = false;
+    int settingsScrollbarDragStartY = 0;
+    int settingsScrollbarDragStartScrollY = 0;
     int whisperStatusScrollY = 0;
     bool ytDlpDetailsExpanded = false;
     bool ffmpegDetailsExpanded = false;
@@ -353,12 +357,27 @@ RECT SettingsContentRect(const DialogState* state, int width, int height) {
     };
 }
 
+RECT SettingsCardsViewportRect(const DialogState* state, int width, int height) {
+    RECT content = SettingsContentRect(state, width, height);
+    content.top += kSettingsContentTop;
+    if (state && (state->settingsSection == SettingsSection::Downloads ||
+                  state->settingsSection == SettingsSection::Tools)) {
+        content.right -= kSettingsScrollbarGutter;
+    }
+    return content;
+}
+
 int SettingsBottomButtonY(int height) {
     const RECT panel = SettingsPanelRect(0, height);
     return panel.bottom - kDialogButtonInset - kDialogButtonHeight;
 }
 
 RECT SettingsStackCardRect(const DialogState* state, int width, int height, int index, int cardHeight) {
+    if (state && state->settingsSection == SettingsSection::Downloads) {
+        const RECT viewport = SettingsCardsViewportRect(state, width, height);
+        const int top = viewport.top - state->settingsScrollY + index * (cardHeight + kSettingsCardGap);
+        return {viewport.left, top, viewport.right, top + cardHeight};
+    }
     const RECT content = SettingsContentRect(state, width, height);
     const int top = content.top + kSettingsContentTop + index * (cardHeight + kSettingsCardGap);
     return {content.left, top, content.right, top + cardHeight};
@@ -415,17 +434,23 @@ int SettingsToolCardHeight(const DialogState* state, int index) {
 }
 
 RECT SettingsToolCardRect(const DialogState* state, int width, int height, int index) {
-    const RECT content = SettingsContentRect(state, width, height);
-    int top = content.top + kSettingsContentTop - (state ? state->settingsScrollY : 0);
+    const RECT viewport = SettingsCardsViewportRect(state, width, height);
+    int top = viewport.top - (state ? state->settingsScrollY : 0);
     for (int i = 0; i < index; ++i) {
         top += SettingsToolCardHeight(state, i) + kSettingsCardGap;
     }
     const int cardHeight = SettingsToolCardHeight(state, index);
-    return {content.left, top, content.right, top + cardHeight};
+    return {viewport.left, top, viewport.right, top + cardHeight};
+}
+
+int SettingsDownloadsContentHeight() {
+    return (3 * kSettingsChoiceCardHeight) +
+        kSettingsParallelCardHeight +
+        (3 * kSettingsCardGap);
 }
 
 int SettingsToolsContentHeight(const DialogState* state) {
-    int height = kSettingsContentTop;
+    int height = 0;
     for (int i = 0; i < 4; ++i) {
         height += SettingsToolCardHeight(state, i);
         if (i != 3) {
@@ -436,11 +461,16 @@ int SettingsToolsContentHeight(const DialogState* state) {
 }
 
 int SettingsMaxScroll(const DialogState* state, int width, int height) {
-    if (!state || state->settingsSection != SettingsSection::Tools) {
+    if (!state) {
         return 0;
     }
-    const RECT content = SettingsContentRect(state, width, height);
-    return std::max(0, SettingsToolsContentHeight(state) - static_cast<int>(content.bottom - content.top));
+    const int contentHeight = state->settingsSection == SettingsSection::Downloads
+        ? SettingsDownloadsContentHeight()
+        : state->settingsSection == SettingsSection::Tools
+            ? SettingsToolsContentHeight(state)
+            : 0;
+    const RECT viewport = SettingsCardsViewportRect(state, width, height);
+    return std::max(0, contentHeight - static_cast<int>(viewport.bottom - viewport.top));
 }
 
 bool ClampSettingsScroll(DialogState* state, int width, int height) {
@@ -448,7 +478,17 @@ bool ClampSettingsScroll(DialogState* state, int width, int height) {
         return false;
     }
     const int previous = state->settingsScrollY;
-    state->settingsScrollY = std::clamp(state->settingsScrollY, 0, SettingsMaxScroll(state, width, height));
+    const RECT viewport = SettingsCardsViewportRect(state, width, height);
+    const int contentHeight = state->settingsSection == SettingsSection::Downloads
+        ? SettingsDownloadsContentHeight()
+        : state->settingsSection == SettingsSection::Tools
+            ? SettingsToolsContentHeight(state)
+            : 0;
+    state->settingsScrollY = ClampSettingsScrollOffset(
+        state->settingsScrollY,
+        contentHeight,
+        static_cast<int>(viewport.bottom - viewport.top)
+    );
     return state->settingsScrollY != previous;
 }
 
@@ -456,6 +496,43 @@ bool IsRegularFile(const std::filesystem::path& path);
 std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state);
 std::wstring WrapPathText(std::wstring text, size_t maxLine);
 RECT GetScrollbarThumb(const RECT& client, int contentHeight, int scrollY);
+
+RECT SettingsScrollbarRect(const DialogState* state, int width, int height) {
+    const RECT viewport = SettingsCardsViewportRect(state, width, height);
+    return {viewport.right, viewport.top, viewport.right + kSettingsScrollbarGutter, viewport.bottom};
+}
+
+RECT SettingsScrollbarThumb(const DialogState* state, int width, int height) {
+    const RECT scrollbar = SettingsScrollbarRect(state, width, height);
+    const int contentHeight = state && state->settingsSection == SettingsSection::Downloads
+        ? SettingsDownloadsContentHeight()
+        : SettingsToolsContentHeight(state);
+    RECT thumb = GetScrollbarThumb(scrollbar, contentHeight, state ? state->settingsScrollY : 0);
+    const int trackTop = scrollbar.top + 6;
+    const int trackBottom = scrollbar.bottom - 6;
+    const int thumbHeight = thumb.bottom - thumb.top;
+    const int maxScroll = SettingsMaxScroll(state, width, height);
+    const int travel = std::max(0, trackBottom - trackTop - thumbHeight);
+    thumb.top = trackTop + ((state ? state->settingsScrollY : 0) * travel) / std::max(1, maxScroll);
+    thumb.bottom = thumb.top + thumbHeight;
+    return thumb;
+}
+
+void InvalidateSettingsCards(DialogState* state) {
+    if (!state || !state->window) {
+        return;
+    }
+    RECT client = {};
+    GetClientRect(state->window, &client);
+    RECT viewport = SettingsCardsViewportRect(state, client.right, client.bottom);
+    viewport.right += kSettingsScrollbarGutter;
+    RedrawWindow(
+        state->window,
+        &viewport,
+        nullptr,
+        RDW_INVALIDATE | RDW_ALLCHILDREN
+    );
+}
 
 bool RectInside(const RECT& inner, const RECT& outer) {
     return inner.left >= outer.left && inner.right <= outer.right &&
@@ -704,7 +781,7 @@ std::wstring InterfaceLanguageButtonText(const DialogState* state) {
 void SetControlsVisible(HWND parent, std::initializer_list<int> ids, bool visible) {
     for (int id : ids) {
         HWND control = GetDlgItem(parent, id);
-        if (control) {
+        if (control && (IsWindowVisible(control) != FALSE) != visible) {
             ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
         }
     }
@@ -1703,16 +1780,134 @@ void LayoutLogsDialog(DialogState* state, int width, int height) {
     }
 }
 
+void SetSettingsControlsVisibleInViewport(
+    HWND parent,
+    std::initializer_list<int> ids,
+    bool sectionVisible,
+    const RECT& viewport
+) {
+    for (int id : ids) {
+        HWND control = GetDlgItem(parent, id);
+        if (!control) {
+            continue;
+        }
+        RECT rect = {};
+        GetWindowRect(control, &rect);
+        MapWindowPoints(HWND_DESKTOP, parent, reinterpret_cast<POINT*>(&rect), 2);
+        const bool visible = sectionVisible && RectInside(rect, viewport);
+        if ((IsWindowVisible(control) != FALSE) != visible) {
+            ShowWindow(control, visible ? SW_SHOW : SW_HIDE);
+        }
+    }
+}
+
+void LayoutSettingsScrollableControls(DialogState* state, int width, int height) {
+    ClampSettingsScroll(state, width, height);
+    const RECT viewport = SettingsCardsViewportRect(state, width, height);
+    const std::array<int, 6> qualityIds = {101, 102, 103, 104, 105, 106};
+    RECT card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
+    int x = card.left + kSettingsCardPadding;
+    const int qualityWidth = std::max(62, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 5 * 8) / 6));
+    for (int id : qualityIds) {
+        HWND button = GetDlgItem(state->window, id);
+        if (button) {
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, qualityWidth, 32, FALSE);
+            x += qualityWidth + 8;
+        }
+    }
+
+    const std::array<int, 4> containerIds = {111, 112, 113, 114};
+    card = SettingsStackCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
+    x = card.left + kSettingsCardPadding;
+    const int containerWidth = std::max(76, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 3 * 10) / 4));
+    for (int id : containerIds) {
+        HWND button = GetDlgItem(state->window, id);
+        if (button) {
+            MoveWindow(button, x, card.top + kSettingsCardControlTop, containerWidth, 32, FALSE);
+            x += containerWidth + 10;
+        }
+    }
+
+    HWND sponsorBlock = GetDlgItem(state->window, IdSponsorBlock);
+    HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
+    HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
+    HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
+    HWND chooseWhisper = GetDlgItem(state->window, IdChooseWhisperFolder);
+    HWND chooseVot = GetDlgItem(state->window, IdChooseVotFolder);
+    HWND chooseWhisperDetails = GetDlgItem(state->window, IdWhisperDetails);
+    HWND chooseVotDetails = GetDlgItem(state->window, IdVotDetails);
+    HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
+    HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
+
+    card = SettingsDownloadsParallelCardRect(state, width, height);
+    const RECT parallelValue = SettingsParallelValueRect(state, width, height);
+    if (parallelMinus) {
+        MoveWindow(parallelMinus, parallelValue.left - 46 - kDialogButtonGap, parallelValue.top, 46, 34, FALSE);
+    }
+    if (parallelPlus) {
+        MoveWindow(parallelPlus, parallelValue.right + kDialogButtonGap, parallelValue.top, 46, 34, FALSE);
+    }
+    card = SettingsSponsorBlockCardRect(state, width, height);
+    if (sponsorBlock) {
+        MoveWindow(sponsorBlock, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 300, 34, FALSE);
+    }
+
+    auto layoutToolCard = [&](int index, HWND action, HWND details) {
+        const RECT toolCard = SettingsToolCardRect(state, width, height, index);
+        const int actionWidth = index == 0 ? 0 : 142;
+        const int detailsWidth = 112;
+        const int y = toolCard.top + 18;
+        if (details) {
+            MoveWindow(details, toolCard.right - kSettingsCardPadding - detailsWidth, y, detailsWidth, 34, FALSE);
+        }
+        if (action) {
+            MoveWindow(
+                action,
+                toolCard.right - kSettingsCardPadding - detailsWidth - kDialogButtonGap - actionWidth,
+                y,
+                actionWidth,
+                34,
+                FALSE
+            );
+        }
+    };
+    layoutToolCard(0, nullptr, ytDlpDetails);
+    layoutToolCard(1, ffmpeg, ffmpegDetails);
+    layoutToolCard(2, chooseWhisper, chooseWhisperDetails);
+    layoutToolCard(3, chooseVot, chooseVotDetails);
+
+    if (ffmpeg) {
+        const std::wstring text = Localization::UiText(ToolSetupButtonText());
+        SetWindowTextW(ffmpeg, text.c_str());
+    }
+    if (chooseWhisper) {
+        const std::wstring text = Localization::UiText(ToolSetupButtonText());
+        SetWindowTextW(chooseWhisper, text.c_str());
+    }
+    if (chooseVot) {
+        const std::wstring text = Localization::UiText(ToolSetupButtonText());
+        SetWindowTextW(chooseVot, text.c_str());
+    }
+
+    SetSettingsControlsVisibleInViewport(state->window, {
+        101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
+        IdParallelMinus, IdParallelPlus, IdSponsorBlock
+    }, state->settingsSection == SettingsSection::Downloads, viewport);
+    SetSettingsControlsVisibleInViewport(state->window, {
+        IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
+        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
+    }, state->settingsSection == SettingsSection::Tools, viewport);
+}
+
 void LayoutSettingsDialog(DialogState* state, int width, int height) {
     RefreshSettingsButtons(state);
     ClampSettingsScroll(state, width, height);
 
     const RECT sidebar = SettingsSidebarRect(state, width, height);
-    const RECT content = SettingsContentRect(state, width, height);
 
     HWND toggle = GetDlgItem(state->window, IdSettingsToggleSidebar);
     if (toggle) {
-        MoveWindow(toggle, sidebar.right - 46, sidebar.top + 16, 32, 32, TRUE);
+        MoveWindow(toggle, sidebar.right - 46, sidebar.top + 16, 32, 32, FALSE);
     }
     const std::array<int, 5> navIds = {
         IdSettingsNavDownloads,
@@ -1731,7 +1926,7 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
                 navTop,
                 std::max(36, static_cast<int>(sidebar.right - sidebar.left - 24)),
                 36,
-                TRUE
+                FALSE
             );
             navTop += 44;
         }
@@ -1744,46 +1939,16 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
             sidebar.bottom - 12 - 36,
             std::max(36, static_cast<int>(sidebar.right - sidebar.left - 24)),
             36,
-            TRUE
+            FALSE
         );
     }
 
-    const std::array<int, 6> qualityIds = {101, 102, 103, 104, 105, 106};
-    RECT card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
-    int x = card.left + kSettingsCardPadding;
-    const int qualityWidth = std::max(62, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 5 * 8) / 6));
-    for (int id : qualityIds) {
-        HWND button = GetDlgItem(state->window, id);
-        if (button) {
-            MoveWindow(button, x, card.top + kSettingsCardControlTop, qualityWidth, 32, TRUE);
-            x += qualityWidth + 8;
-        }
-    }
-
-    const std::array<int, 4> containerIds = {111, 112, 113, 114};
-    card = SettingsStackCardRect(state, width, height, 1, kSettingsChoiceCardHeight);
-    x = card.left + kSettingsCardPadding;
-    const int containerWidth = std::max(76, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 3 * 10) / 4));
-    for (int id : containerIds) {
-        HWND button = GetDlgItem(state->window, id);
-        if (button) {
-            MoveWindow(button, x, card.top + kSettingsCardControlTop, containerWidth, 32, TRUE);
-            x += containerWidth + 10;
-        }
-    }
-
-    HWND ffmpeg = GetDlgItem(state->window, IdFfmpeg);
     HWND checkUpdates = GetDlgItem(state->window, IdCheckUpdates);
     HWND autoUpdate = GetDlgItem(state->window, IdAutoUpdate);
     HWND uiLanguage = GetDlgItem(state->window, IdUiLanguage);
-    HWND sponsorBlock = GetDlgItem(state->window, IdSponsorBlock);
-    HWND parallelMinus = GetDlgItem(state->window, IdParallelMinus);
-    HWND parallelPlus = GetDlgItem(state->window, IdParallelPlus);
     HWND transcriptionWhisper = GetDlgItem(state->window, IdTranscriptionWhisper);
     HWND transcriptionVot = GetDlgItem(state->window, IdTranscriptionVot);
     HWND votSubtitleLanguage = GetDlgItem(state->window, IdVotSubtitleLanguageEdit);
-    HWND chooseWhisper = GetDlgItem(state->window, IdChooseWhisperFolder);
-    HWND chooseVot = GetDlgItem(state->window, IdChooseVotFolder);
     HWND subtitleOff = GetDlgItem(state->window, IdSubtitleModeOff);
     HWND subtitleTrack = GetDlgItem(state->window, IdSubtitleModeTrack);
     HWND subtitleBurn = GetDlgItem(state->window, IdSubtitleModeBurn);
@@ -1795,129 +1960,75 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
     HWND voiceVolumePlus = GetDlgItem(state->window, IdVoiceVolumePlus);
     HWND transcriptionTools = GetDlgItem(state->window, IdTranscriptionOpenTools);
     HWND translationTools = GetDlgItem(state->window, IdTranslationOpenTools);
-    HWND chooseWhisperDetails = GetDlgItem(state->window, IdWhisperDetails);
-    HWND chooseVotDetails = GetDlgItem(state->window, IdVotDetails);
-    HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
-    HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
     HWND cancel = GetDlgItem(state->window, IdCancel);
     HWND ok = GetDlgItem(state->window, IdOk);
 
-    card = SettingsDownloadsParallelCardRect(state, width, height);
-    const RECT parallelValue = SettingsParallelValueRect(state, width, height);
-    if (parallelMinus) {
-        MoveWindow(parallelMinus, parallelValue.left - 46 - kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
-    }
-    if (parallelPlus) {
-        MoveWindow(parallelPlus, parallelValue.right + kDialogButtonGap, parallelValue.top, 46, 34, TRUE);
-    }
-    card = SettingsSponsorBlockCardRect(state, width, height);
-    if (sponsorBlock) {
-        MoveWindow(sponsorBlock, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 300, 34, TRUE);
-    }
-
-    card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
+    RECT card = SettingsStackCardRect(state, width, height, 0, kSettingsChoiceCardHeight);
     if (uiLanguage) {
-        MoveWindow(uiLanguage, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, TRUE);
+        MoveWindow(uiLanguage, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, FALSE);
     }
     card = SettingsCardBelow(card, kSettingsChoiceCardHeight);
     if (autoUpdate) {
-        MoveWindow(autoUpdate, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, TRUE);
+        MoveWindow(autoUpdate, card.right - kSettingsCardPadding - 260, card.top + kSettingsCardControlTop, 260, 34, FALSE);
     }
 
     card = SettingsTranscriptionEngineCardRect(state, width, height);
     const int twoButtonWidth = std::max(120, static_cast<int>((card.right - card.left - 2 * kSettingsCardPadding - 12) / 2));
     if (transcriptionWhisper) {
-        MoveWindow(transcriptionWhisper, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, twoButtonWidth, 34, TRUE);
+        MoveWindow(transcriptionWhisper, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, twoButtonWidth, 34, FALSE);
     }
     if (transcriptionVot) {
-        MoveWindow(transcriptionVot, card.left + kSettingsCardPadding + twoButtonWidth + 12, card.top + kSettingsCardControlTop, twoButtonWidth, 34, TRUE);
+        MoveWindow(transcriptionVot, card.left + kSettingsCardPadding + twoButtonWidth + 12, card.top + kSettingsCardControlTop, twoButtonWidth, 34, FALSE);
     }
     card = SettingsTranscriptionSubtitleCardRect(state, width, height);
     const int transcriptionModeTop = card.top + kSettingsCardControlTop;
     if (subtitleOff) {
-        MoveWindow(subtitleOff, card.left + kSettingsCardPadding, transcriptionModeTop, 86, 34, TRUE);
+        MoveWindow(subtitleOff, card.left + kSettingsCardPadding, transcriptionModeTop, 86, 34, FALSE);
     }
     if (subtitleTrack) {
-        MoveWindow(subtitleTrack, card.left + kSettingsCardPadding + 98, transcriptionModeTop, 164, 34, TRUE);
+        MoveWindow(subtitleTrack, card.left + kSettingsCardPadding + 98, transcriptionModeTop, 164, 34, FALSE);
     }
     if (subtitleBurn) {
-        MoveWindow(subtitleBurn, card.left + kSettingsCardPadding + 274, transcriptionModeTop, 142, 34, TRUE);
+        MoveWindow(subtitleBurn, card.left + kSettingsCardPadding + 274, transcriptionModeTop, 142, 34, FALSE);
     }
     card = SettingsTranscriptionLanguageCardRect(state, width, height);
     if (votSubtitleLanguage) {
-        MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 150, 34, TRUE);
+        MoveWindow(votSubtitleLanguage, card.left + kSettingsCardPadding, card.top + kSettingsCardControlTop, 150, 34, FALSE);
     }
     card = SettingsTranscriptionToolsCardRect(state, width, height);
     if (transcriptionTools && ShowTranscriptionToolsCard(state)) {
-        MoveWindow(transcriptionTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
+        MoveWindow(transcriptionTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, FALSE);
     }
 
     card = SettingsTranslationWorkflowCardRect(state, width, height);
     const int translationModeTop = card.top + kSettingsCardControlTop;
     if (voiceLanguage) {
-        MoveWindow(voiceLanguage, card.left + kSettingsCardPadding, translationModeTop, 150, 34, TRUE);
+        MoveWindow(voiceLanguage, card.left + kSettingsCardPadding, translationModeTop, 150, 34, FALSE);
     }
     if (voiceOff) {
-        MoveWindow(voiceOff, card.left + kSettingsCardPadding + 166, translationModeTop, 86, 34, TRUE);
+        MoveWindow(voiceOff, card.left + kSettingsCardPadding + 166, translationModeTop, 86, 34, FALSE);
     }
     if (voiceTrack) {
-        MoveWindow(voiceTrack, card.left + kSettingsCardPadding + 264, translationModeTop, 142, 34, TRUE);
+        MoveWindow(voiceTrack, card.left + kSettingsCardPadding + 264, translationModeTop, 142, 34, FALSE);
     }
     if (voiceMix) {
-        MoveWindow(voiceMix, card.left + kSettingsCardPadding + 418, translationModeTop, 118, 34, TRUE);
+        MoveWindow(voiceMix, card.left + kSettingsCardPadding + 418, translationModeTop, 118, 34, FALSE);
     }
     const int voiceVolumeTop = card.top + 108;
     if (voiceVolumeMinus) {
-        MoveWindow(voiceVolumeMinus, card.left + kSettingsCardPadding, voiceVolumeTop, 46, 34, TRUE);
+        MoveWindow(voiceVolumeMinus, card.left + kSettingsCardPadding, voiceVolumeTop, 46, 34, FALSE);
     }
     if (voiceVolumePlus) {
-        MoveWindow(voiceVolumePlus, card.left + kSettingsCardPadding + 118, voiceVolumeTop, 46, 34, TRUE);
+        MoveWindow(voiceVolumePlus, card.left + kSettingsCardPadding + 118, voiceVolumeTop, 46, 34, FALSE);
     }
     card = SettingsTranslationToolsCardRect(state, width, height);
     if (translationTools && ShowTranslationToolsCard(state)) {
-        MoveWindow(translationTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, TRUE);
+        MoveWindow(translationTools, card.right - kSettingsCardPadding - 172, card.top + 28, 172, 34, FALSE);
     }
-
-    auto layoutToolCard = [&](int index, HWND action, HWND details) {
-        const RECT toolCard = SettingsToolCardRect(state, width, height, index);
-        const int actionWidth = index == 0 ? 0 : 142;
-        const int detailsWidth = 112;
-        const int y = toolCard.top + 18;
-        if (details) {
-            MoveWindow(details, toolCard.right - kSettingsCardPadding - detailsWidth, y, detailsWidth, 34, TRUE);
-        }
-        if (action) {
-            MoveWindow(
-                action,
-                toolCard.right - kSettingsCardPadding - detailsWidth - kDialogButtonGap - actionWidth,
-                y,
-                actionWidth,
-                34,
-                TRUE
-            );
-        }
-    };
-    layoutToolCard(0, nullptr, ytDlpDetails);
-    layoutToolCard(1, ffmpeg, ffmpegDetails);
-    layoutToolCard(2, chooseWhisper, chooseWhisperDetails);
-    layoutToolCard(3, chooseVot, chooseVotDetails);
 
     card = SettingsStackCardRect(state, width, height, 0, kSettingsAboutCardHeight);
     if (checkUpdates) {
-        MoveWindow(checkUpdates, card.left + kSettingsCardPadding, card.top + 112, 188, 34, TRUE);
-    }
-
-    if (ffmpeg) {
-        const std::wstring text = Localization::UiText(ToolSetupButtonText());
-        SetWindowTextW(ffmpeg, text.c_str());
-    }
-    if (chooseWhisper) {
-        const std::wstring text = Localization::UiText(ToolSetupButtonText());
-        SetWindowTextW(chooseWhisper, text.c_str());
-    }
-    if (chooseVot) {
-        const std::wstring text = Localization::UiText(ToolSetupButtonText());
-        SetWindowTextW(chooseVot, text.c_str());
+        MoveWindow(checkUpdates, card.left + kSettingsCardPadding, card.top + 112, 188, 34, FALSE);
     }
     const int panelRight = width - kDialogPanelInset;
     const int bottomButtonY = SettingsBottomButtonY(height);
@@ -1928,17 +2039,14 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
             bottomButtonY,
             kSettingsBottomButtonWidth,
             kDialogButtonHeight,
-            TRUE
+            FALSE
         );
     }
     if (ok) {
-        MoveWindow(ok, panelRight - kDialogButtonInset - kSettingsBottomButtonWidth, bottomButtonY, kSettingsBottomButtonWidth, kDialogButtonHeight, TRUE);
+        MoveWindow(ok, panelRight - kDialogButtonInset - kSettingsBottomButtonWidth, bottomButtonY, kSettingsBottomButtonWidth, kDialogButtonHeight, FALSE);
     }
 
-    SetControlsVisible(state->window, {
-        101, 102, 103, 104, 105, 106, 111, 112, 113, 114,
-        IdParallelMinus, IdParallelPlus, IdSponsorBlock
-    }, state->settingsSection == SettingsSection::Downloads);
+    LayoutSettingsScrollableControls(state, width, height);
     SetControlsVisible(state->window, {
         IdAutoUpdate, IdUiLanguage
     }, state->settingsSection == SettingsSection::Additional);
@@ -1960,23 +2068,6 @@ void LayoutSettingsDialog(DialogState* state, int width, int height) {
         {IdTranslationOpenTools},
         state->settingsSection == SettingsSection::Translation && ShowTranslationToolsCard(state)
     );
-    SetControlsVisible(state->window, {
-        IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
-        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
-    }, state->settingsSection == SettingsSection::Tools);
-    if (state->settingsSection == SettingsSection::Tools) {
-        const RECT viewport = {content.left, content.top + kSettingsContentTop, content.right, content.bottom};
-        for (int id : {IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder, IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails}) {
-            HWND control = GetDlgItem(state->window, id);
-            if (!control) {
-                continue;
-            }
-            RECT rect = {};
-            GetWindowRect(control, &rect);
-            MapWindowPoints(HWND_DESKTOP, state->window, reinterpret_cast<POINT*>(&rect), 2);
-            ShowWindow(control, RectInside(rect, viewport) ? SW_SHOW : SW_HIDE);
-        }
-    }
     SetControlsVisible(state->window, {IdCheckUpdates}, state->settingsSection == SettingsSection::About);
 }
 
@@ -2497,6 +2588,15 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawTextBlock(dc, sectionTitle, {content.left, content.top + 2, content.right, content.top + 36}, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     DrawTextBlock(dc, sectionSubtitle, {content.left, content.top + 36, content.right, content.top + 64}, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+    const bool scrollableSection =
+        state->settingsSection == SettingsSection::Downloads ||
+        state->settingsSection == SettingsSection::Tools;
+    const int cardsClipState = scrollableSection ? SaveDC(dc) : 0;
+    if (scrollableSection) {
+        const RECT viewport = SettingsCardsViewportRect(state, client.right, client.bottom);
+        IntersectClipRect(dc, viewport.left, viewport.top, viewport.right, viewport.bottom);
+    }
+
     const bool ffmpegReady = IsFfmpegReady(state);
     if (state->settingsSection == SettingsSection::Downloads) {
         DrawSettingsCard(dc, SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsChoiceCardHeight), L"dialog.quality", L"dialog.default_quality_for_new_downloads", labelFont, textFont);
@@ -2613,9 +2713,6 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             );
         }
     } else if (state->settingsSection == SettingsSection::Tools) {
-        const int clipState = SaveDC(dc);
-        IntersectClipRect(dc, content.left, content.top + kSettingsContentTop, content.right, content.bottom);
-
         const ToolInstallStatus ytDlpStatus = state->paths ? YtDlpManager(*state->paths).Status() : ToolInstallStatus{};
         RECT toolCard = SettingsToolCardRect(state, client.right, client.bottom, 0);
         DrawSettingsCard(dc, toolCard, L"yt-dlp", ytDlpStatus.installed ? L"dialog.main_downloader_found" : L"dialog.main_downloader_not_found", labelFont, textFont, 280);
@@ -2684,7 +2781,6 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         if (state->votDetailsExpanded) {
             DrawUtilityStatusLine(dc, L"vot-helper.exe:", votStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
         }
-        RestoreDC(dc, clipState);
     } else {
         const RECT aboutCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
         DrawSettingsCard(dc, aboutCard, L"YouTube Downloader", L"dialog.portable_win32_downloader_with_yt_dlp_ffmpeg_whisper_cpp", labelFont, textFont);
@@ -2696,6 +2792,32 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             textFont,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE
         );
+    }
+
+    if (scrollableSection) {
+        RestoreDC(dc, cardsClipState);
+        if (SettingsMaxScroll(state, client.right, client.bottom) > 0) {
+            const RECT scrollbar = SettingsScrollbarRect(state, client.right, client.bottom);
+            const RECT thumb = SettingsScrollbarThumb(state, client.right, client.bottom);
+            Gdiplus::Graphics graphics(dc);
+            graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            Gdiplus::SolidBrush trackBrush(Gdiplus::Color(255, 39, 39, 43));
+            Gdiplus::SolidBrush thumbBrush(Gdiplus::Color(255, 86, 86, 92));
+            graphics.FillRectangle(
+                &trackBrush,
+                static_cast<INT>(scrollbar.right - 14),
+                static_cast<INT>(scrollbar.top + 8),
+                6,
+                static_cast<INT>(scrollbar.bottom - scrollbar.top - 16)
+            );
+            graphics.FillRectangle(
+                &thumbBrush,
+                static_cast<INT>(thumb.left),
+                static_cast<INT>(thumb.top),
+                static_cast<INT>(thumb.right - thumb.left),
+                static_cast<INT>(thumb.bottom - thumb.top)
+            );
+        }
     }
 
     DeleteObject(titleFont);
@@ -3401,6 +3523,73 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
         }
         return 0;
 
+    case WM_LBUTTONDOWN:
+        if (state && state->type == DialogType::Settings) {
+            RECT client = {};
+            GetClientRect(window, &client);
+            const int maxScroll = SettingsMaxScroll(state, client.right, client.bottom);
+            const RECT scrollbar = SettingsScrollbarRect(state, client.right, client.bottom);
+            const POINT point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (maxScroll > 0 && PtInRect(&scrollbar, point)) {
+                const RECT thumb = SettingsScrollbarThumb(state, client.right, client.bottom);
+                if (PtInRect(&thumb, point)) {
+                    state->settingsScrollbarDragging = true;
+                    state->settingsScrollbarDragStartY = point.y;
+                    state->settingsScrollbarDragStartScrollY = state->settingsScrollY;
+                    SetCapture(window);
+                } else {
+                    const RECT viewport = SettingsCardsViewportRect(state, client.right, client.bottom);
+                    const int page = viewport.bottom - viewport.top;
+                    state->settingsScrollY = std::clamp(
+                        state->settingsScrollY + (point.y < thumb.top ? -page : page),
+                        0,
+                        maxScroll
+                    );
+                    LayoutSettingsScrollableControls(state, client.right, client.bottom);
+                    InvalidateSettingsCards(state);
+                }
+                return 0;
+            }
+        }
+        break;
+
+    case WM_MOUSEMOVE:
+        if (state && state->settingsScrollbarDragging) {
+            RECT client = {};
+            GetClientRect(window, &client);
+            const RECT scrollbar = SettingsScrollbarRect(state, client.right, client.bottom);
+            const RECT thumb = SettingsScrollbarThumb(state, client.right, client.bottom);
+            const int maxScroll = SettingsMaxScroll(state, client.right, client.bottom);
+            const int trackTravel = std::max(
+                1,
+                static_cast<int>(scrollbar.bottom - scrollbar.top) - 12 -
+                    static_cast<int>(thumb.bottom - thumb.top)
+            );
+            const int dy = GET_Y_LPARAM(lParam) - state->settingsScrollbarDragStartY;
+            const int nextScroll = std::clamp(
+                state->settingsScrollbarDragStartScrollY + (dy * maxScroll) / trackTravel,
+                0,
+                maxScroll
+            );
+            if (nextScroll != state->settingsScrollY) {
+                state->settingsScrollY = nextScroll;
+                LayoutSettingsScrollableControls(state, client.right, client.bottom);
+                InvalidateSettingsCards(state);
+            }
+            return 0;
+        }
+        break;
+
+    case WM_LBUTTONUP:
+        if (state && state->settingsScrollbarDragging) {
+            state->settingsScrollbarDragging = false;
+            if (GetCapture() == window) {
+                ReleaseCapture();
+            }
+            return 0;
+        }
+        break;
+
     case WM_MOUSEWHEEL:
         if (state && state->type == DialogType::Whisper) {
             RECT client = {};
@@ -3421,21 +3610,28 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 return 0;
             }
         }
-        if (state && state->type == DialogType::Settings && state->settingsSection == SettingsSection::Tools) {
+        if (state && state->type == DialogType::Settings &&
+            (state->settingsSection == SettingsSection::Downloads ||
+             state->settingsSection == SettingsSection::Tools)) {
             RECT client = {};
             GetClientRect(window, &client);
             const int maxScroll = SettingsMaxScroll(state, client.right, client.bottom);
             if (maxScroll > 0) {
                 const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-                const int nextScroll = std::clamp(
-                    state->settingsScrollY - ((delta / WHEEL_DELTA) * 44),
-                    0,
-                    maxScroll
+                const RECT viewport = SettingsCardsViewportRect(state, client.right, client.bottom);
+                const int contentHeight = state->settingsSection == SettingsSection::Downloads
+                    ? SettingsDownloadsContentHeight()
+                    : SettingsToolsContentHeight(state);
+                const int nextScroll = SettingsScrollOffsetAfterWheel(
+                    state->settingsScrollY,
+                    contentHeight,
+                    viewport.bottom - viewport.top,
+                    delta
                 );
                 if (nextScroll != state->settingsScrollY) {
                     state->settingsScrollY = nextScroll;
-                    LayoutDialog(state, client.right, client.bottom);
-                    InvalidateRect(window, nullptr, FALSE);
+                    LayoutSettingsScrollableControls(state, client.right, client.bottom);
+                    InvalidateSettingsCards(state);
                 }
                 return 0;
             }
@@ -3520,6 +3716,12 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     return 0;
                 }
             }
+            auto relayoutSettingsCards = [state]() {
+                RECT client = {};
+                GetClientRect(state->window, &client);
+                LayoutSettingsScrollableControls(state, client.right, client.bottom);
+                InvalidateSettingsCards(state);
+            };
             switch (commandId) {
             case 101:
                 state->workingConfig.quality = L"audio";
@@ -3770,27 +3972,23 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 return 0;
             case IdYtDlpDetails:
                 state->ytDlpDetailsExpanded = !state->ytDlpDetailsExpanded;
-                RelayoutDialog(state);
+                relayoutSettingsCards();
                 RefreshSettingsButtons(state);
-                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdFfmpegDetails:
                 state->ffmpegDetailsExpanded = !state->ffmpegDetailsExpanded;
-                RelayoutDialog(state);
+                relayoutSettingsCards();
                 RefreshSettingsButtons(state);
-                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdWhisperDetails:
                 state->whisperDetailsExpanded = !state->whisperDetailsExpanded;
-                RelayoutDialog(state);
+                relayoutSettingsCards();
                 RefreshSettingsButtons(state);
-                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdVotDetails:
                 state->votDetailsExpanded = !state->votDetailsExpanded;
-                RelayoutDialog(state);
+                relayoutSettingsCards();
                 RefreshSettingsButtons(state);
-                InvalidateRect(window, nullptr, FALSE);
                 return 0;
             case IdCopy:
                 CopyTextToClipboard(window, state->message);

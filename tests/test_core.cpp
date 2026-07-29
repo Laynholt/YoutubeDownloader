@@ -3814,6 +3814,20 @@ void TestDownloadQueueDeletedTaskIsNotExported() {
     Require(queue.ExportSnapshotsForShutdown().empty(), "deleted task should not be exported for shutdown");
 }
 
+void TestSettingsScrollBounds() {
+    Require(ClampSettingsScrollOffset(-20, 700, 500) == 0, "settings scroll should clamp below zero");
+    Require(ClampSettingsScrollOffset(250, 700, 500) == 200, "settings scroll should clamp to content end");
+    Require(ClampSettingsScrollOffset(80, 400, 500) == 0, "fitting settings content should not scroll");
+    Require(
+        SettingsScrollOffsetAfterWheel(100, 700, 500, WHEEL_DELTA) == 56,
+        "wheel up should move settings by one 44px step"
+    );
+    Require(
+        SettingsScrollOffsetAfterWheel(180, 700, 500, -WHEEL_DELTA) == 200,
+        "wheel down should stop at settings content end"
+    );
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -3942,5 +3956,6 @@ int main(int argc, char** argv) {
     TestDownloadQueueExportForShutdownStopsActiveTasks();
     TestDownloadQueueExportSkipsCompletedTasks();
     TestDownloadQueueDeletedTaskIsNotExported();
+    TestSettingsScrollBounds();
     return 0;
 }
