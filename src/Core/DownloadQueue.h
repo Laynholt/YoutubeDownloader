@@ -20,6 +20,7 @@ enum class DownloadTaskState {
     Queued,
     Preparing,
     Downloading,
+    Merging,
     Completed,
     Failed,
     Canceled
@@ -36,6 +37,7 @@ struct DownloadTaskSnapshot {
     std::wstring errorText;
     std::uint64_t downloadedBytes = 0;
     std::uint64_t totalBytes = 0;
+    bool totalBytesEstimated = false;
     std::uint64_t speedBytesPerSecond = 0;
     std::uint64_t etaSeconds = 0;
     std::uint64_t durationSeconds = 0;

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 IDI_MAIN_ICON ICON "../../assets/icon.ico"
+YTD_BROWSER_LOGIN RCDATA "../../stuff/browser-login.ps1"
 
 1 VERSIONINFO
 FILEVERSION YTD_APP_FILE_VERSION_RC

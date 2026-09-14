@@ -209,6 +209,8 @@ std::wstring TaskStateText(DownloadTaskState state) {
         return L"app.preparing";
     case DownloadTaskState::Downloading:
         return L"app.downloading";
+    case DownloadTaskState::Merging:
+        return L"ytdlp.merging";
     case DownloadTaskState::Completed:
         return L"app.done";
     case DownloadTaskState::Failed:
@@ -222,7 +224,7 @@ std::wstring TaskStateText(DownloadTaskState state) {
 bool IsRunningTaskState(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
-           state == DownloadTaskState::Downloading;
+           state == DownloadTaskState::Downloading || state == DownloadTaskState::Merging;
 }
 
 std::filesystem::path FirstExistingMediaOutput(const DownloadTaskSnapshot& task) {
@@ -385,7 +387,8 @@ HFONT CreateUiFont(int height, int weight = FW_NORMAL) {
     return CreateFontIndirectW(&font);
 }
 
-std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
+std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task, const DownloadStatistics& statistics) {
+    if (task.state == DownloadTaskState::Merging) { return L"ytdlp.download_complete_100"; }
     std::vector<std::wstring> parts;
     if (!task.mediaKind.empty()) {
         parts.push_back(task.mediaKind == L"audio" ? L"app.audio" : L"app.video");
@@ -396,16 +399,17 @@ std::wstring BuildTaskDetails(const DownloadTaskSnapshot& task) {
     if (task.mediaKind == L"video" && !task.resolution.empty()) {
         parts.push_back(task.resolution);
     }
-    if (task.totalBytes > 0) {
-        parts.push_back(FormatBytes(task.downloadedBytes) + L" / " + FormatBytes(task.totalBytes));
+    if (statistics.totalBytes > 0) {
+        parts.push_back(FormatBytes(task.downloadedBytes) + L" / " +
+            (task.totalBytesEstimated ? L"≈ " : L"") + FormatBytes(std::max(task.downloadedBytes, statistics.totalBytes)));
     } else if (task.downloadedBytes > 0) {
         parts.push_back(FormatBytes(task.downloadedBytes));
     }
-    if (task.speedBytesPerSecond > 0) {
-        parts.push_back(FormatBytes(task.speedBytesPerSecond) + L"/s");
+    if (statistics.speedBytesPerSecond > 0) {
+        parts.push_back(FormatBytes(statistics.speedBytesPerSecond) + L"/s");
     }
-    if (task.etaSeconds > 0) {
-        parts.push_back(L"ETA " + FormatDuration(task.etaSeconds));
+    if (statistics.etaSeconds > 0) {
+        parts.push_back(L"ETA " + FormatDuration(statistics.etaSeconds));
     }
 
     std::wstring details;
@@ -641,22 +645,25 @@ void AddTooltip(HWND tooltip, HWND parent, HWND tool, const wchar_t* text) {
     SendMessageW(tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&info));
 }
 
-void CachePreviewThumbnailTree(YtDlpClient& client, VideoPreview& preview, HANDLE cancelEvent) {
+void CachePreviewThumbnailTree(YtDlpClient& client, VideoPreview& preview, HANDLE cancelEvent, Logger* logger) {
     if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
         return;
     }
-    if (!preview.thumbnailUrl.empty()) {
+    if (!preview.id.empty()) {
         try {
             preview.cachedThumbnailPath = client.CacheThumbnail(preview, cancelEvent);
-        } catch (...) {
+        } catch (const std::exception& ex) {
             preview.cachedThumbnailPath.clear();
+            if (logger && (!cancelEvent || WaitForSingleObject(cancelEvent, 0) != WAIT_OBJECT_0)) {
+                logger->Error(L"Thumbnail failed: id=" + preview.id + L" error=" + Utf8ToWide(ex.what()));
+            }
         }
     }
     for (VideoPreview& entry : preview.entries) {
         if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
             return;
         }
-        CachePreviewThumbnailTree(client, entry, cancelEvent);
+        CachePreviewThumbnailTree(client, entry, cancelEvent, logger);
     }
 }
 
@@ -1492,7 +1499,9 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
     case WM_TIMER:
         if (wParam == kQueueRefreshTimer) {
             RefreshQueueText();
-            if (m_postProcessingTaskId != 0 || !m_postProcessingQueue.empty()) {
+            if (m_postProcessingTaskId != 0 || !m_postProcessingQueue.empty() ||
+                std::any_of(m_downloadProgressAnimations.begin(), m_downloadProgressAnimations.end(),
+                    [](const auto& entry) { return entry.second.downloading; })) {
                 RECT client = {};
                 GetClientRect(m_window, &client);
                 RECT queueRect = QueuePanelRectForClient(client);
@@ -1945,7 +1954,14 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
     const std::vector<DownloadTaskSnapshot> tasks = m_downloadQueue->Snapshot();
     if (tasks.empty()) {
         m_queueScrollOffset = 0;
+        m_downloadProgressAnimations.clear();
         return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    for (const DownloadTaskSnapshot& task : tasks) {
+        UpdateDownloadProgressAnimation(m_downloadProgressAnimations[task.id], task, now);
+        UpdateDownloadStatistics(m_downloadProgressAnimations[task.id].statistics, task, now);
     }
 
     HFONT titleFont = CreateUiFont(-15, FW_SEMIBOLD);
@@ -2013,16 +2029,13 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         const std::wstring title = task.title.empty() ? task.request.url : task.title;
         DrawTextBlock(dc, title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        std::wstring status = TaskStateText(task.state);
+        std::wstring status = task.statusText.empty() ? TaskStateText(task.state) : task.statusText;
         if (postProcessingActive) {
-            status = m_postProcessingStatus.empty() ? L"app.running" : m_postProcessingStatus;
-            const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
-            status += L" · " + FormatDuration(elapsedMs / 1000);
+            status = m_postProcessingAction == kQueueActionTranscribe
+                ? L"dialog.transcription"
+                : L"dialog.translation";
         } else if (postProcessingBusy) {
             status = PostProcessingQueueStatusText(PostProcessingActionForTask(task.id));
-        }
-        if (!postProcessingBusy && !task.statusText.empty() && task.statusText != status) {
-            status += L" · " + task.statusText;
         }
         if (!postProcessingBusy && !task.errorText.empty()) {
             status += L" · " + task.errorText;
@@ -2030,14 +2043,14 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         RECT statusRect = {textLeft, row.top + 34, textRight, row.top + 52};
         DrawTextBlock(dc, status, statusRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-        const std::wstring details = BuildTaskDetails(task);
+        const std::wstring details = BuildTaskDetails(task, m_downloadProgressAnimations.at(task.id).statistics);
         if (!details.empty()) {
             RECT detailsRect = {textLeft, row.top + 54, textRight, row.top + 72};
             DrawTextBlock(dc, details, detailsRect, kMutedTextColor, smallFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
 
         RECT progressBack = {textLeft, row.bottom - 13, row.right - 84, row.bottom - 5};
-        double percent = task.percent;
+        double percent = m_downloadProgressAnimations.at(task.id).percent;
         if (postProcessingActive) {
             if (m_postProcessingIndeterminate) {
                 const DWORD elapsedMs = GetTickCount() - m_postProcessingStartedTick;
@@ -2057,6 +2070,8 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
                 progressBack,
                 PingPongProgressPhase(GetTickCount(), 1800)
             );
+        } else if (task.state == DownloadTaskState::Merging && task.percent < 0) {
+            UiRenderer::DrawIndeterminateProgressBar(dc, progressBack, PingPongProgressPhase(GetTickCount(), 1800));
         } else if (task.state == DownloadTaskState::Completed) {
             percent = 100.0;
             UiRenderer::DrawProgressBar(dc, progressBack, percent);
@@ -2066,7 +2081,8 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         }
 
         RECT percentRect = {row.right - 74, row.bottom - 19, row.right - 14, row.bottom - 1};
-        if (postProcessingActive && m_postProcessingIndeterminate) {
+        if ((postProcessingActive && m_postProcessingIndeterminate) ||
+            (task.state == DownloadTaskState::Merging && task.percent < 0)) {
             DrawTextBlock(dc, L"...", percentRect, kMutedTextColor, smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         } else if (postProcessingBusy) {
             DrawTextBlock(dc, L"...", percentRect, kMutedTextColor, smallFont, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
@@ -2615,7 +2631,7 @@ void Application::InitializeBackend() {
     m_downloadQueue = std::make_unique<DownloadQueue>(m_config.maxParallelDownloads, m_logger.get());
     LoadDownloadQueue();
 
-    SetTimer(m_window, kQueueRefreshTimer, 80, nullptr);
+    SetTimer(m_window, kQueueRefreshTimer, 33, nullptr);
     SetStatus(L"app.checking_yt_dlp");
     StartToolCheck();
 }
@@ -2654,12 +2670,14 @@ void Application::SaveDownloadQueue(bool forShutdown) {
         return;
     }
 
+    m_lastQueueSaveAttemptTick = GetTickCount64();
     try {
+        const auto revision = m_downloadQueue->Revision();
         const std::vector<DownloadTaskSnapshot> tasks = forShutdown
             ? m_downloadQueue->ExportSnapshotsForShutdown()
             : m_downloadQueue->ExportSnapshots();
         DownloadQueueStore::Save(*m_paths, tasks);
-        m_lastSavedQueueRevision = m_downloadQueue->Revision();
+        m_lastSavedQueueRevision = revision;
         if (forShutdown && m_logger) {
             m_logger->Info(L"Download queue saved for shutdown: count=" + std::to_wstring(tasks.size()));
         }
@@ -2667,7 +2685,7 @@ void Application::SaveDownloadQueue(bool forShutdown) {
         if (m_logger) {
             m_logger->Error(
                 L"Download queue save failed: " +
-                std::wstring(ex.what(), ex.what() + std::strlen(ex.what()))
+                Utf8ToWide(ex.what())
             );
         }
     } catch (...) {
@@ -2804,6 +2822,7 @@ void Application::StartPreviewFetch() {
         m_logger->Info(L"Preview scheduled: url=" + url);
     }
     YtDlpClientOptions options;
+    options.logger = m_logger.get();
     options.ytDlpExePath = m_ytDlpStatus.executable;
     options.thumbCacheDir = m_paths->thumbCacheDir();
     options.cookieSource = m_config.cookieSource;
@@ -2828,11 +2847,11 @@ void Application::StartPreviewFetch() {
             });
             YtDlpClient client(options);
             result.preview = client.FetchPreview(url, cancelEvent.get());
-            CachePreviewThumbnailTree(client, result.preview, cancelEvent.get());
+            CachePreviewThumbnailTree(client, result.preview, cancelEvent.get(), m_logger.get());
             result.ok = true;
         } catch (const std::exception& ex) {
             result.ok = false;
-            result.error = L"app.preview_unavailable" + std::wstring(ex.what(), ex.what() + std::strlen(ex.what()));
+            result.error = Localization::UiText(L"app.preview_unavailable") + LocalizedToolErrorText(ex.what());
         } catch (...) {
             result.ok = false;
             result.error = L"app.preview_unavailable_2";
@@ -2931,7 +2950,7 @@ void Application::EnqueueCurrentUrl() {
 }
 
 bool Application::ShowAndSaveSettings(SettingsInitialSection initialSection) {
-    if (!m_paths || !ShowSettingsDialog(m_window, m_instance, *m_paths, m_config, initialSection)) {
+    if (!m_paths || !ShowSettingsDialog(m_window, m_instance, *m_paths, m_config, initialSection, m_logger.get())) {
         return false;
     }
 
@@ -2949,6 +2968,9 @@ bool Application::ShowAndSaveSettings(SettingsInitialSection initialSection) {
         );
     }
     SetTransientStatus(L"app.settings_saved");
+    if (m_config.cookieSource != L"off") {
+        StartPreviewFetch();
+    }
     return true;
 }
 
@@ -3448,13 +3470,16 @@ void Application::RefreshQueueText() {
         return;
     }
     const std::uint64_t revision = m_downloadQueue->Revision();
+    if (revision != m_lastSavedQueueRevision && GetTickCount64() - m_lastQueueSaveAttemptTick >= 1000) {
+        SaveDownloadQueue(false);
+    }
     if (revision == m_lastRenderedQueueRevision) {
         return;
     }
-    if (revision != m_lastSavedQueueRevision) {
-        SaveDownloadQueue(false);
-    }
     m_lastRenderedQueueRevision = revision;
+    std::erase_if(m_downloadProgressAnimations, [this](const auto& entry) {
+        return m_downloadQueue->GetTask(entry.first).id == 0;
+    });
     RECT client = {};
     GetClientRect(m_window, &client);
     RECT queueRect = QueuePanelRectForClient(client);

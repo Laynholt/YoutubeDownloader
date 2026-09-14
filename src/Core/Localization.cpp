@@ -208,11 +208,18 @@ std::unordered_map<std::wstring, std::wstring> RussianStrings() {
         {L"dialog.sponsorblock_sponsor_selfpromo", L"Интеграции и самореклама"},
         {L"dialog.selects_sponsorblock_segments_for_new_downloads", L"Выбирает сегменты SponsorBlock для новых загрузок."},
         {L"dialog.cookies", L"Cookies"},
-        {L"dialog.cookies_description", L"Авторизация для видео с ограниченным доступом."},
+        {L"dialog.cookies_description", L"Войдите один раз — cookies сохранятся автоматически."},
         {L"dialog.cookies_off", L"Не использовать"},
         {L"dialog.cookies_browser", L"Из браузера"},
         {L"dialog.cookies_file", L"Файл"},
         {L"dialog.cookies_browse", L"Обзор"},
+        {L"dialog.cookies_connect", L"Войти в YouTube"},
+        {L"dialog.cookies_connected", L"Вход сохранён. Можно скачивать видео."},
+        {L"dialog.cookies_login_waiting", L"Войдите в YouTube, затем закройте открывшееся окно браузера. Приложение сохранит вход."},
+        {L"dialog.cookies_login_failed", L"Не удалось сохранить вход. Попробуйте сохранить настройки ещё раз."},
+        {L"dialog.cookies_login_closed", L"Вход в YouTube не обнаружен. Повторите вход и закройте окно браузера. Настройки не сохранены."},
+        {L"dialog.cookies_login_canceled", L"Вход отменён. Настройки не сохранены."},
+        {L"dialog.cookies_login_timeout", L"Время ожидания входа истекло. Повторите вход в настройках."},
         {L"dialog.cookies_browser_required", L"Выберите доступный браузер."},
         {L"dialog.cookies_file_required", L"Выберите существующий cookie-файл."},
         {L"dialog.parallelism", L"Параллельность"},
@@ -485,10 +492,12 @@ std::unordered_map<std::wstring, std::wstring> RussianStrings() {
         {L"voiceover.ffmpeg_did_not_embed_translation_into_video", L"FFmpeg не встроил перевод в видео: "},
         {L"voiceover.failed_to_replace_the_source_video_with_the_translated_v", L"Не удалось заменить исходное видео версией с переводом"},
         {L"voiceover.saving_translation", L"Сохранение перевода"},
-        {L"ytdlp.download_completed_part", L"Загрузка завершена (часть)"},
-        {L"ytdlp.downloading_video", L"Скачивание видео:"},
-        {L"ytdlp.downloading_audio", L"Скачивание аудио:"},
-        {L"ytdlp.downloading", L"Скачивание:"}
+        {L"ytdlp.download_completed_part", L"Скачивание завершено"},
+        {L"ytdlp.merging", L"Объединение"},
+        {L"ytdlp.download_complete_100", L"Скачивание завершено · 100%"},
+        {L"ytdlp.downloading_video", L"Скачивание видео"},
+        {L"ytdlp.downloading_audio", L"Скачивание аудио"},
+        {L"ytdlp.downloading", L"Скачивание"}
     };
 }
 bool HasCyrillic(std::wstring_view text) {

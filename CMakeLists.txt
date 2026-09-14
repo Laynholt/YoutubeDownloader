@@ -25,6 +25,7 @@ endif()
 set(CORE_SOURCES
     src/Core/AsyncWait.cpp
     src/Core/BackendText.cpp
+    src/Core/BrowserCookies.cpp
     src/Core/Config.cpp
     src/Core/DownloadQueue.cpp
     src/Core/DownloadQueueStore.cpp
@@ -57,6 +58,7 @@ endif()
 
 target_link_libraries(YoutubeDownloaderCore PUBLIC
     winhttp
+    gdiplus
 )
 
 add_executable(YoutubeDownloader WIN32
@@ -118,3 +120,5 @@ endif()
 
 enable_testing()
 add_test(NAME YoutubeDownloaderCoreTests COMMAND YoutubeDownloaderTests)
+add_test(NAME BrowserCookieTests COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+    -File ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser_cookies.ps1)

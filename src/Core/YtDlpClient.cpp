@@ -1,9 +1,12 @@
 #include "YtDlpClient.h"
 
 #include "BackendText.h"
+#include "BrowserCookies.h"
 #include "Config.h"
 #include "ProcessRunner.h"
 #include "WinHttpClient.h"
+#include <gdiplus.h>
+#include <winhttp.h>
 
 #include <nlohmann/json.hpp>
 
@@ -12,6 +15,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <map>
+#include <stdexcept>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -245,9 +249,10 @@ std::wstring ExtractVideoIdFromUrl(const std::wstring& url) {
         return id;
     }
 
-    const std::array<std::wstring_view, 3> markers = {
+    const std::array<std::wstring_view, 4> markers = {
         L"youtu.be/",
         L"/shorts/",
+        L"/live/",
         L"/embed/"
     };
     for (std::wstring_view marker : markers) {
@@ -342,6 +347,24 @@ std::wstring ChooseThumbnailUrl(const nlohmann::json& object) {
     return direct;
 }
 
+std::wstring YouTubeVideoId(const std::wstring& url) {
+    URL_COMPONENTSW parts = {};
+    parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts)) { return {}; }
+    const auto host = LowerCopy(std::wstring(parts.lpszHostName, parts.dwHostNameLength));
+    if (host != L"youtu.be" && host != L"youtube.com" && !host.ends_with(L".youtube.com")) { return {}; }
+    const auto id = ExtractVideoIdFromUrl(url);
+    if (id.size() != 11 || id.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::wstring::npos) { return {}; }
+    return id;
+}
+
+void CheckPreviewCanceled(HANDLE cancelEvent) {
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+}
+
 VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     VideoPreview preview;
     if (!object.is_object()) {
@@ -353,6 +376,14 @@ VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     preview.uploader = JsonWide(object, "uploader");
     preview.durationSeconds = JsonUInt64(object, "duration");
     preview.thumbnailUrl = ChooseThumbnailUrl(object);
+    if (const auto images = object.find("thumbnails"); images != object.end() && images->is_array()) {
+        for (auto image = images->rbegin(); image != images->rend(); ++image) {
+            const auto url = JsonWide(*image, "url");
+            if (LooksGdiFriendlyImageUrl(url) && preview.thumbnailUrls.size() < 3) {
+                preview.thumbnailUrls.push_back(url);
+            }
+        }
+    }
     preview.webpageUrl = JsonWide(object, "webpage_url");
     if (preview.webpageUrl.empty()) {
         preview.webpageUrl = JsonWide(object, "url");
@@ -378,11 +409,21 @@ void AppendCookieArguments(
     std::vector<std::wstring>& args,
     const std::wstring& source,
     const std::wstring& browser,
-    const std::filesystem::path& path
+    const std::filesystem::path& path,
+    const std::filesystem::path& ytDlpExe,
+    Logger* logger
 ) {
     const std::wstring normalizedSource = NormalizeCookieSource(source);
     if (normalizedSource == L"browser") {
         const std::wstring normalizedBrowser = NormalizeCookieBrowser(browser);
+        const auto managed = ManagedBrowserCookiesPath(ytDlpExe, normalizedBrowser);
+        std::error_code error;
+        if (!managed.empty() && std::filesystem::is_regular_file(managed, error)) {
+            args.push_back(L"--cookies");
+            args.push_back(managed.wstring());
+            LogCookieFileLoaded(logger, managed, L"cache", normalizedBrowser);
+            return;
+        }
         if (!normalizedBrowser.empty()) {
             args.push_back(L"--cookies-from-browser");
             args.push_back(normalizedBrowser);
@@ -390,11 +431,13 @@ void AppendCookieArguments(
     } else if (normalizedSource == L"file" && !path.empty()) {
         args.push_back(L"--cookies");
         args.push_back(path.wstring());
+        LogCookieFileLoaded(logger, path, L"file");
     }
 }
 
 std::filesystem::path ThumbnailPathFor(const std::filesystem::path& dir, const VideoPreview& preview) {
-    if (preview.id.empty() || preview.thumbnailUrl.empty()) {
+    if (preview.id.empty() ||
+        preview.id.find_first_not_of(L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::wstring::npos) {
         return {};
     }
 
@@ -417,20 +460,25 @@ std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& url,
     const std::wstring& cookieSource,
     const std::wstring& cookiesBrowser,
-    const std::filesystem::path& cookiesPath
+    const std::filesystem::path& cookiesPath,
+    const std::filesystem::path& ytDlpExe,
+    Logger* logger
 ) {
     std::vector<std::wstring> args;
     args.push_back(L"--dump-single-json");
+    args.push_back(L"--ignore-no-formats-error");
     args.push_back(L"--no-playlist");
     args.push_back(L"--no-warnings");
-    AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath);
+    AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath, ytDlpExe, logger);
     args.push_back(url);
     return args;
 }
 
-std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request) {
+std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request, Logger* logger,
+    const std::filesystem::path& mergeProgressFile) {
     std::vector<std::wstring> args;
     args.push_back(L"--newline");
+    args.push_back(L"--progress");
     args.push_back(L"--no-warnings");
     args.push_back(L"--retries");
     args.push_back(L"10");
@@ -446,7 +494,15 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
     args.push_back(L"--progress-template");
     args.push_back(L"__YTDLP_PROGRESS__ status=%(progress.status)s downloaded=%(progress.downloaded_bytes)s total=%(progress.total_bytes)s total_estimate=%(progress.total_bytes_estimate)s speed=%(progress.speed)s eta=%(progress.eta)s part=%(info.format_note)s vcodec=%(info.vcodec)s acodec=%(info.acodec)s ext=%(info.ext)s format=%(info.format_id)s height=%(info.height)s");
 
-    AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath);
+    args.push_back(L"--progress-template");
+    args.push_back(L"postprocess:__YTDLP_POSTPROCESS__ status=%(progress.status)s postprocessor=%(progress.postprocessor)s duration=%(info.duration)s");
+    if (request.ffmpegAvailable && !mergeProgressFile.empty()) {
+        args.push_back(L"--postprocessor-args");
+        // yt-dlp parses this argument with shlex, independently of Windows command-line quoting.
+        args.push_back(L"Merger+ffmpeg_o:-progress \"" + mergeProgressFile.generic_wstring() + L"\" -stats_period 0.2");
+    }
+
+    AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath, request.ytDlpExePath, logger);
 
     if (request.ffmpegAvailable && !request.ffmpegExePath.empty()) {
         args.push_back(L"--ffmpeg-location");
@@ -636,12 +692,13 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     while (!normalized.empty() && iswspace(normalized.front())) {
         normalized.erase(normalized.begin());
     }
-    if (!normalized.starts_with(kProgressPrefix)) {
+    const bool postprocess = normalized.starts_with(L"__YTDLP_POSTPROCESS__");
+    if (!postprocess && !normalized.starts_with(kProgressPrefix)) {
         return progress;
     }
 
     progress.recognized = true;
-    std::wstring payload = normalized.substr(std::wcslen(kProgressPrefix));
+    std::wstring payload = normalized.substr(postprocess ? std::wcslen(L"__YTDLP_POSTPROCESS__") : std::wcslen(kProgressPrefix));
     if (!payload.empty() && payload.front() == L' ') {
         payload.erase(payload.begin());
     }
@@ -653,10 +710,19 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     };
 
     progress.rawStatus = get(L"status");
+    if (postprocess) {
+        progress.recognized = get(L"postprocessor") == L"Merger";
+        progress.merging = progress.recognized;
+        progress.stage = L"ytdlp.merging";
+        progress.durationSeconds = ParseUnsigned(get(L"duration"));
+        progress.percent = progress.rawStatus == L"finished" ? 100.0 : (progress.durationSeconds > 0 ? 0.0 : -1.0);
+        return progress;
+    }
     progress.downloadedBytes = ParseUnsigned(get(L"downloaded"));
     progress.totalBytes = ParseUnsigned(get(L"total"));
     if (progress.totalBytes == 0) {
         progress.totalBytes = ParseUnsigned(get(L"total_estimate"));
+        progress.totalBytesEstimated = progress.totalBytes > 0;
     }
     progress.speedBytesPerSecond = ParseUnsigned(get(L"speed"));
     progress.etaSeconds = ParseUnsigned(get(L"eta"));
@@ -666,6 +732,10 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     }
     if (progress.rawStatus == L"finished") {
         progress.percent = 100.0;
+        progress.totalBytes = progress.downloadedBytes;
+        progress.totalBytesEstimated = false;
+        progress.speedBytesPerSecond = 0;
+        progress.etaSeconds = 0;
     }
 
     progress.mediaKind = MediaKindFor(get(L"part"), get(L"vcodec"), get(L"acodec"));
@@ -673,6 +743,22 @@ YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line) {
     progress.formatId = get(L"format");
     progress.resolution = ResolutionForHeight(get(L"height"));
     progress.stage = StageFor(progress.rawStatus, progress.mediaKind);
+    return progress;
+}
+
+YtDlpProgress ParseFfmpegMergeProgressLine(const std::wstring& line, std::uint64_t durationSeconds) {
+    YtDlpProgress progress;
+    constexpr std::wstring_view prefix = L"out_time_us=";
+    if (!line.starts_with(prefix) || durationSeconds == 0) { return progress; }
+    const auto value = line.substr(prefix.size());
+    if (value.empty() || value.find_first_not_of(L"0123456789") != std::wstring::npos) { return progress; }
+    progress.recognized = true;
+    progress.merging = true;
+    progress.rawStatus = L"processing";
+    progress.stage = L"ytdlp.merging";
+    progress.durationSeconds = durationSeconds;
+    // The final container flush/faststart pass can continue after the last media timestamp.
+    progress.percent = std::clamp(static_cast<double>(ParseUnsigned(value)) / (static_cast<double>(durationSeconds) * 10000.0), 0.0, 99.0);
     return progress;
 }
 
@@ -692,6 +778,35 @@ VideoPreview ParseVideoPreviewJson(const std::string& jsonText) {
     }
 }
 
+VideoPreview ParseYouTubeOEmbedJson(const std::string& jsonText, const std::wstring& url) {
+    const auto id = YouTubeVideoId(url);
+    if (id.empty()) { return {}; }
+    try {
+        auto object = nlohmann::json::parse(jsonText);
+        if (JsonWide(object, "title").empty()) { return {}; }
+        object["id"] = WideToUtf8(id);
+        object["webpage_url"] = WideToUtf8(L"https://www.youtube.com/watch?v=" + id);
+        object["uploader"] = object.value("author_name", "");
+        object["thumbnail"] = object.value("thumbnail_url", "");
+        return ParsePreviewObject(object);
+    } catch (...) { return {}; }
+}
+
+bool IsUsableThumbnail(const std::filesystem::path& path) {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error)) { return false; }
+    Gdiplus::GdiplusStartupInput input;
+    ULONG_PTR token = 0;
+    if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) { return false; }
+    bool valid = false;
+    {
+        Gdiplus::Image image(path.c_str());
+        valid = image.GetLastStatus() == Gdiplus::Ok && image.GetWidth() > 0 && image.GetHeight() > 0;
+    }
+    Gdiplus::GdiplusShutdown(token);
+    return valid;
+}
+
 YtDlpClient::YtDlpClient(YtDlpClientOptions options)
     : m_options(std::move(options)) {
 }
@@ -703,16 +818,39 @@ VideoPreview YtDlpClient::FetchPreview(const std::wstring& url, HANDLE cancelEve
         url,
         m_options.cookieSource,
         m_options.cookiesBrowser,
-        m_options.cookiesPath
+        m_options.cookiesPath,
+        m_options.ytDlpExePath,
+        m_options.logger
     );
     options.timeoutMs = 30000;
     options.cancelEvent = cancelEvent;
+    options.onStderrLine = [logger = m_options.logger](const std::wstring& line) { LogBrowserCookieExtraction(logger, line); };
 
-    const ProcessRunResult result = ProcessRunner::Run(options);
-    if (result.exitCode != 0) {
-        throw std::runtime_error("yt-dlp preview failed");
+    std::string error = "yt-dlp returned no preview metadata";
+    try {
+        const ProcessRunResult result = ProcessRunner::Run(options);
+        CheckPreviewCanceled(cancelEvent);
+        if (result.exitCode == 0) {
+            auto preview = ParseVideoPreviewJson(WideToUtf8(result.stdoutText));
+            if (!preview.title.empty() || !preview.id.empty() || preview.isPlaylist) {
+                if (preview.webpageUrl.empty()) { preview.webpageUrl = url; }
+                return preview;
+            }
+        }
+        if (!result.stderrText.empty()) { error = WideToUtf8(result.stderrText).substr(0, 2000); }
+        else if (result.timedOut) { error = "yt-dlp preview timed out"; }
+    } catch (const std::exception& ex) { error = ex.what(); }
+    CheckPreviewCanceled(cancelEvent);
+    const auto id = YouTubeVideoId(url);
+    if (!id.empty()) {
+        try {
+            auto preview = ParseYouTubeOEmbedJson(WinHttpClient::GetString(
+                L"https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3D" + id + L"&format=json", cancelEvent, 5000), url);
+            if (!preview.title.empty()) { return preview; }
+        } catch (const std::exception& ex) { error += std::string("; oEmbed: ") + ex.what(); }
     }
-    return ParseVideoPreviewJson(WideToUtf8(result.stdoutText));
+    CheckPreviewCanceled(cancelEvent);
+    throw std::runtime_error(error);
 }
 
 std::filesystem::path YtDlpClient::CacheThumbnail(const VideoPreview& preview, HANDLE cancelEvent) const {
@@ -722,9 +860,29 @@ std::filesystem::path YtDlpClient::CacheThumbnail(const VideoPreview& preview, H
     }
 
     std::error_code ec;
-    if (std::filesystem::is_regular_file(target, ec)) {
+    CheckPreviewCanceled(cancelEvent);
+    if (IsUsableThumbnail(target)) {
         return target;
     }
-    WinHttpClient::DownloadFile(preview.thumbnailUrl, target, {}, cancelEvent);
-    return target;
+    std::vector<std::wstring> urls;
+    if (!preview.thumbnailUrl.empty()) { urls.push_back(preview.thumbnailUrl); }
+    const auto id = YouTubeVideoId(preview.webpageUrl);
+    if (!id.empty()) { urls.push_back(L"https://i.ytimg.com/vi/" + id + L"/hqdefault.jpg"); }
+    for (const auto& url : preview.thumbnailUrls) {
+        if (urls.size() < 4 && std::ranges::find(urls, url) == urls.end()) { urls.push_back(url); }
+    }
+    std::string error = "thumbnail is not a supported image";
+    for (const auto& url : urls) {
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            CheckPreviewCanceled(cancelEvent);
+            try {
+                WinHttpClient::DownloadFile(url, target, {}, cancelEvent, 5000);
+                if (IsUsableThumbnail(target)) { return target; }
+                std::filesystem::remove(target, ec);
+                break;
+            } catch (const std::exception& ex) { error = ex.what(); }
+        }
+    }
+    CheckPreviewCanceled(cancelEvent);
+    throw std::runtime_error(error);
 }

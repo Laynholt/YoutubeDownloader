@@ -10,6 +10,7 @@
 #endif
 
 #include <windows.h>
+class Logger;
 
 struct YtDlpDownloadRequest {
     std::filesystem::path ytDlpExePath;
@@ -32,12 +33,15 @@ struct YtDlpProgress {
     double percent = 0.0;
     std::uint64_t downloadedBytes = 0;
     std::uint64_t totalBytes = 0;
+    bool totalBytesEstimated = false;
     std::uint64_t speedBytesPerSecond = 0;
     std::uint64_t etaSeconds = 0;
     std::wstring mediaKind;
     std::wstring formatId;
     std::wstring extension;
     std::wstring resolution;
+    bool merging = false;
+    std::uint64_t durationSeconds = 0;
 };
 
 struct YtDlpProcessLine {
@@ -57,6 +61,7 @@ struct VideoPreview {
     std::wstring uploader;
     std::uint64_t durationSeconds = 0;
     std::wstring thumbnailUrl;
+    std::vector<std::wstring> thumbnailUrls;
     std::wstring webpageUrl;
     bool isPlaylist = false;
     std::vector<VideoPreview> entries;
@@ -69,14 +74,18 @@ struct YtDlpClientOptions {
     std::wstring cookieSource = L"off";
     std::wstring cookiesBrowser;
     std::filesystem::path cookiesPath;
+    Logger* logger = nullptr;
 };
 
-std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request);
+std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request, Logger* logger = nullptr,
+    const std::filesystem::path& mergeProgressFile = {});
 std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& url,
     const std::wstring& cookieSource,
     const std::wstring& cookiesBrowser,
-    const std::filesystem::path& cookiesPath
+    const std::filesystem::path& cookiesPath,
+    const std::filesystem::path& ytDlpExe = {},
+    Logger* logger = nullptr
 );
 std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line);
 std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory);
@@ -91,8 +100,11 @@ std::filesystem::path FindExistingMediaFileForTask(
     const std::wstring& sourceUrl
 );
 YtDlpProgress ParseYtDlpProgressLine(const std::wstring& line);
+YtDlpProgress ParseFfmpegMergeProgressLine(const std::wstring& line, std::uint64_t durationSeconds);
 YtDlpProcessLine ParseYtDlpProcessLine(const std::wstring& line);
 VideoPreview ParseVideoPreviewJson(const std::string& jsonText);
+VideoPreview ParseYouTubeOEmbedJson(const std::string& jsonText, const std::wstring& url);
+bool IsUsableThumbnail(const std::filesystem::path& path);
 
 class YtDlpClient {
 public:

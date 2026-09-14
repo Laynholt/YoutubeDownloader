@@ -14,12 +14,12 @@ using HttpProgressCallback = std::function<void(std::uint64_t downloaded, std::u
 
 class WinHttpClient {
 public:
-    static std::string GetString(const std::wstring& url, HANDLE cancelEvent = nullptr);
+    static std::string GetString(const std::wstring& url, HANDLE cancelEvent = nullptr, int timeoutMs = 30000);
     static void DownloadFile(
         const std::wstring& url,
         const std::filesystem::path& target,
         const HttpProgressCallback& onProgress = {},
-        HANDLE cancelEvent = nullptr
+        HANDLE cancelEvent = nullptr,
+        int timeoutMs = 30000
     );
 };
-

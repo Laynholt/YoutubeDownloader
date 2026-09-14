@@ -1,9 +1,11 @@
 #include "UiActions.h"
 
 #include "BackendText.h"
+#include "DownloadQueue.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <cwctype>
 #include <system_error>
@@ -87,6 +89,103 @@ double PingPongProgressPhase(std::uint64_t elapsedMs, std::uint64_t periodMs) {
         return static_cast<double>(position) / half;
     }
     return (static_cast<double>(periodMs - position) / half);
+}
+
+void UpdateDownloadStatistics(DownloadStatistics& stats, const DownloadTaskSnapshot& task, std::uint64_t nowMs) {
+    const std::wstring track = task.mediaKind + L":" + task.formatId;
+    const bool downloading = task.state == DownloadTaskState::Downloading && task.statusText != L"ytdlp.download_completed_part";
+    if (!stats.active || stats.track != track || !downloading) {
+        stats = {};
+        stats.track = track;
+        stats.active = downloading;
+        stats.lastTick = nowMs;
+        stats.totalBytes = task.totalBytes;
+        stats.speedBytesPerSecond = downloading ? task.speedBytesPerSecond : 0;
+        stats.etaSeconds = downloading ? task.etaSeconds : 0;
+        stats.smoothedTotal = static_cast<double>(stats.totalBytes);
+        stats.smoothedSpeed = static_cast<double>(stats.speedBytesPerSecond);
+        stats.smoothedEta = static_cast<double>(stats.etaSeconds);
+        return;
+    }
+    if (!task.totalBytesEstimated && task.totalBytes > 0) {
+        stats.totalBytes = task.totalBytes;
+        stats.smoothedTotal = static_cast<double>(task.totalBytes);
+    }
+    const auto elapsed = nowMs - stats.lastTick;
+    if (elapsed < 1000) { return; }
+    stats.lastTick = nowMs;
+    const double alpha = 1.0 - std::exp(-static_cast<double>(elapsed) / 4000.0);
+    if (task.totalBytesEstimated) {
+        if (stats.smoothedTotal == 0) { stats.smoothedTotal = static_cast<double>(task.totalBytes); }
+        stats.smoothedTotal += (static_cast<double>(task.totalBytes) - stats.smoothedTotal) *
+            (1.0 - std::exp(-static_cast<double>(elapsed) / 6000.0));
+        stats.totalBytes = std::max(task.downloadedBytes, static_cast<std::uint64_t>(stats.smoothedTotal));
+    }
+    stats.smoothedSpeed += (static_cast<double>(task.speedBytesPerSecond) - stats.smoothedSpeed) * alpha;
+    stats.speedBytesPerSecond = static_cast<std::uint64_t>(stats.smoothedSpeed);
+    const double eta = stats.totalBytes > task.downloadedBytes && stats.smoothedSpeed >= 1.0
+        ? static_cast<double>(stats.totalBytes - task.downloadedBytes) / stats.smoothedSpeed
+        : static_cast<double>(task.etaSeconds);
+    if (stats.smoothedEta == 0) { stats.smoothedEta = eta; }
+    stats.smoothedEta += (eta - stats.smoothedEta) * alpha;
+    stats.etaSeconds = static_cast<std::uint64_t>(std::ceil(stats.smoothedEta));
+}
+
+double UpdateDownloadProgressAnimation(
+    DownloadProgressAnimation& animation, const DownloadTaskSnapshot& task, std::uint64_t nowMs) {
+    if (task.state != DownloadTaskState::Downloading && task.state != DownloadTaskState::Merging) {
+        animation = {};
+        animation.percent = task.state == DownloadTaskState::Completed
+            ? 100.0 : std::clamp(task.percent, 0.0, 100.0);
+        return animation.percent;
+    }
+    const auto track = task.state == DownloadTaskState::Merging ? L"merging" : task.mediaKind;
+    if (!animation.downloading || animation.mediaKind != track) {
+        animation = {0.0, nowMs, track, true};
+    }
+    if (task.statusText == L"ytdlp.download_completed_part" ||
+        (task.state == DownloadTaskState::Merging && task.percent >= 100.0)) {
+        animation.percent = 100.0;
+        animation.lastTick = nowMs;
+        return animation.percent;
+    }
+    const double elapsedMs = static_cast<double>(std::min<std::uint64_t>(nowMs - animation.lastTick, 100));
+    animation.lastTick = nowMs;
+    // Smooth toward the current estimate, never a remembered peak or predicted bytes.
+    const double target = std::clamp(task.percent, 0.0, 99.0);
+    if (target > animation.percent) {
+        animation.percent += (target - animation.percent) * (1.0 - std::exp(-elapsedMs / 500.0));
+    }
+    return animation.percent;
+}
+
+void SelectLogRow(LogSelection& selection, int row, int count, bool control, bool shift, bool contextMenu) {
+    if (row < 0 || row >= count) { return; }
+    selection.focused = row;
+    if (contextMenu && selection.rows.contains(row)) { return; }
+    if (shift && !contextMenu && selection.anchor >= 0 && selection.anchor < count) {
+        if (!control) { selection.rows.clear(); }
+        for (int index = std::min(selection.anchor, row); index <= std::max(selection.anchor, row); ++index) {
+            selection.rows.insert(index);
+        }
+    } else {
+        if (!control || contextMenu) { selection.rows.clear(); }
+        if (control && !contextMenu && selection.rows.contains(row)) { selection.rows.erase(row); }
+        else { selection.rows.insert(row); }
+        selection.anchor = row;
+    }
+}
+
+std::wstring SelectedLogText(const std::vector<std::wstring>& lines, const LogSelection& selection) {
+    std::wstring text;
+    bool first = true;
+    for (int row : selection.rows) {
+        if (row < 0 || row >= static_cast<int>(lines.size())) { continue; }
+        if (!first) { text += L"\r\n"; }
+        text += lines[static_cast<size_t>(row)];
+        first = false;
+    }
+    return text;
 }
 
 std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input) {
@@ -262,6 +361,8 @@ std::wstring LocalizedToolErrorText(const std::string& message) {
 
 std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind) {
     switch (kind) {
+    case ProgressTaskKind::CookieLogin:
+        return L"dialog.cookies_login_failed";
     case ProgressTaskKind::AppUpdate:
         return L"dialog.failed_to_update_the_application";
     case ProgressTaskKind::WhisperModelDownload:
@@ -278,6 +379,8 @@ std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind) {
 
 std::wstring ProgressTaskUnknownErrorMessage(ProgressTaskKind kind) {
     switch (kind) {
+    case ProgressTaskKind::CookieLogin:
+        return L"dialog.cookies_login_failed";
     case ProgressTaskKind::AppUpdate:
         return L"dialog.unknown_application_update_error";
     case ProgressTaskKind::WhisperModelDownload:
@@ -294,6 +397,8 @@ std::wstring ProgressTaskUnknownErrorMessage(ProgressTaskKind kind) {
 
 std::wstring ProgressTaskSuccessMessage(ProgressTaskKind kind, bool whisperModelReady) {
     switch (kind) {
+    case ProgressTaskKind::CookieLogin:
+        return L"dialog.cookies_connected";
     case ProgressTaskKind::AppUpdate:
         return L"dialog.update_downloaded_the_application_will_close_and_restart";
     case ProgressTaskKind::WhisperInstall:

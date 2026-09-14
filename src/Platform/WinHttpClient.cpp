@@ -143,7 +143,7 @@ DWORD QueryStatusCode(HINTERNET request) {
     return status;
 }
 
-HttpRequest OpenRequest(const std::wstring& url, int redirectsRemaining = 8) {
+HttpRequest OpenRequest(const std::wstring& url, int timeoutMs, int redirectsRemaining = 8) {
     const UrlParts parts = CrackUrl(url);
     InternetHandle session(WinHttpOpen(
         L"YoutubeDownloader/" YTD_APP_VERSION_WIDE,
@@ -156,7 +156,7 @@ HttpRequest OpenRequest(const std::wstring& url, int redirectsRemaining = 8) {
         throw LastError("failed to open WinHTTP session");
     }
 
-    WinHttpSetTimeouts(session.get(), 15000, 15000, 30000, 30000);
+    WinHttpSetTimeouts(session.get(), std::min(15000, timeoutMs), std::min(15000, timeoutMs), timeoutMs, timeoutMs);
 
     InternetHandle connect(WinHttpConnect(session.get(), parts.host.c_str(), parts.port, 0));
     if (!connect.get()) {
@@ -194,7 +194,7 @@ HttpRequest OpenRequest(const std::wstring& url, int redirectsRemaining = 8) {
     if (status >= 300 && status < 400 && redirectsRemaining > 0) {
         const std::wstring location = QueryHeaderString(request.get(), WINHTTP_QUERY_LOCATION);
         if (!location.empty()) {
-            return OpenRequest(location, redirectsRemaining - 1);
+            return OpenRequest(location, timeoutMs, redirectsRemaining - 1);
         }
     }
     if (status >= 400) {
@@ -233,8 +233,9 @@ void ThrowIfCanceled(HANDLE cancelEvent) {
 
 } // namespace
 
-std::string WinHttpClient::GetString(const std::wstring& url, HANDLE cancelEvent) {
-    HttpRequest request = OpenRequest(url);
+std::string WinHttpClient::GetString(const std::wstring& url, HANDLE cancelEvent, int timeoutMs) {
+    ThrowIfCanceled(cancelEvent);
+    HttpRequest request = OpenRequest(url, timeoutMs);
     std::string result;
     std::array<char, 8192> buffer = {};
 
@@ -263,9 +264,11 @@ void WinHttpClient::DownloadFile(
     const std::wstring& url,
     const std::filesystem::path& target,
     const HttpProgressCallback& onProgress,
-    HANDLE cancelEvent
+    HANDLE cancelEvent,
+    int timeoutMs
 ) {
-    HttpRequest request = OpenRequest(url);
+    ThrowIfCanceled(cancelEvent);
+    HttpRequest request = OpenRequest(url, timeoutMs);
     const std::uint64_t total = QueryContentLength(request.get());
 
     std::error_code ec;

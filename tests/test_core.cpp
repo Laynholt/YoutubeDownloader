@@ -2,6 +2,7 @@
 #include "AppVersion.h"
 #include "AsyncWait.h"
 #include "BackendText.h"
+#include "BrowserCookies.h"
 #include "Config.h"
 #include "DownloadQueue.h"
 #include "DownloadQueueStore.h"
@@ -1785,7 +1786,7 @@ void TestLocalizationLoadsExternalLanguageWithRussianFallback() {
     );
     Require(russian.Text(L"dialog.cookies") == L"Cookies", "Russian cookie label mismatch");
     Require(
-        russian.Text(L"dialog.cookies_description") == L"Авторизация для видео с ограниченным доступом.",
+        russian.Text(L"dialog.cookies_description") == L"Войдите один раз — cookies сохранятся автоматически.",
         "Russian cookie description mismatch"
     );
     Require(russian.Text(L"dialog.cookies_off") == L"Не использовать", "Russian cookie off mode mismatch");
@@ -2465,6 +2466,43 @@ void TestProcessRunnerEmitsEachOutputLineOnce() {
     Require(std::ranges::count(lines, L"line-1000") == 1, "last line was duplicated");
 }
 
+void TestDownloadQueueStoreRecoversFromSharingViolation() {
+    const AppPaths paths(MakeTempRoot(L"YoutubeDownloaderTests_QueueLock"));
+    DownloadTaskSnapshot original;
+    original.id = 1;
+    original.request.url = L"https://example.invalid/original";
+    DownloadQueueStore::Save(paths, {original});
+    HANDLE locked = CreateFileW(paths.downloadQueuePath().c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(locked != INVALID_HANDLE_VALUE, "could not create sharing violation fixture");
+    std::jthread release([locked] { std::this_thread::sleep_for(std::chrono::milliseconds(120)); CloseHandle(locked); });
+    auto updated = original;
+    updated.id = 2;
+    try { DownloadQueueStore::Save(paths, {updated}); }
+    catch (...) { release.join(); Require(false, "queue save must recover when a temporary reader releases the file"); }
+    release.join();
+    Require(DownloadQueueStore::Load(paths).front().id == 2, "recovered save did not commit the new snapshot");
+
+    locked = CreateFileW(paths.downloadQueuePath().c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(locked != INVALID_HANDLE_VALUE, "could not create persistent sharing violation");
+    std::string failure;
+    try { DownloadQueueStore::Save(paths, {original}); }
+    catch (const std::exception& ex) {
+        failure = ex.what();
+    }
+    CloseHandle(locked);
+    Require(!failure.empty(), "persistent lock must be reported");
+    Require(failure.find("Win32 error 5)") != std::string::npos ||
+        failure.find("Win32 error 32)") != std::string::npos ||
+        failure.find("Win32 error 33)") != std::string::npos, "save failure must contain the Windows lock/access error code");
+    Require(WideToUtf8(Utf8ToWide(failure)) == failure, "Windows error text must be UTF-8");
+    Require(DownloadQueueStore::Load(paths).front().id == 2, "failed save must preserve the previous queue");
+    for (const auto& file : fs::directory_iterator(paths.stuffDir())) {
+        Require(file.path() == paths.downloadQueuePath(), "temporary queue files must be cleaned up");
+    }
+}
+
 void TestDownloadQueueStoreRoundTripSnapshots() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStore");
     const AppPaths paths(root);
@@ -2867,6 +2905,21 @@ void TestProcessRunnerCancelKillsChildProcessTree() {
 }
 
 void TestYtDlpMetadataParsing() {
+    const auto publicPreview = ParseYouTubeOEmbedJson(
+        R"({"title":"Public video","author_name":"Author","thumbnail_url":"https://i.ytimg.com/vi/jMM9tIgz7Nw/hqdefault.jpg"})",
+        L"https://youtu.be/jMM9tIgz7Nw?si=test");
+    Require(publicPreview.id == L"jMM9tIgz7Nw" && publicPreview.title == L"Public video", "oEmbed must recover public metadata without video formats");
+    Require(publicPreview.uploader == L"Author" && !publicPreview.thumbnailUrl.empty(), "oEmbed author and image missing");
+    Require(ParseYouTubeOEmbedJson("{}", L"https://example.com/watch?v=jMM9tIgz7Nw").id.empty(), "Fallback must only accept YouTube URLs");
+    Require(ParseYouTubeOEmbedJson("bad json", L"https://youtu.be/jMM9tIgz7Nw").id.empty(), "Malformed metadata must not count as success");
+    Require(ContainsArg(BuildMetadataArguments(L"https://youtu.be/jMM9tIgz7Nw", L"off", L"", {}), L"--ignore-no-formats-error"), "Metadata must not require downloadable formats");
+    const auto imageRoot = MakeTempRoot(L"YoutubeDownloaderTests_ThumbnailValidation");
+    const auto imagePath = imageRoot / L"thumb.jpg";
+    { std::ofstream bad(imagePath); bad << "<html>not an image</html>"; }
+    Require(!IsUsableThumbnail(imagePath), "Broken cached thumbnails must not be reused");
+    const unsigned char bmp[58] = {0x42,0x4d,58,0,0,0,0,0,0,0,54,0,0,0,40,0,0,0,1,0,0,0,1,0,0,0,1,0,24,0,0,0,0,0,4,0,0,0};
+    { std::ofstream good(imagePath, std::ios::binary); good.write(reinterpret_cast<const char*>(bmp), sizeof(bmp)); }
+    Require(IsUsableThumbnail(imagePath), "Readable image must pass cache validation");
     const std::string videoJson = R"json(
 {
   "id": "abc123",
@@ -3545,6 +3598,7 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
         first.percent = 50.0;
         first.downloadedBytes = 800;
         first.totalBytes = 1600;
+        first.mediaKind = L"video";
         callbacks.onProgressDetails(first);
 
         {
@@ -3553,10 +3607,11 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
         }
         YtDlpProgress second;
         second.recognized = true;
-        second.stage = L"ytdlp.downloading_audio";
+        second.stage = L"ytdlp.downloading_video";
         second.percent = 10.0;
         second.downloadedBytes = 70;
-        second.totalBytes = 700;
+        second.totalBytes = 1600;
+        second.mediaKind = L"video";
         callbacks.onProgressDetails(second);
         return DownloadTaskResult{true, L"", {}};
     });
@@ -3570,6 +3625,211 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
     const DownloadTaskSnapshot task = queue.GetTask(id);
     Require(task.downloadedBytes == 800, "displayed downloaded bytes should not move backward");
     Require(task.totalBytes == 1600, "displayed total bytes should not move backward");
+}
+
+void TestCookieSourceLogging() {
+    const AppPaths paths(MakeTempRoot(L"YoutubeDownloaderTests_CookieLogs"));
+    const auto cookieFile = ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"edge");
+    fs::create_directories(cookieFile.parent_path());
+    {
+        std::ofstream file(cookieFile);
+        file << "# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSAPISID\tprivate-test-value\n";
+    }
+    Logger logger(paths);
+    BuildMetadataArguments(L"https://youtu.be/jMM9tIgz7Nw", L"browser", L"edge", {}, paths.ytDlpExePath(), &logger);
+    YtDlpDownloadRequest request;
+    request.cookieSource = L"file";
+    request.cookiesPath = cookieFile;
+    BuildDownloadArguments(request, &logger);
+    LogCookieFileLoaded(&logger, cookieFile, L"browser-login", L"edge");
+    LogBrowserCookieExtraction(&logger, L"Extracted 12 cookies from firefox");
+    const auto text = logger.ReadAll();
+    Require(text.find(L"source=cache browser=edge count=1") != std::wstring::npos, "preview must log cookies from cache");
+    Require(text.find(L"source=file count=1") != std::wstring::npos, "download must log cookies from selected file");
+    Require(text.find(L"source=browser-login browser=edge count=1") != std::wstring::npos, "new login must log saved cookies");
+    Require(text.find(L"source=browser browser=firefox count=12") != std::wstring::npos, "browser extraction must log completion");
+    Require(text.find(L"private-test-value") == std::wstring::npos && text.find(L"SAPISID") == std::wstring::npos, "cookie contents must not reach logs");
+    request.cookieSource = L"off";
+    BuildDownloadArguments(request, &logger);
+    Require(logger.ReadAll() == text, "disabled cookies must not log a successful load");
+}
+
+void TestManagedBrowserCookieArguments() {
+    const AppPaths paths(MakeTempRoot(L"YoutubeDownloaderTests_BrowserCookies"));
+    const auto cookieFile = ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"edge");
+    Require(cookieFile == paths.stuffDir() / L"cookies" / L"edge.txt", "managed cookies belong in stuff/cookies");
+    Require(ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"../escape").empty(), "invalid browser must not become a path");
+    fs::create_directories(cookieFile.parent_path());
+    { std::ofstream out(cookieFile); out << "# Netscape HTTP Cookie File\n"; }
+    YtDlpDownloadRequest request;
+    request.ytDlpExePath = paths.ytDlpExePath();
+    request.url = L"https://example.invalid/video";
+    request.cookieSource = L"browser";
+    request.cookiesBrowser = L"edge";
+    const auto args = BuildDownloadArguments(request);
+    Require(std::ranges::find(args, L"--cookies-from-browser") == args.end(), "managed session must avoid browser database decryption");
+    Require(std::ranges::find(args, cookieFile.wstring()) != args.end(), "download must use managed cookies");
+    const auto preview = BuildMetadataArguments(request.url, L"browser", L"edge", {}, paths.ytDlpExePath());
+    Require(std::ranges::find(preview, cookieFile.wstring()) != preview.end(), "preview must also use managed cookies");
+    request.cookieSource = L"off";
+    const auto off = BuildDownloadArguments(request);
+    Require(std::ranges::find(off, L"--cookies") == off.end(), "cookies off must ignore managed session");
+    request.cookieSource = L"file";
+    request.cookiesPath = paths.root() / L"manual.txt";
+    const auto manual = BuildDownloadArguments(request);
+    Require(std::ranges::find(manual, request.cookiesPath.wstring()) != manual.end(), "manual cookie file must remain usable");
+}
+
+void TestLogMultiSelection() {
+    const std::vector<std::wstring> lines = {L"zero", L"one", L"two", L"three", L"four"};
+    LogSelection selected;
+    SelectLogRow(selected, 1, 5, false, false);
+    SelectLogRow(selected, 3, 5, true, false);
+    Require(SelectedLogText(lines, selected) == L"one\r\nthree", "Ctrl click must add rows in log order");
+    SelectLogRow(selected, 1, 5, true, false);
+    Require(SelectedLogText(lines, selected) == L"three", "Ctrl click must toggle selected rows");
+    SelectLogRow(selected, 4, 5, false, true);
+    Require(SelectedLogText(lines, selected) == L"one\r\ntwo\r\nthree\r\nfour", "Shift click must select from the anchor");
+    SelectLogRow(selected, 0, 5, false, true);
+    Require(SelectedLogText(lines, selected) == L"zero\r\none", "Reverse Shift range must replace the previous range");
+    SelectLogRow(selected, 1, 5, false, false, true);
+    Require(selected.rows.size() == 2, "Context click must preserve selected rows");
+    SelectLogRow(selected, 4, 5, false, false, true);
+    Require(SelectedLogText(lines, selected) == L"four", "Context click outside selection must select clicked row");
+    SelectLogRow(selected, 2, 5, true, true);
+    Require(SelectedLogText(lines, selected) == L"two\r\nthree\r\nfour", "Ctrl Shift click must add a range");
+    SelectLogRow(selected, 99, 5, false, false);
+    Require(selected.rows.size() == 3, "Invalid clicks must not change selection");
+}
+
+void TestStableDownloadStatistics() {
+    DownloadTaskSnapshot task;
+    task.state = DownloadTaskState::Downloading;
+    task.mediaKind = L"video";
+    task.totalBytes = 1000000;
+    task.totalBytesEstimated = true;
+    task.speedBytesPerSecond = 10000;
+    DownloadStatistics stats;
+    UpdateDownloadStatistics(stats, task, 1000);
+    Require(stats.totalBytes == 1000000 && stats.speedBytesPerSecond == 10000, "statistics must initialize");
+    task.totalBytes = 2000000;
+    task.speedBytesPerSecond = 100000;
+    UpdateDownloadStatistics(stats, task, 1200);
+    Require(stats.totalBytes == 1000000 && stats.speedBytesPerSecond == 10000, "statistics must not flicker between publication ticks");
+    UpdateDownloadStatistics(stats, task, 2000);
+    Require(stats.totalBytes > 1000000 && stats.totalBytes < 1300000, "estimated size must absorb sudden jumps gradually");
+    Require(stats.speedBytesPerSecond > 10000 && stats.speedBytesPerSecond < 40000, "speed must smooth bursts");
+    task.totalBytesEstimated = false;
+    UpdateDownloadStatistics(stats, task, 2100);
+    Require(stats.totalBytes == 2000000, "exact total must replace estimate immediately");
+    task.mediaKind = L"audio";
+    task.totalBytes = 20000;
+    task.speedBytesPerSecond = 1000;
+    UpdateDownloadStatistics(stats, task, 2200);
+    Require(stats.totalBytes == 20000 && stats.speedBytesPerSecond == 1000, "audio must not inherit video estimates");
+    task.state = DownloadTaskState::Completed;
+    UpdateDownloadStatistics(stats, task, 2300);
+    Require(stats.speedBytesPerSecond == 0 && stats.etaSeconds == 0, "completed tasks must clear speed and ETA");
+}
+
+void TestDownloadProgressAnimation() {
+    DownloadProgressAnimation animation;
+    DownloadTaskSnapshot task;
+    task.state = DownloadTaskState::Downloading;
+    task.mediaKind = L"video";
+    task.percent = 40.0;
+    Require(UpdateDownloadProgressAnimation(animation, task, 1000) == 0.0,
+        "a new track should start at zero");
+    const double firstFrame = UpdateDownloadProgressAnimation(animation, task, 1033);
+    Require(firstFrame > 0.0 && firstFrame < 40.0, "progress must interpolate instead of jumping");
+    const double secondFrame = UpdateDownloadProgressAnimation(animation, task, 1066);
+    Require(secondFrame > firstFrame && secondFrame < 40.0,
+        "animation must continue between backend updates");
+    task.percent = 1.0;
+    Require(UpdateDownloadProgressAnimation(animation, task, 1099) == secondFrame,
+        "a revised estimate must not move the displayed bar backward");
+    task.percent = 100.0;
+    const double spike = UpdateDownloadProgressAnimation(animation, task, 1132);
+    Require(spike > secondFrame && spike < 99.0, "an estimated 100 percent must not fill the bar");
+    task.percent = 50.0;
+    for (std::uint64_t tick = 1165; tick < 6000; tick += 33) {
+        UpdateDownloadProgressAnimation(animation, task, tick);
+    }
+    Require(animation.percent > 49.0 && animation.percent <= 50.0,
+        "animation must follow the revised target, not retain a transient 100 percent target");
+    task.percent = 100.0;
+    for (std::uint64_t tick = 6000; tick < 10000; tick += 33) {
+        UpdateDownloadProgressAnimation(animation, task, tick);
+    }
+    Require(animation.percent <= 99.0, "a running download must not display completion");
+    task.statusText = L"ytdlp.download_completed_part";
+    Require(UpdateDownloadProgressAnimation(animation, task, 10000) == 100.0,
+        "a finished track must immediately reach 100 percent before merging");
+    task.statusText.clear();
+    task.mediaKind = L"audio";
+    task.percent = 20.0;
+    Require(UpdateDownloadProgressAnimation(animation, task, 10000) == 0.0,
+        "audio must start a separate animation");
+    Require(UpdateDownloadProgressAnimation(animation, task, 10033) > 0.0,
+        "audio progress should animate");
+    task.state = DownloadTaskState::Canceled;
+    UpdateDownloadProgressAnimation(animation, task, 10066);
+    task.state = DownloadTaskState::Downloading;
+    Require(UpdateDownloadProgressAnimation(animation, task, 10099) == 0.0,
+        "a retry must reset animation even if the preparing state was not painted");
+    task.state = DownloadTaskState::Completed;
+    Require(UpdateDownloadProgressAnimation(animation, task, 10132) == 100.0,
+        "completion must immediately display 100 percent");
+}
+
+void TestDownloadQueueProgressTracksCurrentSizeEstimateAndMedia() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_TrackProgress");
+    const fs::path videoPath = root / L"video.mp4";
+    DownloadQueue queue(1);
+    std::vector<DownloadTaskSnapshot> updates;
+    queue.SetExecutor([&](
+        const DownloadTaskSnapshot& task,
+        std::stop_token,
+        const DownloadTaskCallbacks& callbacks
+    ) {
+        const auto report = [&](const std::wstring& payload) {
+            callbacks.onProgressDetails(ParseYtDlpProgressLine(L"__YTDLP_PROGRESS__ " + payload));
+            updates.push_back(queue.GetTask(task.id));
+        };
+        report(L"status=downloading downloaded=64 total=NA total_estimate=NA part=video");
+        report(L"status=downloading downloaded=64 total=NA total_estimate=64 part=video");
+        report(L"status=downloading downloaded=64 total=NA total_estimate=128 part=video");
+        report(L"status=downloading downloaded=64 total=NA total_estimate=80 part=video");
+        report(L"status=finished downloaded=80 total=80 part=video");
+        {
+            std::ofstream out(videoPath, std::ios::binary);
+            out << std::string(80, 'v');
+        }
+        callbacks.onOutputLine(L"[download] Destination: " + videoPath.wstring());
+        report(L"status=downloading downloaded=1 total=10 part=audio");
+        report(L"status=downloading downloaded=2 total=10 part=audio");
+        return DownloadTaskResult{true, L"", {}};
+    });
+
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/estimated-track-progress";
+    request.outputDirectory = root;
+    const int id = queue.Enqueue(request, L"Estimated track progress");
+    queue.WaitForIdle();
+
+    Require(updates.size() == 7, "all progress updates should be captured");
+    Require(updates[0].percent == 0.0 && updates[0].totalBytes == 0,
+        "unknown total must not manufacture 100 percent");
+    Require(updates[2].percent == 50.0 && updates[2].totalBytes == 128,
+        "a corrected larger estimate must release a premature 100 percent");
+    Require(updates[3].percent == 80.0 && updates[3].totalBytes == 80,
+        "a corrected smaller estimate must update the displayed total and percent");
+    Require(updates[4].percent == 100.0, "finished video should reach 100 percent");
+    Require(updates[5].percent == 10.0 && updates[5].downloadedBytes == 1,
+        "audio progress must exclude the completed video file");
+    Require(updates[6].percent == 20.0 && updates[6].totalBytes == 10,
+        "later audio updates must still exclude the completed video file");
+    Require(queue.GetTask(id).percent == 100.0, "completed task should reach 100 percent");
 }
 
 void TestDownloadQueueProgressPercentDoesNotMoveBackwardWithinTrack() {
@@ -3650,6 +3910,57 @@ void TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts() {
     Require(task.state == DownloadTaskState::Failed, "fixture task should fail after progress assertions");
     Require(task.mediaKind == L"audio", "stale video progress should not replace active audio track");
     Require(task.statusText == L"app.error", "failed task should keep final failed status");
+}
+
+void TestDownloadQueueMergeProgress() {
+    const auto merger = ParseYtDlpProgressLine(L"__YTDLP_POSTPROCESS__ status=started postprocessor=Merger duration=120");
+    Require(merger.recognized && merger.merging && merger.percent == 0.0 && merger.durationSeconds == 120,
+        "merge start must be recognized separately from downloading");
+    Require(!ParseYtDlpProgressLine(L"__YTDLP_POSTPROCESS__ status=started postprocessor=MoveFiles duration=120").recognized,
+        "moving a file is not merging");
+    Require(ParseYtDlpProgressLine(L"__YTDLP_POSTPROCESS__ status=started postprocessor=Merger duration=NA").percent < 0,
+        "unknown merge duration must use indeterminate progress");
+    Require(ParseFfmpegMergeProgressLine(L"out_time_us=60000000", 120).percent == 50.0, "merge progress must use media time");
+    Require(!ParseFfmpegMergeProgressLine(L"out_time_us=N/A", 120).recognized, "invalid ffmpeg timestamp must be ignored");
+    Require(ParseFfmpegMergeProgressLine(L"out_time_us=121000000", 120).percent < 100, "container finalization must not report completion early");
+
+    for (const auto& outcome : {L"success", L"failure", L"cancel"}) {
+        const auto root = MakeTempRoot(L"YoutubeDownloaderTests_MergeProgress");
+        DownloadQueue queue(1);
+        YtDlpDownloadRequest request;
+        request.ytDlpExePath = CurrentTestExecutablePath();
+        request.outputDirectory = root;
+        request.url = std::wstring(L"https://example.invalid/merge-") + outcome;
+        request.ffmpegAvailable = true;
+        const int id = queue.Enqueue(request, L"Merge fixture");
+        Require(WaitUntil([&] { const auto t = queue.GetTask(id); return t.state == DownloadTaskState::Merging && t.percent == 50.0; }, std::chrono::milliseconds(5000)),
+            "default executor must publish live ffmpeg progress after finished audio");
+        auto task = queue.GetTask(id);
+        Require(task.speedBytesPerSecond == 0 && task.etaSeconds == 0, "merging must clear download speed and ETA");
+        DownloadProgressAnimation animation;
+        auto audio = task;
+        audio.state = DownloadTaskState::Downloading;
+        audio.statusText = L"ytdlp.download_completed_part";
+        audio.percent = 100;
+        Require(UpdateDownloadProgressAnimation(animation, audio, 1000) == 100, "finished audio must fill the bar");
+        Require(UpdateDownloadProgressAnimation(animation, task, 1033) == 0, "merging must reset the audio bar");
+        Require(UpdateDownloadProgressAnimation(animation, task, 1066) > 0, "merging must animate its own progress");
+        const AppPaths paths(root);
+        DownloadQueueStore::Save(paths, {task});
+        Require(DownloadQueueStore::Load(paths).front().state == DownloadTaskState::Merging, "merge state must persist");
+        Require(queue.ExportSnapshotsForShutdown().front().state == DownloadTaskState::Canceled, "interrupted merging must be resumable");
+        if (std::wstring_view(outcome) == L"cancel") { queue.Cancel(id); }
+        queue.WaitForIdle();
+        task = queue.GetTask(id);
+        const auto expected = std::wstring_view(outcome) == L"success" ? DownloadTaskState::Completed :
+            std::wstring_view(outcome) == L"cancel" ? DownloadTaskState::Canceled : DownloadTaskState::Failed;
+        Require(task.state == expected, "merge outcome must preserve success, failure and cancellation");
+        if (expected == DownloadTaskState::Completed) { Require(task.percent == 100, "successful merge must finish at 100 percent"); }
+        std::ifstream recorded(root / L"progress-path.txt");
+        std::string file;
+        std::getline(recorded, file);
+        Require(!file.empty() && !fs::exists(Utf8ToWide(file)), "merge progress file must be removed on every exit path");
+    }
 }
 
 void TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts() {
@@ -3919,6 +4230,55 @@ void TestOwnWindowVisibleStyleIgnoresHiddenParent() {
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc > 2 && std::string(argv[1]) == "--newline") {
+        std::wstring progressPath;
+        fs::path outputDirectory;
+        for (int index = 2; index + 1 < argc; ++index) {
+            const auto arg = Utf8ToWide(argv[index]);
+            if (arg == L"--postprocessor-args") {
+                const auto value = Utf8ToWide(argv[index + 1]);
+                const auto begin = value.find(L'"');
+                const auto end = value.find(L'"', begin + 1);
+                if (begin != std::wstring::npos && end != std::wstring::npos) { progressPath = value.substr(begin + 1, end - begin - 1); }
+            }
+            if (arg == L"--output") { outputDirectory = fs::path(Utf8ToWide(argv[index + 1])).parent_path(); }
+        }
+        if (progressPath.empty()) { return 2; }
+        { std::ofstream file(outputDirectory / L"progress-path.txt"); file << WideToUtf8(progressPath); }
+        std::cout << "__YTDLP_PROGRESS__ status=finished downloaded=1000 total=1000 vcodec=none acodec=aac ext=m4a format=140\n" << std::flush;
+        std::cout << "__YTDLP_POSTPROCESS__ status=started postprocessor=Merger duration=120\n" << std::flush;
+        { std::ofstream file(fs::path(progressPath), std::ios::binary); file << "out_time_us=60000000\r\nprogress=continue\r\n"; }
+        std::this_thread::sleep_for(std::chrono::milliseconds(900));
+        const std::string outcome = argv[argc - 1];
+        if (outcome.ends_with("failure")) { std::cerr << "planned ffmpeg failure\n"; return 1; }
+        if (outcome.ends_with("cancel")) { std::this_thread::sleep_for(std::chrono::seconds(10)); return 1; }
+        { std::ofstream file(outputDirectory / L"merged.mp4"); file << "fixture"; }
+        std::cout << "__YTDLP_POSTPROCESS__ status=finished postprocessor=Merger duration=120\n" << std::flush;
+        return 0;
+    }
+    if (argc == 3 && std::string(argv[1]) == "--preview-live") {
+        try {
+            YtDlpClientOptions options;
+            options.ytDlpExePath = fs::path(argv[2]);
+            options.thumbCacheDir = MakeTempRoot(L"YoutubeDownloaderTests_LivePreview");
+            YtDlpClient client(options);
+            for (const auto& url : {L"https://youtu.be/jMM9tIgz7Nw", L"https://youtu.be/lsnlLXOJoFA"}) {
+                auto preview = client.FetchPreview(url);
+                Require(!preview.id.empty() && !preview.title.empty(), "Live metadata missing");
+                Require(IsUsableThumbnail(client.CacheThumbnail(preview)), "Live thumbnail unreadable");
+                std::cout << "Metadata and thumbnail passed\n";
+            }
+            options.ytDlpExePath = options.thumbCacheDir / L"missing-yt-dlp.exe";
+            YtDlpClient fallback(options);
+            auto preview = fallback.FetchPreview(L"https://youtu.be/jMM9tIgz7Nw");
+            Require(!preview.title.empty(), "Public metadata fallback failed");
+            preview.thumbnailUrl = L"http://127.0.0.1:9/missing.jpg";
+            { std::ofstream corrupt(options.thumbCacheDir / (preview.id + L".jpg")); corrupt << "invalid image"; }
+            Require(IsUsableThumbnail(fallback.CacheThumbnail(preview)), "Thumbnail fallback or cache repair failed");
+            std::cout << "Metadata fallback, image fallback and corrupt cache repair passed\n";
+            return 0;
+        } catch (const std::exception& ex) { std::cerr << ex.what() << "\n"; return 1; }
+    }
     if (argc >= 2 && std::string(argv[1]) == "-version") {
         std::cout << "ffmpeg version 7.0-test\n";
         return 0;
@@ -3945,6 +4305,7 @@ int main(int argc, char** argv) {
     }
     TestAppPaths();
     TestDownloadQueueStoreRoundTripSnapshots();
+    TestDownloadQueueStoreRecoversFromSharingViolation();
     TestDownloadQueueStoreNormalizesSponsorBlockMode();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
@@ -4036,9 +4397,16 @@ int main(int argc, char** argv) {
     TestDownloadQueueClearQueuedOnlyRemovesWaitingTasks();
     TestDownloadQueueClearFinishedKeepsQueuedTasks();
     TestDownloadQueueDownloadedBytesDoNotMoveBackward();
+    TestLogMultiSelection();
+    TestStableDownloadStatistics();
+    TestDownloadProgressAnimation();
+    TestManagedBrowserCookieArguments();
+    TestCookieSourceLogging();
+    TestDownloadQueueProgressTracksCurrentSizeEstimateAndMedia();
     TestDownloadQueueProgressPercentDoesNotMoveBackwardWithinTrack();
     TestDownloadQueueIgnoresStaleVideoProgressAfterAudioStarts();
     TestDownloadQueueIgnoresUnclassifiedFinishedProgressAfterAudioStarts();
+    TestDownloadQueueMergeProgress();
     TestDownloadQueueClearFinishedDeletesInvalidPartFilesOnly();
     TestDownloadQueueImportsRestoredTasksWithoutStartingThem();
     TestDownloadQueueExportForShutdownStopsActiveTasks();

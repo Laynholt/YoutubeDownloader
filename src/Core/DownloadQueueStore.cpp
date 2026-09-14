@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fstream>
+#include <atomic>
 #include <optional>
 #include <stdexcept>
 #include <system_error>
@@ -76,6 +77,8 @@ std::string StateToString(DownloadTaskState state) {
         return "Preparing";
     case DownloadTaskState::Downloading:
         return "Downloading";
+    case DownloadTaskState::Merging:
+        return "Merging";
     case DownloadTaskState::Completed:
         return "Completed";
     case DownloadTaskState::Failed:
@@ -95,6 +98,9 @@ DownloadTaskState StateFromString(const std::string& state) {
     }
     if (state == "Downloading") {
         return DownloadTaskState::Downloading;
+    }
+    if (state == "Merging") {
+        return DownloadTaskState::Merging;
     }
     if (state == "Completed") {
         return DownloadTaskState::Completed;
@@ -149,6 +155,7 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["error_text"] = WideToUtf8(task.errorText);
     json["downloaded_bytes"] = task.downloadedBytes;
     json["total_bytes"] = task.totalBytes;
+    json["total_bytes_estimated"] = task.totalBytesEstimated;
     json["speed_bytes_per_second"] = task.speedBytesPerSecond;
     json["eta_seconds"] = task.etaSeconds;
     json["duration_seconds"] = task.durationSeconds;
@@ -198,6 +205,7 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     task.errorText = WStringFromJson(json, "error_text");
     task.downloadedBytes = UInt64FromJson(json, "downloaded_bytes");
     task.totalBytes = UInt64FromJson(json, "total_bytes");
+    task.totalBytesEstimated = BoolFromJson(json, "total_bytes_estimated");
     task.speedBytesPerSecond = UInt64FromJson(json, "speed_bytes_per_second");
     task.etaSeconds = UInt64FromJson(json, "eta_seconds");
     task.durationSeconds = UInt64FromJson(json, "duration_seconds");
@@ -210,15 +218,20 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
 }
 
 void ReplaceQueueStoreFile(const std::filesystem::path& tmpPath, const std::filesystem::path& storePath) {
-    if (MoveFileExW(
-            tmpPath.c_str(),
-            storePath.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        return;
+    DWORD error = ERROR_SUCCESS;
+    for (DWORD attempt = 0; attempt < 5; ++attempt) {
+        if (MoveFileExW(tmpPath.c_str(), storePath.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            return;
+        }
+        error = GetLastError();
+        if (attempt == 4 || (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION && error != ERROR_ACCESS_DENIED)) {
+            break;
+        }
+        Sleep(20U << attempt);
     }
-
-    const std::error_code ec(static_cast<int>(GetLastError()), std::system_category());
-    throw std::runtime_error("failed to replace queue store file: " + ec.message());
+    wchar_t message[512] = {};
+    FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, error, 0, message, 512, nullptr);
+    throw std::runtime_error("failed to replace queue store file (Win32 error " + std::to_string(error) + "): " + WideToUtf8(message));
 }
 
 } // namespace
@@ -266,15 +279,21 @@ void DownloadQueueStore::Save(const AppPaths& paths, const std::vector<DownloadT
         root["tasks"].push_back(TaskToJson(task));
     }
 
-    const std::filesystem::path tmpPath = paths.downloadQueuePath().wstring() + L".tmp";
-    {
+    static std::atomic<std::uint64_t> sequence = 0;
+    const std::filesystem::path tmpPath = paths.downloadQueuePath().wstring() + L".tmp." +
+        std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(sequence.fetch_add(1));
+    try {
         std::ofstream out(tmpPath, std::ios::binary | std::ios::trunc);
         if (!out) {
             throw std::runtime_error("failed to open temporary queue store file");
         }
         out << root.dump(2);
         out << "\n";
+        out.close();
+        if (!out) { throw std::runtime_error("failed to write temporary queue store file"); }
+        ReplaceQueueStoreFile(tmpPath, paths.downloadQueuePath());
+    } catch (...) {
+        std::filesystem::remove(tmpPath, ec);
+        throw;
     }
-
-    ReplaceQueueStoreFile(tmpPath, paths.downloadQueuePath());
 }

@@ -1,4 +1,5 @@
 #include "DialogWindows.h"
+#include "BrowserCookies.h"
 
 #include "AppVersion.h"
 #include "BackendText.h"
@@ -106,6 +107,7 @@ enum class DialogType {
 };
 
 enum class ProgressMode {
+    CookieLogin,
     FfmpegInstall,
     WhisperInstall,
     WhisperModelDownload,
@@ -206,9 +208,10 @@ struct LogViewState {
     std::wstring text;
     std::vector<std::wstring> lines;
     std::vector<LogLineLayout> layouts;
+    int layoutWidth = 0;
     int scrollY = 0;
     int contentHeight = 0;
-    int selectedLine = -1;
+    LogSelection selection;
     bool draggingThumb = false;
     int dragStartY = 0;
     int dragStartScrollY = 0;
@@ -252,9 +255,11 @@ struct DialogTooltipState {
 struct CookieBrowserOption {
     std::wstring id;
     std::wstring label;
+    std::filesystem::path executable;
 };
 
 struct DialogState {
+    Logger* logger = nullptr;
     DialogType type = DialogType::Info;
     HINSTANCE instance = nullptr;
     HWND owner = nullptr;
@@ -305,6 +310,7 @@ struct DialogState {
     std::filesystem::path* selectedVotExecutableResult = nullptr;
     std::vector<UiLanguage> uiLanguages;
     std::vector<CookieBrowserOption> cookieBrowsers;
+    CookieBrowserOption loginBrowser;
     std::wstring originalUiLanguage;
 };
 
@@ -767,7 +773,7 @@ std::optional<std::filesystem::path> PickCookieFile(HWND owner) {
     return result;
 }
 
-bool RegistryAppPathExists(const wchar_t* executableName) {
+std::filesystem::path RegistryAppPath(const wchar_t* executableName) {
     const std::wstring subkey =
         L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" +
         std::wstring(executableName);
@@ -782,10 +788,24 @@ bool RegistryAppPathExists(const wchar_t* executableName) {
                 nullptr,
                 &size
             ) == ERROR_SUCCESS) {
-            return true;
+            if (size == 0 || size > 65536) {
+                continue;
+            }
+            std::wstring value(size / sizeof(wchar_t), L'\0');
+            if (RegGetValueW(root, subkey.c_str(), nullptr, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                    nullptr, value.data(), &size) == ERROR_SUCCESS) {
+                value.resize(std::wcslen(value.c_str()));
+                if (value.size() >= 2 && value.front() == L'"' && value.back() == L'"') {
+                    value = value.substr(1, value.size() - 2);
+                }
+                std::error_code error;
+                if (std::filesystem::is_regular_file(value, error)) {
+                    return value;
+                }
+            }
         }
     }
-    return false;
+    return {};
 }
 
 std::optional<std::filesystem::path> EnvironmentDirectory(const wchar_t* name) {
@@ -839,18 +859,19 @@ std::vector<CookieBrowserOption> DetectCookieBrowsers() {
 
     std::vector<CookieBrowserOption> result;
     for (const BrowserSpec& browser : browsers) {
-        bool installed = RegistryAppPathExists(browser.executable);
+        std::filesystem::path executable = RegistryAppPath(browser.executable);
         for (const auto& [environment, relative] : browser.fallbacks) {
-            if (installed || !environment) {
+            if (!executable.empty() || !environment) {
                 break;
             }
             const std::optional<std::filesystem::path> directory = EnvironmentDirectory(environment);
             std::error_code error;
-            installed = directory &&
-                std::filesystem::is_regular_file(*directory / relative, error);
+            if (directory && std::filesystem::is_regular_file(*directory / relative, error)) {
+                executable = *directory / relative;
+            }
         }
-        if (installed) {
-            result.push_back({browser.id, browser.label});
+        if (!executable.empty()) {
+            result.push_back({browser.id, browser.label, executable});
         }
     }
     return result;
@@ -1718,6 +1739,9 @@ void RunModal(HWND owner, HWND window) {
 }
 
 void ShowModal(DialogState* state, int width, int height) {
+    if (state->type == DialogType::Progress) {
+        height = std::max(height, 320);
+    }
     RegisterDialogClasses(state->instance);
 
     DWORD style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
@@ -1910,6 +1934,12 @@ void LayoutVotCandidateDialog(DialogState* state, int width, int height) {
 void LayoutProgressDialog(DialogState* state, int width, int height) {
     const int panelRight = width - kDialogPanelInset;
     const int panelBottom = height - kDialogPanelInset;
+    if (state->scrollText) {
+        const int textBottom = state->progressMode == ProgressMode::CookieLogin
+            ? panelBottom - kDialogButtonInset - kDialogButtonHeight - 12
+            : height - 134;
+        MoveWindow(state->scrollText, 24, 60, width - 48, std::max(40, textBottom - 60), TRUE);
+    }
 
     HWND cancel = GetDlgItem(state->window, IdCancel);
     if (cancel) {
@@ -2568,35 +2598,31 @@ void DrawProgressDialog(DialogState* state, HDC dc, const RECT& client) {
     DrawDialogBackground(dc, client);
 
     HFONT titleFont = CreateUiFont(-18, FW_SEMIBOLD);
-    HFONT textFont = CreateUiFont(-15, FW_NORMAL);
     HFONT smallFont = CreateUiFont(-13, FW_NORMAL);
 
     RECT titleRect = {24, 28, client.right - 24, 58};
     DrawTextBlock(dc, state->title, titleRect, kTextColor, titleFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-    RECT statusRect = {24, 72, client.right - 24, 102};
-    DrawTextBlock(
-        dc,
-        state->message,
-        statusRect,
-        kTextColor,
-        textFont,
-        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS
-    );
+    if (state->progressMode == ProgressMode::CookieLogin) {
+        DeleteObject(titleFont);
+        DeleteObject(smallFont);
+        return;
+    }
+    const int progressTop = client.bottom - 100;
 
     const std::wstring sizes = FormatProgressBytes(state->progressDownloaded, state->progressTotal);
     if (!sizes.empty()) {
-        RECT sizesRect = {24, 104, client.right - 24, 126};
+        RECT sizesRect = {24, progressTop - 30, client.right - 24, progressTop - 8};
         DrawTextBlock(dc, sizes, sizesRect, kMutedTextColor, smallFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     const int percent = state->progressSuccess
         ? 100
         : CalculateProgressPercent(state->progressDownloaded, state->progressTotal);
-    RECT progressRect = {24, 136, client.right - 84, 144};
+    RECT progressRect = {24, progressTop, client.right - 84, progressTop + 8};
     UiRenderer::DrawProgressBar(dc, progressRect, percent);
 
-    RECT percentRect = {client.right - 74, 130, client.right - 24, 150};
+    RECT percentRect = {client.right - 74, progressTop - 6, client.right - 24, progressTop + 14};
     DrawTextBlock(
         dc,
         std::to_wstring(percent) + L"%",
@@ -2607,7 +2633,6 @@ void DrawProgressDialog(DialogState* state, HDC dc, const RECT& client) {
     );
 
     DeleteObject(titleFont);
-    DeleteObject(textFont);
     DeleteObject(smallFont);
 }
 
@@ -3109,14 +3134,25 @@ void CreateFfmpegControls(DialogState* state) {
 }
 
 void InvalidateProgressContent(HWND window) {
+    auto* state = reinterpret_cast<DialogState*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (state && state->scrollText) {
+        auto* text = reinterpret_cast<ScrollTextState*>(GetWindowLongPtrW(state->scrollText, GWLP_USERDATA));
+        if (text && text->text != state->message) {
+            text->text = state->message;
+            text->scrollY = 0;
+            InvalidateRect(state->scrollText, nullptr, FALSE);
+        }
+    }
     RECT client = {};
     GetClientRect(window, &client);
-    RECT progressContent = {20, 68, client.right - 20, 154};
+    RECT progressContent = {20, 60, client.right - 20, client.bottom - 72};
     InvalidateRect(window, &progressContent, FALSE);
 }
 
 ProgressTaskKind ProgressKindFor(ProgressMode mode) {
     switch (mode) {
+    case ProgressMode::CookieLogin:
+        return ProgressTaskKind::CookieLogin;
     case ProgressMode::AppUpdate:
         return ProgressTaskKind::AppUpdate;
     case ProgressMode::WhisperInstall:
@@ -3379,10 +3415,43 @@ void StartAppUpdateWorker(DialogState* state) {
     });
 }
 
+bool ShowBrowserLoginProgress(DialogState* settings) {
+    if (!settings->paths) {
+        return false;
+    }
+    const auto browser = std::ranges::find_if(settings->cookieBrowsers, [settings](const auto& item) {
+        return item.id == settings->workingConfig.cookiesBrowser;
+    });
+    if (browser == settings->cookieBrowsers.end() || !SupportsBrowserLogin(browser->id)) {
+        return false;
+    }
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::CookieLogin;
+    state->instance = settings->instance;
+    state->owner = settings->window;
+    state->paths = settings->paths;
+    state->loginBrowser = *browser;
+    state->logger = settings->logger;
+    state->title = L"dialog.cookies_connect";
+    state->message = L"dialog.cookies_login_waiting";
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
+    return saved;
+}
+
 void CreateProgressControls(DialogState* state) {
+    state->scrollText = CreateScrollText(state->window, state->instance, state->message);
     HWND cancelButton = CreateDarkButton(state->window, state->instance, L"dialog.cancel", IdCancel, false, false);
     AddDialogTooltip(state, cancelButton, L"dialog.cancels_the_current_operation");
-    if (state->progressMode == ProgressMode::AppUpdate) {
+    if (state->progressMode == ProgressMode::CookieLogin) {
+        StartProgressWorker(state, ProgressTaskKind::CookieLogin,
+            [paths = *state->paths, browser = state->loginBrowser, cancel = state->cancelEvent, logger = state->logger](const ProgressReporter&) {
+                ConnectBrowserCookies(paths, browser.id, browser.executable, cancel, logger);
+            });
+    } else if (state->progressMode == ProgressMode::AppUpdate) {
         StartAppUpdateWorker(state);
     } else if (state->progressMode == ProgressMode::FfmpegInstall) {
         StartFfmpegInstallWorker(state);
@@ -4472,6 +4541,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     }
 
                     std::error_code cookieError;
+                    if (state->workingConfig.cookieSource == L"browser" && state->paths &&
+                        SupportsBrowserLogin(state->workingConfig.cookiesBrowser) &&
+                        !std::filesystem::is_regular_file(ManagedBrowserCookiesPath(
+                            state->paths->ytDlpExePath(), state->workingConfig.cookiesBrowser), cookieError)) {
+                        if (!ShowBrowserLoginProgress(state)) {
+                            return 0;
+                        }
+                    }
                     if (state->workingConfig.cookieSource == L"file" &&
                         !std::filesystem::is_regular_file(state->workingConfig.cookiesPath, cookieError)) {
                         ShowErrorDialog(
@@ -4551,7 +4628,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (state->savedResult) {
                     *state->savedResult = true;
                 }
-                if (state->progressMode == ProgressMode::AppUpdate) {
+                if (state->progressMode == ProgressMode::AppUpdate || state->progressMode == ProgressMode::CookieLogin) {
                     DestroyWindow(window);
                     return 0;
                 }
@@ -4948,6 +5025,10 @@ std::vector<std::wstring> SplitLogLines(const std::wstring& text) {
 
 void RebuildLogLayout(HDC dc, HFONT font, LogViewState* state, const RECT& client) {
     const int textWidth = std::max(40, static_cast<int>(client.right - client.left) - 42);
+    if (state->layoutWidth == textWidth && state->layouts.size() == state->lines.size()) {
+        ClampScroll(nullptr, state, GetScrollVisibleEnd(client));
+        return;
+    }
     int y = kScrollTextTopPadding;
     state->layouts.clear();
     state->layouts.reserve(state->lines.size());
@@ -4959,17 +5040,15 @@ void RebuildLogLayout(HDC dc, HFONT font, LogViewState* state, const RECT& clien
         y = layout.rect.bottom;
     }
     state->contentHeight = y + kScrollTextBottomPadding;
+    state->layoutWidth = textWidth;
     ClampScroll(nullptr, state, GetScrollVisibleEnd(client));
 }
 
 int HitTestLogLine(LogViewState* state, int contentY) {
-    for (size_t index = 0; index < state->layouts.size(); ++index) {
-        const RECT& rect = state->layouts[index].rect;
-        if (contentY >= rect.top && contentY < rect.bottom) {
-            return static_cast<int>(index);
-        }
-    }
-    return -1;
+    const auto line = std::lower_bound(state->layouts.begin(), state->layouts.end(), contentY,
+        [](const LogLineLayout& layout, int y) { return layout.rect.bottom <= y; });
+    return line != state->layouts.end() && contentY >= line->rect.top
+        ? static_cast<int>(line - state->layouts.begin()) : -1;
 }
 
 void ShowLogCopyMenu(HWND owner, HINSTANCE instance, POINT screenPoint, const std::wstring& text) {
@@ -5281,8 +5360,8 @@ LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
             if (message == WM_CONTEXTMENU) {
                 point = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
                 if (point.x == -1 && point.y == -1) {
-                    if (state->selectedLine >= 0 && state->selectedLine < static_cast<int>(state->layouts.size())) {
-                        const RECT selected = state->layouts[static_cast<size_t>(state->selectedLine)].rect;
+                    if (state->selection.focused >= 0 && state->selection.focused < static_cast<int>(state->layouts.size())) {
+                        const RECT selected = state->layouts[static_cast<size_t>(state->selection.focused)].rect;
                         point = {client.left + 18, client.top + selected.top - state->scrollY + 4};
                     } else {
                         return 0;
@@ -5312,13 +5391,14 @@ LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
 
             const int hit = HitTestLogLine(state, point.y + state->scrollY);
             if (hit >= 0) {
-                state->selectedLine = hit;
+                SelectLogRow(state->selection, hit, static_cast<int>(state->lines.size()),
+                    (wParam & MK_CONTROL) != 0, (wParam & MK_SHIFT) != 0, message != WM_LBUTTONDOWN);
                 InvalidateRect(window, nullptr, FALSE);
                 if (message == WM_RBUTTONUP || message == WM_CONTEXTMENU) {
                     POINT screenPoint = point;
                     ClientToScreen(window, &screenPoint);
                     HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
-                    ShowLogCopyMenu(window, instance, screenPoint, state->lines[static_cast<size_t>(hit)]);
+                    ShowLogCopyMenu(window, instance, screenPoint, SelectedLogText(state->lines, state->selection));
                 }
             }
         }
@@ -5355,9 +5435,8 @@ LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
     case WM_KEYDOWN:
         if (state) {
             const bool controlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            if (controlDown && wParam == 'C' && state->selectedLine >= 0 &&
-                state->selectedLine < static_cast<int>(state->lines.size())) {
-                CopyTextToClipboard(window, state->lines[static_cast<size_t>(state->selectedLine)]);
+            if (controlDown && wParam == 'C' && !state->selection.rows.empty()) {
+                CopyTextToClipboard(window, SelectedLogText(state->lines, state->selection));
                 return 0;
             }
         }
@@ -5381,8 +5460,11 @@ LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
 
                 const int textLeft = client.left + 14;
                 const int textRight = client.right - 28;
-                for (size_t index = 0; index < state->lines.size(); ++index) {
+                const auto first = std::lower_bound(state->layouts.begin(), state->layouts.end(), state->scrollY,
+                    [](const LogLineLayout& layout, int y) { return layout.rect.bottom <= y; });
+                for (size_t index = static_cast<size_t>(first - state->layouts.begin()); index < state->layouts.size(); ++index) {
                     const RECT layout = state->layouts[index].rect;
+                    if (layout.top - state->scrollY > client.bottom) { break; }
                     RECT visualRect = {
                         textLeft,
                         client.top + layout.top - state->scrollY,
@@ -5392,7 +5474,7 @@ LRESULT CALLBACK LogViewProc(HWND window, UINT message, WPARAM wParam, LPARAM lP
                     if (visualRect.bottom < client.top || visualRect.top > client.bottom) {
                         continue;
                     }
-                    if (static_cast<int>(index) == state->selectedLine) {
+                    if (state->selection.rows.contains(static_cast<int>(index))) {
                         Gdiplus::Graphics graphics(dc);
                         graphics.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
                         RECT selected = {visualRect.left - 6, visualRect.top - 2, visualRect.right + 2, visualRect.bottom - 4};
@@ -5560,10 +5642,12 @@ bool ShowSettingsDialog(
     HINSTANCE instance,
     const AppPaths& paths,
     AppConfig& config,
-    SettingsInitialSection initialSection
+    SettingsInitialSection initialSection,
+    Logger* logger
 ) {
     auto* state = new DialogState{};
     state->type = DialogType::Settings;
+    state->logger = logger;
     state->instance = instance;
     state->owner = owner;
     state->title = L"app.settings";

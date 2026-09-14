@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,7 @@ enum class WhisperCudaReadinessAction {
 };
 
 enum class ProgressTaskKind {
+    CookieLogin,
     FfmpegInstall,
     WhisperInstall,
     WhisperModelDownload,
@@ -83,7 +85,36 @@ struct EditContextMenuItem {
 
 DownloadAttemptAction ResolveDownloadAttempt(bool ytDlpReady, bool previewLoading);
 bool ShouldStartPreviewFetchForText(const std::wstring& text);
+struct LogSelection {
+    std::set<int> rows;
+    int anchor = -1;
+    int focused = -1;
+};
+void SelectLogRow(LogSelection& selection, int row, int count, bool control, bool shift, bool contextMenu = false);
+std::wstring SelectedLogText(const std::vector<std::wstring>& lines, const LogSelection& selection);
 double PingPongProgressPhase(std::uint64_t elapsedMs, std::uint64_t periodMs);
+struct DownloadTaskSnapshot;
+struct DownloadStatistics {
+    std::uint64_t totalBytes = 0;
+    std::uint64_t speedBytesPerSecond = 0;
+    std::uint64_t etaSeconds = 0;
+    double smoothedTotal = 0;
+    double smoothedSpeed = 0;
+    double smoothedEta = 0;
+    std::uint64_t lastTick = 0;
+    std::wstring track;
+    bool active = false;
+};
+void UpdateDownloadStatistics(DownloadStatistics& statistics, const DownloadTaskSnapshot& task, std::uint64_t nowMs);
+struct DownloadProgressAnimation {
+    double percent = 0.0;
+    std::uint64_t lastTick = 0;
+    std::wstring mediaKind;
+    bool downloading = false;
+    DownloadStatistics statistics;
+};
+double UpdateDownloadProgressAnimation(
+    DownloadProgressAnimation& animation, const DownloadTaskSnapshot& task, std::uint64_t nowMs);
 std::vector<QueueTaskActionItem> BuildQueueTaskActions(const QueueTaskActionInput& input);
 ToolReadinessDialogContent BuildToolReadinessDialogContent(ToolReadinessIssue issue);
 std::wstring VoiceOverFfmpegModeDisplayText(VoiceOverFfmpegMode mode);

@@ -1,4 +1,5 @@
 #include "DownloadQueue.h"
+#include "BrowserCookies.h"
 
 #include "Logger.h"
 #include "ProcessRunner.h"
@@ -8,6 +9,7 @@
 #include <cwchar>
 #include <cwctype>
 #include <cstring>
+#include <fstream>
 #include <ranges>
 #include <string_view>
 #include <system_error>
@@ -32,23 +34,6 @@ void AddPreferredPath(std::vector<std::filesystem::path>& paths, const std::file
         paths.erase(it);
     }
     paths.insert(paths.begin(), path);
-}
-
-std::uint64_t FileSizeIfExists(const std::filesystem::path& path) {
-    std::error_code ec;
-    if (path.empty() || !std::filesystem::is_regular_file(path, ec)) {
-        return 0;
-    }
-    return static_cast<std::uint64_t>(std::filesystem::file_size(path, ec));
-}
-
-std::uint64_t DiskBytesForPaths(const std::vector<std::filesystem::path>& paths) {
-    std::uint64_t total = 0;
-    for (const std::filesystem::path& path : paths) {
-        total += FileSizeIfExists(path);
-        total += FileSizeIfExists(std::filesystem::path(path.wstring() + L".part"));
-    }
-    return total;
 }
 
 std::wstring ExtractQueryValue(const std::wstring& url, std::wstring_view key) {
@@ -171,13 +156,13 @@ bool EnrichTaskMetadata(
 bool IsPersistedRunningState(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
-           state == DownloadTaskState::Downloading;
+           state == DownloadTaskState::Downloading || state == DownloadTaskState::Merging;
 }
 
 bool ShouldReuseExistingTask(DownloadTaskState state) {
     return state == DownloadTaskState::Queued ||
            state == DownloadTaskState::Preparing ||
-           state == DownloadTaskState::Downloading;
+           state == DownloadTaskState::Downloading || state == DownloadTaskState::Merging;
 }
 
 DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
@@ -206,6 +191,9 @@ DownloadTaskSnapshot NormalizeRestoredSnapshot(DownloadTaskSnapshot snapshot) {
             break;
         case DownloadTaskState::Downloading:
             snapshot.statusText = L"download_queue.loading";
+            break;
+        case DownloadTaskState::Merging:
+            snapshot.statusText = L"ytdlp.merging";
             break;
         }
     }
@@ -658,6 +646,18 @@ void DownloadQueue::UpdateTaskProgress(int id, const YtDlpProgress& progress) {
         return;
     }
     DownloadTaskSnapshot& snapshot = it->second.snapshot;
+    if (progress.merging) {
+        const bool starting = snapshot.state != DownloadTaskState::Merging;
+        snapshot.state = DownloadTaskState::Merging;
+        snapshot.statusText = progress.stage;
+        snapshot.percent = starting ? progress.percent : std::max(snapshot.percent, progress.percent);
+        snapshot.speedBytesPerSecond = 0;
+        snapshot.etaSeconds = 0;
+        if (starting && m_logger) { m_logger->Info(L"Download task merging: id=" + std::to_wstring(id)); }
+        ++m_revision;
+        return;
+    }
+    if (snapshot.state == DownloadTaskState::Merging) { return; }
     if (snapshot.mediaKind == L"audio" && progress.mediaKind != L"audio") {
         return;
     }
@@ -668,24 +668,20 @@ void DownloadQueue::UpdateTaskProgress(int id, const YtDlpProgress& progress) {
 
     snapshot.state = DownloadTaskState::Downloading;
     snapshot.statusText = progress.stage;
-    const std::uint64_t diskBytes = DiskBytesForPaths(snapshot.outputFiles);
-    const std::uint64_t reportedBytes = diskBytes > 0 ? diskBytes : progress.downloadedBytes;
-    if (switchedTrack) {
-        snapshot.percent = std::clamp(progress.percent, 0.0, 100.0);
-        snapshot.downloadedBytes = reportedBytes;
-        snapshot.totalBytes = std::max(progress.totalBytes, reportedBytes);
-    } else {
-        snapshot.downloadedBytes = std::max(snapshot.downloadedBytes, reportedBytes);
-        snapshot.totalBytes = std::max({snapshot.totalBytes, progress.totalBytes, snapshot.downloadedBytes});
-        double normalizedPercent = std::clamp(progress.percent, 0.0, 100.0);
-        if (snapshot.totalBytes > 0) {
-            normalizedPercent = std::max(
-                normalizedPercent,
-                (static_cast<double>(snapshot.downloadedBytes) / static_cast<double>(snapshot.totalBytes)) * 100.0
-            );
-        }
-        snapshot.percent = std::max(snapshot.percent, std::clamp(normalizedPercent, 0.0, 100.0));
+    snapshot.downloadedBytes = switchedTrack
+        ? progress.downloadedBytes
+        : std::max(snapshot.downloadedBytes, progress.downloadedBytes);
+    // yt-dlp reports bytes for the current track; its total estimate can change.
+    snapshot.totalBytes = progress.totalBytes;
+    snapshot.totalBytesEstimated = progress.totalBytesEstimated;
+    double normalizedPercent = progress.percent;
+    if (snapshot.totalBytes > 0) {
+        normalizedPercent = std::max(
+            normalizedPercent,
+            (static_cast<double>(snapshot.downloadedBytes) / static_cast<double>(snapshot.totalBytes)) * 100.0
+        );
     }
+    snapshot.percent = std::clamp(normalizedPercent, 0.0, 100.0);
     snapshot.speedBytesPerSecond = progress.speedBytesPerSecond;
     snapshot.etaSeconds = progress.etaSeconds;
     if (!progress.mediaKind.empty()) {
@@ -762,16 +758,35 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     std::vector<std::filesystem::path> reportedOutputFiles;
     std::mutex reportedOutputMutex;
 
+    // yt-dlp captures ffmpeg's stdout/stderr until exit; use ffmpeg's progress file for live updates.
+    std::filesystem::path mergeProgressFile;
+    if (task.request.ffmpegAvailable) {
+        wchar_t tempDirectory[MAX_PATH] = {}, tempFile[MAX_PATH] = {};
+        const auto length = GetTempPathW(MAX_PATH, tempDirectory);
+        if (length > 0 && length < MAX_PATH && GetTempFileNameW(tempDirectory, L"ytd", 0, tempFile)) {
+            mergeProgressFile = tempFile;
+        }
+    }
+    std::mutex mergeMutex;
+    YtDlpProgress mergeProgress;
+    std::jthread mergeWatcher;
+    auto cleanupProgress = [&] {
+        if (mergeWatcher.joinable()) { mergeWatcher.request_stop(); mergeWatcher.join(); }
+        std::error_code ec;
+        if (!mergeProgressFile.empty()) { std::filesystem::remove(mergeProgressFile, ec); }
+    };
+
     ProcessRunOptions options;
     options.executable = task.request.ytDlpExePath.empty() ? std::filesystem::path(L"yt-dlp.exe") : task.request.ytDlpExePath;
-    options.arguments = BuildDownloadArguments(task.request);
     options.timeoutMs = INFINITE;
     HANDLE cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!cancelEvent) {
+        cleanupProgress();
         throw std::runtime_error("failed to create download cancellation event");
     }
     options.cancelEvent = cancelEvent;
     auto handleOutputLine = [&](const std::wstring& line) {
+        LogBrowserCookieExtraction(m_logger, line);
         const std::filesystem::path outputPath = ExtractYtDlpOutputPath(line);
         if (!outputPath.empty()) {
             std::lock_guard lock(reportedOutputMutex);
@@ -780,7 +795,15 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
         if (callbacks.onOutputLine) {
             callbacks.onOutputLine(line);
         }
-        const YtDlpProgress progress = ParseYtDlpProgressLine(line);
+        YtDlpProgress progress = ParseYtDlpProgressLine(line);
+        std::lock_guard mergeLock(mergeMutex);
+        if (progress.recognized && progress.merging) {
+            if (progress.durationSeconds == 0) { progress.durationSeconds = task.durationSeconds; }
+            if (progress.rawStatus != L"finished") {
+                progress.percent = progress.durationSeconds > 0 && !mergeProgressFile.empty() ? 0.0 : -1.0;
+            }
+            mergeProgress = progress;
+        }
         if (progress.recognized && callbacks.onProgressDetails) {
             callbacks.onProgressDetails(progress);
         }
@@ -790,14 +813,38 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
 
     ProcessRunResult result;
     try {
+        options.arguments = BuildDownloadArguments(task.request, m_logger, mergeProgressFile);
+        if (!mergeProgressFile.empty()) {
+            mergeWatcher = std::jthread([&](std::stop_token watcherStop) {
+                std::streamoff offset = 0;
+                while (!watcherStop.stop_requested() && WaitForSingleObject(cancelEvent, 200) == WAIT_TIMEOUT) {
+                    std::lock_guard lock(mergeMutex);
+                    if (!mergeProgress.merging || mergeProgress.rawStatus == L"finished") { continue; }
+                    std::ifstream file(mergeProgressFile, std::ios::binary);
+                    file.seekg(offset);
+                    std::string line;
+                    while (std::getline(file, line) && !file.eof()) {
+                        offset = file.tellg();
+                        if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+                        auto update = ParseFfmpegMergeProgressLine(std::wstring(line.begin(), line.end()), mergeProgress.durationSeconds);
+                        if (update.recognized && update.percent > mergeProgress.percent) {
+                            mergeProgress = update;
+                            if (callbacks.onProgressDetails) { callbacks.onProgressDetails(update); }
+                        }
+                    }
+                }
+            });
+        }
         std::stop_callback stopCallback(stopToken, [cancelEvent]() {
             SetEvent(cancelEvent);
         });
         result = ProcessRunner::Run(options);
     } catch (...) {
+        cleanupProgress();
         CloseHandle(cancelEvent);
         throw;
     }
+    cleanupProgress();
     CloseHandle(cancelEvent);
     if (result.canceled || stopToken.stop_requested()) {
         return {false, L"app.canceled", {}};

@@ -15,6 +15,7 @@
 #include <vector>
 
 struct ReleaseAssetInfo;
+class Logger;
 
 enum class SettingsInitialSection {
     Downloads,
@@ -39,7 +40,8 @@ bool ShowSettingsDialog(
     HINSTANCE instance,
     const AppPaths& paths,
     AppConfig& config,
-    SettingsInitialSection initialSection = SettingsInitialSection::Downloads
+    SettingsInitialSection initialSection = SettingsInitialSection::Downloads,
+    Logger* logger = nullptr
 );
 bool ShowFfmpegDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 void ShowAboutDialog(HWND owner, HINSTANCE instance, const AppPaths& paths);

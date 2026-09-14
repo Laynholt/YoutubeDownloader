@@ -12,12 +12,14 @@
 #include "DownloadQueue.h"
 #include "Logger.h"
 #include "ToolManagers.h"
+#include "UiActions.h"
 #include "YtDlpClient.h"
 
 #include <atomic>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -183,6 +185,8 @@ private:
     std::atomic<unsigned long> m_previewRequestId = 0;
     std::uint64_t m_lastRenderedQueueRevision = static_cast<std::uint64_t>(-1);
     std::uint64_t m_lastSavedQueueRevision = static_cast<std::uint64_t>(-1);
+    std::uint64_t m_lastQueueSaveAttemptTick = 0;
+    std::map<int, DownloadProgressAnimation> m_downloadProgressAnimations;
     bool m_queuePlaceholderVisible = true;
     bool m_ytDlpReady = false;
     bool m_transientStatusActive = false;
