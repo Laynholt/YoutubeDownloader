@@ -3145,7 +3145,7 @@ void InvalidateProgressContent(HWND window) {
     }
     RECT client = {};
     GetClientRect(window, &client);
-    RECT progressContent = {20, 60, client.right - 20, client.bottom - 72};
+    RECT progressContent = {20, client.bottom - 134, client.right - 20, client.bottom - 72};
     InvalidateRect(window, &progressContent, FALSE);
 }
 
