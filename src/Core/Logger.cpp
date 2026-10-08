@@ -39,7 +39,7 @@ void Logger::Info(const std::wstring& message) {
 }
 
 void Logger::Error(const std::wstring& message) {
-    Append(L"ERROR", message);
+    Append(L"ERROR", ErrorDetails(message));
 }
 
 void Logger::Append(const std::wstring& level, const std::wstring& message) {

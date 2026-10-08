@@ -1099,6 +1099,91 @@ bool WaitUntil(Predicate predicate, std::chrono::milliseconds timeout = std::chr
     return predicate();
 }
 
+void TestHumanReadableErrors() {
+    Localization::SetActive(Localization{});
+    const Localization russian;
+    const struct { const char* raw; const wchar_t* key; } cases[] = {
+        {"HTTP request failed (Win32 error 12007)", L"errors.dns"},
+        {"ERROR: [WinError 10051] A socket operation was attempted to an unreachable network", L"errors.connection"},
+        {"ERROR: [Errno 11001] getaddrinfo failed", L"errors.dns"},
+        {"HTTP request failed (Win32 error 12002)", L"errors.timeout"},
+        {"ERROR: [WinError 10054] connection reset by peer", L"errors.connection_lost"},
+        {"HTTP request failed (Win32 error 12175)", L"errors.tls"},
+        {"ERROR: HTTP Error 401: Unauthorized", L"errors.authentication"},
+        {"unexpected HTTP status 403", L"errors.forbidden"},
+        {"HTTP Error 404: Not Found", L"errors.not_found"},
+        {"HTTP Error 429: Too Many Requests", L"errors.rate_limit"},
+        {"HTTP Error 503: Service Unavailable", L"errors.server"},
+        {"ERROR: Sign in to confirm you're not a bot", L"errors.authentication"},
+        {"ERROR: Video unavailable. This video is private", L"errors.media_unavailable"},
+        {"Requested format is not available", L"errors.format_unavailable"},
+        {"[Errno 28] No space left on device", L"errors.disk_full"},
+        {"[WinError 5] Access is denied", L"errors.file_access"},
+        {"[Errno 32] Broken pipe", L"errors.connection_lost"},
+        {"[Errno 5] Input/output error", L"errors.file_io"},
+        {"[WinError 32] Sharing violation", L"errors.file_access"},
+        {"HTTP request failed with status 401", L"errors.authentication"},
+        {"failed to create process", L"errors.process_start"},
+        {"unknown failure in video-401-10051.mp4", L"errors.operation_failed"},
+        {"HTTP Error 4010; Win32 error 120070", L"errors.operation_failed"},
+        {"", L"errors.operation_failed"},
+    };
+    for (const auto& item : cases) {
+        const auto explanation = russian.Text(item.key);
+        const auto text = ErrorDetails(Utf8ToWide(item.raw));
+        Require(text.starts_with(explanation), "error should start with a human-readable explanation");
+        if (*item.raw) {
+            Require(text.find(Utf8ToWide(item.raw)) != std::wstring::npos, "detailed error should preserve the original diagnostic");
+        }
+    }
+    Require(LocalizedToolErrorText("dialog.cookies_login_failed") == L"dialog.cookies_login_failed",
+        "existing localized errors should keep their keys");
+
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_ErrorDescriptions");
+    Logger logger{AppPaths(root)};
+    const std::wstring raw = L"Download task failed: id=7 error=HTTP Error 401: Unauthorized\noriginal detail";
+    logger.Error(raw);
+    logger.Info(L"ordinary progress");
+    const auto log = logger.ReadAll();
+    Require(log.find(L"[ERROR] " + russian.Text(L"errors.authentication")) != std::wstring::npos,
+        "logger should put the explanation before technical context");
+    Require(log.find(raw) != std::wstring::npos, "logger should preserve the full diagnostic and task context");
+    Require(log.find(L"[INFO] ordinary progress") != std::wstring::npos, "info logging should stay unchanged");
+
+    fs::create_directories(AppPaths(root).languagesDir());
+    fs::copy_file(fs::path(__FILE__).parent_path().parent_path() / L"stuff/languages/en.json",
+        AppPaths(root).languagesDir() / L"en.json");
+    const auto english = Localization::Load(AppPaths(root), L"en");
+    for (const auto& item : cases) {
+        Require(english.Text(item.key) != russian.Text(item.key), "every error explanation should have an English translation");
+    }
+    Localization::SetActive(english);
+    Require(ErrorSummary(L"HTTP Error 401: Unauthorized") == english.Text(L"errors.authentication"),
+        "task summary should use the active language and omit technical details");
+    logger.Error(raw);
+    Require(logger.ReadAll().find(L"[ERROR] " + english.Text(L"errors.authentication")) != std::wstring::npos,
+        "new log entries should use the active language");
+    Require(ErrorSummary(L"app.unknown_error") == english.Text(L"app.unknown_error"),
+        "existing localized errors should still translate");
+    Localization::SetActive(Localization{});
+    const auto detailed = ErrorDetails(L"HTTP Error 401: Unauthorized");
+    Require(ErrorDetails(detailed) == detailed, "formatting an error twice should not duplicate its explanation");
+
+    const std::wstring networkError = std::wstring(1200, L'x') + L"\n[WinError 10051] Network is unreachable";
+    DownloadQueue queue(1, &logger);
+    queue.SetExecutor([&](const auto&, auto, const auto&) {
+        return DownloadTaskResult{false, networkError, {}};
+    });
+    YtDlpDownloadRequest request;
+    request.url = L"https://example.invalid/network-error";
+    const auto id = queue.Enqueue(request, L"Network failure");
+    queue.WaitForIdle();
+    Require(queue.GetTask(id).state == DownloadTaskState::Failed, "network failure should mark the task failed");
+    Require(queue.GetTask(id).errorText == networkError, "task should retain the raw diagnostic for persistence and copying");
+    Require(ErrorSummary(queue.GetTask(id).errorText) == russian.Text(L"errors.connection"), "task should show a short network explanation");
+    Require(logger.ReadAll().find(networkError) != std::wstring::npos, "queue logging should not truncate the diagnostic");
+}
+
 void TestLoggerTruncatesAtStartupAndAppendsWithinRun() {
     const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_Logger");
     const AppPaths paths(root);
@@ -4334,6 +4419,7 @@ int main(int argc, char** argv) {
     TestRestoreModalOwnerIgnoresInvalidHandles();
     TestConfigParallelDownloadBounds();
     TestConfigUtf8RoundTrip();
+    TestHumanReadableErrors();
     TestLoggerTruncatesAtStartupAndAppendsWithinRun();
     TestLoggerReadsCurrentLogText();
     TestCommitDownloadedFilePreservesTargetUntilValidated();

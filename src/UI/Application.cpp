@@ -1724,7 +1724,7 @@ LRESULT Application::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
                 if (result.error.empty()) {
                     SetPreviewTitleKey(L"app.failed_to_fetch_preview");
                 } else {
-                    SetPreviewTitleRaw(Localization::UiText(result.error));
+                    SetPreviewTitleRaw(Localization::UiText(L"app.preview_unavailable") + ErrorSummary(result.error));
                 }
                 if (m_logger) {
                     m_logger->Error(L"Preview failed: url=" + result.url + L" error=" + result.error);
@@ -2037,8 +2037,8 @@ void Application::DrawQueueContent(HDC dc, const RECT& queueRect) {
         } else if (postProcessingBusy) {
             status = PostProcessingQueueStatusText(PostProcessingActionForTask(task.id));
         }
-        if (!postProcessingBusy && !task.errorText.empty()) {
-            status += L" · " + task.errorText;
+        if (!postProcessingBusy && (task.state == DownloadTaskState::Failed || !task.errorText.empty())) {
+            status += L" · " + ErrorSummary(task.errorText);
         }
         RECT statusRect = {textLeft, row.top + 34, textRight, row.top + 52};
         DrawTextBlock(dc, status, statusRect, kMutedTextColor, textFont, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -2269,7 +2269,7 @@ bool Application::HandleQueueContextMenu(POINT point) {
 
         auto* menuState = new QueueErrorMenuState{};
         menuState->owner = m_window;
-        menuState->errorText = task.errorText;
+        menuState->errorText = ErrorDetails(task.errorText);
 
         POINT screenPoint = point;
         ClientToScreen(m_window, &screenPoint);
@@ -2851,7 +2851,8 @@ void Application::StartPreviewFetch() {
             result.ok = true;
         } catch (const std::exception& ex) {
             result.ok = false;
-            result.error = Localization::UiText(L"app.preview_unavailable") + LocalizedToolErrorText(ex.what());
+            try { result.error = Utf8ToWide(ex.what()); }
+            catch (...) { result.error.assign(ex.what(), ex.what() + std::strlen(ex.what())); }
         } catch (...) {
             result.ok = false;
             result.error = L"app.preview_unavailable_2";

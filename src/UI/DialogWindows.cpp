@@ -3179,7 +3179,7 @@ ProgressReporter MakeProgressReporter(DialogState* state, HWND window) {
 
 void SetProgressFailure(DialogState* state, const std::wstring& message) {
     std::lock_guard lock(state->progressMutex);
-    state->progressError = message;
+    state->progressError = ErrorDetails(message);
 }
 
 void PostProgressDone(HWND window, bool success) {
@@ -5581,7 +5581,7 @@ void ShowErrorDialog(HWND owner, HINSTANCE instance, const std::wstring& title, 
     state->instance = instance;
     state->owner = owner;
     state->title = title;
-    state->message = message;
+    state->message = ErrorDetails(message);
     ShowModal(state, 620, 420);
 }
 

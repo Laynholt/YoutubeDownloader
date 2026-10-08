@@ -1,4 +1,5 @@
 #include "DownloadQueue.h"
+#include "BackendText.h"
 #include "BrowserCookies.h"
 
 #include "Logger.h"
@@ -629,7 +630,8 @@ void DownloadQueue::StartTask(int id, std::stop_token stopToken) {
         result = executor(task, stopToken, callbacks);
     } catch (const std::exception& ex) {
         result.success = false;
-        result.errorText.assign(ex.what(), ex.what() + std::strlen(ex.what()));
+        try { result.errorText = Utf8ToWide(ex.what()); }
+        catch (...) { result.errorText.assign(ex.what(), ex.what() + std::strlen(ex.what())); }
     } catch (...) {
         result.success = false;
         result.errorText = L"app.unknown_error";
@@ -738,10 +740,9 @@ void DownloadQueue::FinishTask(int id, std::stop_token stopToken, const Download
         it->second.snapshot.errorText = result.errorText;
         it->second.snapshot.statusText = L"app.error";
         if (m_logger) {
-            std::wstring error = result.errorText.substr(0, 1000);
             m_logger->Error(
                 L"Download task failed: id=" + std::to_wstring(id) +
-                (error.empty() ? L"" : L" error=" + error)
+                (result.errorText.empty() ? L"" : L" error=" + result.errorText)
             );
         }
         ++m_revision;
@@ -850,7 +851,8 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
         return {false, L"app.canceled", {}};
     }
     if (result.exitCode != 0) {
-        return {false, result.stderrText.empty() ? result.stdoutText : result.stderrText, {}};
+        return {false, L"yt-dlp exit code " + std::to_wstring(result.exitCode) + L": " +
+            (result.stderrText.empty() ? result.stdoutText : result.stderrText), {}};
     }
     std::vector<std::filesystem::path> reportedOutputSnapshot;
     {

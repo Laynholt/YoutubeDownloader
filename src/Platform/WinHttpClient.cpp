@@ -243,7 +243,7 @@ std::string WinHttpClient::GetString(const std::wstring& url, HANDLE cancelEvent
         ThrowIfCanceled(cancelEvent);
         DWORD available = 0;
         if (!WinHttpQueryDataAvailable(request.get(), &available)) {
-            throw std::runtime_error("failed to query HTTP data");
+            throw LastError("failed to query HTTP data");
         }
         if (available == 0) {
             break;
@@ -252,7 +252,7 @@ std::string WinHttpClient::GetString(const std::wstring& url, HANDLE cancelEvent
         DWORD read = 0;
         const DWORD toRead = std::min<DWORD>(available, static_cast<DWORD>(buffer.size()));
         if (!WinHttpReadData(request.get(), buffer.data(), toRead, &read)) {
-            throw std::runtime_error("failed to read HTTP data");
+            throw LastError("failed to read HTTP data");
         }
         result.append(buffer.data(), buffer.data() + read);
     }
@@ -293,7 +293,7 @@ void WinHttpClient::DownloadFile(
             ThrowIfCanceled(cancelEvent);
             DWORD available = 0;
             if (!WinHttpQueryDataAvailable(request.get(), &available)) {
-                throw std::runtime_error("failed to query HTTP data");
+                throw LastError("failed to query HTTP data");
             }
             if (available == 0) {
                 break;
@@ -302,7 +302,7 @@ void WinHttpClient::DownloadFile(
             DWORD read = 0;
             const DWORD toRead = std::min<DWORD>(available, static_cast<DWORD>(buffer.size()));
             if (!WinHttpReadData(request.get(), buffer.data(), toRead, &read)) {
-                throw std::runtime_error("failed to read HTTP data");
+                throw LastError("failed to read HTTP data");
             }
             out.write(buffer.data(), static_cast<std::streamsize>(read));
             if (!out) {
