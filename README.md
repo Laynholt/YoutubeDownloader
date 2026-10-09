@@ -21,30 +21,34 @@ YoutubeDownloader - портативное Win32-приложение для с�
 ## Стек
 
 - C++20
-- CMake 3.20+
+- CMake 4.2+
 - Нативный Win32 UI: GDI+, DWM, Common Controls
 - WinHTTP для HTTP-запросов и скачивания файлов
 - `yt-dlp` для получения метаданных и скачивания медиа
 - FFmpeg/FFprobe для объединения и обработки медиа
 - `nlohmann/json` single-header library в `third_party/`
-- MSVC/Visual Studio toolchain под Windows
+- MSVC из Build Tools for Visual Studio 2026 под Windows
 
 ## Сборка
 
 Требования:
 
 - Windows
-- Visual Studio 2022 с workload `Desktop development with C++`
-- CMake 3.20 или новее
+- Build Tools for Visual Studio 2026 с MSVC x64/x86 и Windows SDK; IDE Visual Studio не обязательна
+- CMake 4.2 или новее для генератора Visual Studio 2026
 
 Сконфигурировать и собрать release-версию:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -T v145
 cmake --build build --config Release
 ```
 
 При сборке через Visual Studio generator исполняемый файл будет лежать в `build/bin/Release/`.
+
+Release-сборка x64 проверена с Build Tools 2026, MSVC 19.51 и Windows SDK 10.0.26100.0.
+
+Если папка `build` настроена для другой версии Visual Studio, добавьте `--fresh` к команде конфигурации. Кэш CMake будет пересоздан, а остальные файлы в `build`, включая файлы рядом с EXE, сохранятся.
 
 Запуск тестов:
 
@@ -53,6 +57,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 ## Runtime
+
+Для запуска Release-сборки x64 нужен актуальный пакет [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Если пакет ещё не установлен, установите его перед запуском приложения. Visual Studio для запуска готового EXE не требуется.
 
 При запуске приложение проверяет наличие `yt-dlp` и может установить или обновить его из официальных GitHub Releases. FFmpeg можно указать вручную, найти через `PATH` или установить в локальную папку инструментов приложения.
 

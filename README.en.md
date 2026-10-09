@@ -19,30 +19,34 @@ YoutubeDownloader is a portable Win32 application for downloading YouTube videos
 ## Stack
 
 - C++20
-- CMake 3.20+
+- CMake 4.2+
 - Native Win32 UI: GDI+, DWM, Common Controls
 - WinHTTP for HTTP requests and file downloads
 - `yt-dlp` for metadata and media downloads
 - FFmpeg/FFprobe for media merging and processing
 - `nlohmann/json` single-header library in `third_party/`
-- MSVC/Visual Studio toolchain for Windows
+- MSVC from Build Tools for Visual Studio 2026 for Windows
 
 ## Build
 
 Requirements:
 
 - Windows
-- Visual Studio 2022 with the `Desktop development with C++` workload
-- CMake 3.20 or newer
+- Build Tools for Visual Studio 2026 with MSVC x64/x86 and a Windows SDK; the Visual Studio IDE is optional
+- CMake 4.2 or newer for the Visual Studio 2026 generator
 
 Configure and build a release version:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake -S . -B build -G "Visual Studio 18 2026" -A x64 -T v145
 cmake --build build --config Release
 ```
 
 With the Visual Studio generator, the executable is written to `build/bin/Release/`.
+
+The x64 Release build has been verified with Build Tools 2026, MSVC 19.51, and Windows SDK 10.0.26100.0.
+
+If `build` was configured for another Visual Studio version, add `--fresh` to the configure command. CMake recreates its cache while preserving the other files in `build`, including files next to the EXE.
 
 Run tests:
 
@@ -51,6 +55,8 @@ ctest --test-dir build -C Release --output-on-failure
 ```
 
 ## Runtime
+
+The x64 Release build requires the latest [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Install this package before running the application if it is not already installed. Visual Studio is not required to run the built EXE.
 
 On startup, the application checks `yt-dlp` and can install or update it from official GitHub releases. FFmpeg can be selected manually, found through `PATH`, or installed into the application's local tools folder.
 
