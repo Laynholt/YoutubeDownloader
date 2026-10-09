@@ -58,7 +58,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Runtime
 
-Для запуска Release-сборки x64 нужен актуальный пакет [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Если пакет ещё не установлен, установите его перед запуском приложения. Visual Studio для запуска готового EXE не требуется.
+Для запуска Release-сборки x64 нужен актуальный пакет [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Если пакет отсутствует или устарел, установите или обновите его перед запуском приложения. Visual Studio для запуска готового EXE не требуется.
 
 При запуске приложение проверяет наличие `yt-dlp` и может установить или обновить его из официальных GitHub Releases. FFmpeg можно указать вручную, найти через `PATH` или установить в локальную папку инструментов приложения.
 

@@ -56,7 +56,7 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Runtime
 
-The x64 Release build requires the latest [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Install this package before running the application if it is not already installed. Visual Studio is not required to run the built EXE.
+The x64 Release build requires the latest [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe). Install or update this package before running the application if it is missing or outdated. Visual Studio is not required to run the built EXE.
 
 On startup, the application checks `yt-dlp` and can install or update it from official GitHub releases. FFmpeg can be selected manually, found through `PATH`, or installed into the application's local tools folder.
 
