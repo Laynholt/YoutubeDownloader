@@ -244,6 +244,9 @@ std::wstring ErrorSummary(std::wstring_view diagnostic) {
     } else if (systemCode({12037, 12038, 12045, 12057, 12157, 12169, 12170, 12175, 12179}) ||
         ContainsAny(text, {L"certificate verify failed", L"certificate_verify_failed", L"ssl error", L"tls handshake", L"unable to verify", L"self-signed certificate"})) {
         key = L"errors.tls";
+    } else if (ContainsAny(text, {L"requested format is not available", L"only images are available"}) &&
+        ContainsAny(text, {L"javascript runtime", L"challenge solving failed"})) {
+        key = L"errors.js_runtime_missing";
     } else if (httpCode({401}) || ContainsAny(text, {L"sign in", L"login required", L"authentication required", L"cookies are no longer valid"})) {
         key = L"errors.authentication";
     } else if (httpCode({407})) {
@@ -260,7 +263,7 @@ std::wstring ErrorSummary(std::wstring_view diagnostic) {
         key = L"errors.request";
     } else if (ContainsAny(text, {L"video unavailable", L"private video", L"video is private", L"has been removed", L"not available in your country", L"geo-restricted", L"members-only"})) {
         key = L"errors.media_unavailable";
-    } else if (ContainsAny(text, {L"requested format is not available", L"no video formats found"})) {
+    } else if (ContainsAny(text, {L"requested format is not available", L"no video formats found", L"only images are available"})) {
         key = L"errors.format_unavailable";
     } else if (systemCode({112}) || errnoCode({28}) || ContainsAny(text, {L"no space left", L"disk full", L"not enough space", L"enospc"})) {
         key = L"errors.disk_full";

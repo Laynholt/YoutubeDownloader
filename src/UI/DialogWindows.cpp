@@ -89,6 +89,7 @@ constexpr int kSettingsBottomButtonWidth = 128;
 constexpr int kSettingsScrollbarGutter = 18;
 constexpr UINT kProgressUpdateMessage = WM_APP + 40;
 constexpr UINT kProgressDoneMessage = WM_APP + 41;
+constexpr UINT_PTR kCookieLoginCloseTimer = 1;
 
 enum class DialogType {
     Info,
@@ -176,6 +177,7 @@ enum DialogCommand {
     IdCookieBrowserSelect = 163,
     IdCookiePathEdit = 164,
     IdCookieBrowse = 165,
+    IdDenoDetails = 166,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -285,6 +287,7 @@ struct DialogState {
     bool ffmpegDetailsExpanded = false;
     bool whisperDetailsExpanded = false;
     bool votDetailsExpanded = false;
+    bool denoDetailsExpanded = false;
     bool* savedResult = nullptr;
     std::uint64_t progressDownloaded = 0;
     std::uint64_t progressTotal = 0;
@@ -455,7 +458,10 @@ int SettingsToolCardHeight(const DialogState* state, int index) {
     if (index == 2) {
         return state && state->whisperDetailsExpanded ? 226 : kSettingsToolCardHeight;
     }
-    return state && state->votDetailsExpanded ? 124 : kSettingsToolCardHeight;
+    if (index == 3) {
+        return state && state->votDetailsExpanded ? 124 : kSettingsToolCardHeight;
+    }
+    return state && state->denoDetailsExpanded ? 124 : kSettingsToolCardHeight;
 }
 
 RECT SettingsToolCardRect(const DialogState* state, int width, int height, int index) {
@@ -477,9 +483,9 @@ int SettingsDownloadsContentHeight() {
 
 int SettingsToolsContentHeight(const DialogState* state) {
     int height = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         height += SettingsToolCardHeight(state, i);
-        if (i != 3) {
+        if (i != 4) {
             height += kSettingsCardGap;
         }
     }
@@ -1639,6 +1645,7 @@ void RefreshSettingsButtons(DialogState* state) {
     SetDarkButtonState(state->window, IdFfmpegDetails, state->ffmpegDetailsExpanded, state->ffmpegDetailsExpanded ? L"dialog.hide" : L"dialog.details");
     SetDarkButtonState(state->window, IdWhisperDetails, state->whisperDetailsExpanded, state->whisperDetailsExpanded ? L"dialog.hide" : L"dialog.details");
     SetDarkButtonState(state->window, IdVotDetails, state->votDetailsExpanded, state->votDetailsExpanded ? L"dialog.hide" : L"dialog.details");
+    SetDarkButtonState(state->window, IdDenoDetails, state->denoDetailsExpanded, state->denoDetailsExpanded ? L"dialog.hide" : L"dialog.details");
 
     const bool ffmpegReady = IsFfmpegReady(state);
     const bool whisperReady = IsWhisperReady(state);
@@ -2050,6 +2057,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     HWND chooseVotDetails = GetDlgItem(state->window, IdVotDetails);
     HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
     HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
+    HWND denoDetails = GetDlgItem(state->window, IdDenoDetails);
 
     card = SettingsDownloadsParallelCardRect(state, width, height);
     const RECT parallelValue = SettingsParallelValueRect(state, width, height);
@@ -2103,7 +2111,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
 
     auto layoutToolCard = [&](int index, HWND action, HWND details) {
         const RECT toolCard = SettingsToolCardRect(state, width, height, index);
-        const int actionWidth = index == 0 ? 0 : 142;
+        const int actionWidth = action ? 142 : 0;
         const int detailsWidth = 112;
         const int y = toolCard.top + 18;
         if (details) {
@@ -2124,6 +2132,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     layoutToolCard(1, ffmpeg, ffmpegDetails);
     layoutToolCard(2, chooseWhisper, chooseWhisperDetails);
     layoutToolCard(3, chooseVot, chooseVotDetails);
+    layoutToolCard(4, nullptr, denoDetails);
 
     if (ffmpeg) {
         const std::wstring text = Localization::UiText(ToolSetupButtonText());
@@ -2152,7 +2161,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     }
     SetSettingsControlsVisibleInViewport(state->window, {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
-        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails
+        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails, IdDenoDetails
     }, state->settingsSection == SettingsSection::Tools, viewport);
 }
 
@@ -3048,6 +3057,15 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
         if (state->votDetailsExpanded) {
             DrawUtilityStatusLine(dc, L"vot-helper.exe:", votStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
         }
+
+        const ToolInstallStatus denoStatus = state->paths ? DenoManager(*state->paths).Status() : ToolInstallStatus{};
+        toolCard = SettingsToolCardRect(state, client.right, client.bottom, 4);
+        DrawSettingsCard(dc, toolCard, L"Deno", denoStatus.installed ? L"dialog.deno_found" : L"dialog.deno_not_found", labelFont, textFont, 280);
+        DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, denoStatus.installed ? L"dialog.ready" : L"dialog.no", denoStatus.installed, smallFont);
+        DrawToolStatusPill(dc, {toolCard.left + 122, toolCard.top + 68, toolCard.left + 246, toolCard.top + 92}, denoStatus.version.empty() ? L"dialog.version" : denoStatus.version, denoStatus.installed, smallFont);
+        if (state->denoDetailsExpanded) {
+            DrawUtilityStatusLine(dc, L"dialog.path", denoStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
+        }
     } else {
         const RECT aboutCard = SettingsStackCardRect(state, client.right, client.bottom, 0, kSettingsAboutCardHeight);
         DrawSettingsCard(dc, aboutCard, L"YouTube Downloader", L"dialog.portable_win32_downloader_with_yt_dlp_ffmpeg_whisper_cpp", labelFont, textFont);
@@ -3448,8 +3466,9 @@ void CreateProgressControls(DialogState* state) {
     AddDialogTooltip(state, cancelButton, L"dialog.cancels_the_current_operation");
     if (state->progressMode == ProgressMode::CookieLogin) {
         StartProgressWorker(state, ProgressTaskKind::CookieLogin,
-            [paths = *state->paths, browser = state->loginBrowser, cancel = state->cancelEvent, logger = state->logger](const ProgressReporter&) {
-                ConnectBrowserCookies(paths, browser.id, browser.executable, cancel, logger);
+            [paths = *state->paths, browser = state->loginBrowser, cancel = state->cancelEvent, logger = state->logger](const ProgressReporter& report) {
+                ConnectBrowserCookies(paths, browser.id, browser.executable, cancel, logger,
+                    [&report](const std::wstring& status) { report(0, 0, status); });
             });
     } else if (state->progressMode == ProgressMode::AppUpdate) {
         StartAppUpdateWorker(state);
@@ -3542,6 +3561,7 @@ void CreateSettingsControls(DialogState* state) {
     HWND ffmpegDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdFfmpegDetails, false);
     HWND whisperDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdWhisperDetails, false);
     HWND votDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdVotDetails, false);
+    HWND denoDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdDenoDetails, false);
     HWND autoUpdateButton = CreateDarkButton(
         state->window,
         state->instance,
@@ -3634,6 +3654,7 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, transcriptionToolsButton, L"dialog.goes_to_tool_selection_and_installation");
     AddDialogTooltip(state, translationToolsButton, L"dialog.goes_to_tool_selection_and_installation");
     AddDialogTooltip(state, ytDlpDetailsButton, L"dialog.shows_or_hides_the_yt_dlp_path");
+    AddDialogTooltip(state, denoDetailsButton, L"dialog.shows_or_hides_the_deno_path");
     AddDialogTooltip(state, ffmpegDetailsButton, L"dialog.shows_or_hides_the_ffmpeg_path");
     AddDialogTooltip(state, whisperDetailsButton, L"dialog.shows_or_hides_whisper_cpp_and_model_paths");
     AddDialogTooltip(state, votDetailsButton, L"dialog.shows_or_hides_the_vot_helper_exe_path");
@@ -4397,6 +4418,11 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 relayoutSettingsCards();
                 RefreshSettingsButtons(state);
                 return 0;
+            case IdDenoDetails:
+                state->denoDetailsExpanded = !state->denoDetailsExpanded;
+                relayoutSettingsCards();
+                RefreshSettingsButtons(state);
+                return 0;
             case IdCopy:
                 CopyTextToClipboard(window, state->message);
                 return 0;
@@ -4543,8 +4569,7 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     std::error_code cookieError;
                     if (state->workingConfig.cookieSource == L"browser" && state->paths &&
                         SupportsBrowserLogin(state->workingConfig.cookiesBrowser) &&
-                        !std::filesystem::is_regular_file(ManagedBrowserCookiesPath(
-                            state->paths->ytDlpExePath(), state->workingConfig.cookiesBrowser), cookieError)) {
+                        !HasManagedBrowserCookies(state->paths->ytDlpExePath(), state->workingConfig.cookiesBrowser)) {
                         if (!ShowBrowserLoginProgress(state)) {
                             return 0;
                         }
@@ -4628,9 +4653,13 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (state->savedResult) {
                     *state->savedResult = true;
                 }
-                if (state->progressMode == ProgressMode::AppUpdate || state->progressMode == ProgressMode::CookieLogin) {
+                if (state->progressMode == ProgressMode::AppUpdate) {
                     DestroyWindow(window);
                     return 0;
+                }
+                if (state->progressMode == ProgressMode::CookieLogin) {
+                    // Non-blocking confirmation: show success briefly, then close on its own.
+                    SetTimer(window, kCookieLoginCloseTimer, 2000, nullptr);
                 }
             } else {
                 std::optional<std::wstring> error;
@@ -4650,6 +4679,14 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             InvalidateProgressContent(window);
         }
         return 0;
+
+    case WM_TIMER:
+        if (wParam == kCookieLoginCloseTimer) {
+            KillTimer(window, kCookieLoginCloseTimer);
+            DestroyWindow(window);
+            return 0;
+        }
+        break;
 
     case WM_CLOSE:
         if (state && state->type == DialogType::Progress && !state->progressDone) {

@@ -1117,6 +1117,9 @@ void TestHumanReadableErrors() {
         {"ERROR: Sign in to confirm you're not a bot", L"errors.authentication"},
         {"ERROR: Video unavailable. This video is private", L"errors.media_unavailable"},
         {"Requested format is not available", L"errors.format_unavailable"},
+        {"WARNING: [youtube] x: n challenge solving failed: Some formats may be missing. "
+         "Ensure you have a supported JavaScript runtime\nERROR: [youtube] x: Requested format is not available",
+         L"errors.js_runtime_missing"},
         {"[Errno 28] No space left on device", L"errors.disk_full"},
         {"[WinError 5] Access is denied", L"errors.file_access"},
         {"[Errno 32] Broken pipe", L"errors.connection_lost"},
@@ -1393,6 +1396,17 @@ void TestYtDlpDownloadArguments() {
         "mp4 container should request mp4-compatible streams"
     );
     Require(ContainsArg(args, L"--embed-chapters"), "chapters should be embedded when ffmpeg is available");
+    Require(args.at(ArgIndex(args, L"--js-runtimes") + 1) == L"node", "download must allow Node.js for YouTube challenges");
+    {
+        const AppPaths denoPaths(root);
+        fs::create_directories(denoPaths.localDenoDir());
+        { std::ofstream out(denoPaths.localDenoExePath()); }
+        YtDlpDownloadRequest denoRequest = request;
+        denoRequest.ytDlpExePath = denoPaths.ytDlpExePath();
+        const auto denoArgs = BuildDownloadArguments(denoRequest);
+        Require(denoArgs.at(ArgIndex(denoArgs, L"--js-runtimes") + 1) == L"deno:" + denoPaths.localDenoExePath().wstring(),
+            "download must use the app's Deno for YouTube challenges");
+    }
     Require(
         !ContainsArg(args, L"--sponsorblock-remove"),
         "SponsorBlock should be disabled by default"
@@ -1419,6 +1433,7 @@ void TestYtDlpDownloadArguments() {
         ContainsArg(metadataArgs, L"--cookies-from-browser"),
         "metadata browser cookie argument missing"
     );
+    Require(ContainsArg(metadataArgs, L"--js-runtimes"), "preview must allow Node.js for YouTube challenges");
     Require(
         metadataArgs.at(ArgIndex(metadataArgs, L"--cookies-from-browser") + 1) == L"edge",
         "metadata should use the same browser cookie source"
@@ -1671,6 +1686,14 @@ void TestGitHubReleaseParsing() {
 
     const ReleaseAssetInfo missing = ParseGitHubReleaseAsset(appRelease, "missing.exe");
     Require(!missing.found, "missing asset should not be found");
+
+    // Deno's .sha256sum is PowerShell Get-FileHash output.
+    const std::string denoSum =
+        "\r\nAlgorithm : SHA256\r\nHash      : CBA84B26A1F3C5E8A1F3C5E8A1F3C5E8A1F3C5E8A1F3C5E8A1F3C5E8A1F3C5E8\r\n"
+        "Path      : D:\\a\\deno\\deno\\target\\release\\deno-x86_64-pc-windows-msvc.zip\r\n";
+    Require(ParseSha256Digest(denoSum) == L"cba84b26a1f3c5e8a1f3c5e8a1f3c5e8a1f3c5e8a1f3c5e8a1f3c5e8a1f3c5e8",
+        "Deno checksum must be parsed from Get-FileHash output");
+    Require(ParseSha256Digest("Hash : abc").empty(), "a short hash must be rejected");
 }
 
 void TestYtDlpUpdateDecision() {
@@ -3715,14 +3738,13 @@ void TestDownloadQueueDownloadedBytesDoNotMoveBackward() {
 
 void TestCookieSourceLogging() {
     const AppPaths paths(MakeTempRoot(L"YoutubeDownloaderTests_CookieLogs"));
-    const auto cookieFile = ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"edge");
-    fs::create_directories(cookieFile.parent_path());
+    const auto cookieFile = paths.root() / L"manual-cookies.txt";
     {
         std::ofstream file(cookieFile);
         file << "# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t2000000000\tSAPISID\tprivate-test-value\n";
     }
     Logger logger(paths);
-    BuildMetadataArguments(L"https://youtu.be/jMM9tIgz7Nw", L"browser", L"edge", {}, paths.ytDlpExePath(), &logger);
+    BuildMetadataArguments(L"https://youtu.be/jMM9tIgz7Nw", L"browser", L"edge", {}, {}, &logger, cookieFile);
     YtDlpDownloadRequest request;
     request.cookieSource = L"file";
     request.cookiesPath = cookieFile;
@@ -3743,20 +3765,50 @@ void TestCookieSourceLogging() {
 void TestManagedBrowserCookieArguments() {
     const AppPaths paths(MakeTempRoot(L"YoutubeDownloaderTests_BrowserCookies"));
     const auto cookieFile = ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"edge");
-    Require(cookieFile == paths.stuffDir() / L"cookies" / L"edge.txt", "managed cookies belong in stuff/cookies");
+    Require(cookieFile == paths.stuffDir() / L"cookies" / L"edge.cookies", "managed cookies belong in stuff/cookies");
     Require(ManagedBrowserCookiesPath(paths.ytDlpExePath(), L"../escape").empty(), "invalid browser must not become a path");
     fs::create_directories(cookieFile.parent_path());
-    { std::ofstream out(cookieFile); out << "# Netscape HTTP Cookie File\n"; }
+    const std::string session = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tprivate-test-value\n";
+
+    // A plaintext session from an older version is encrypted in place and the plaintext removed.
+    const auto legacy = cookieFile.parent_path() / L"edge.txt";
+    { std::ofstream out(legacy, std::ios::binary); out << session; }
+    Require(HasManagedBrowserCookies(paths.ytDlpExePath(), L"edge"), "legacy session must stay usable");
+    Require(!fs::exists(legacy), "legacy plaintext session must be removed");
+    {
+        std::ifstream in(cookieFile, std::ios::binary);
+        const std::string stored((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        Require(stored.find("private-test-value") == std::string::npos, "session must be encrypted at rest");
+    }
+    Require(LoadManagedCookies(cookieFile) == session, "session must decrypt to the original text");
+
     YtDlpDownloadRequest request;
     request.ytDlpExePath = paths.ytDlpExePath();
     request.url = L"https://example.invalid/video";
     request.cookieSource = L"browser";
     request.cookiesBrowser = L"edge";
-    const auto args = BuildDownloadArguments(request);
-    Require(std::ranges::find(args, L"--cookies-from-browser") == args.end(), "managed session must avoid browser database decryption");
-    Require(std::ranges::find(args, cookieFile.wstring()) != args.end(), "download must use managed cookies");
-    const auto preview = BuildMetadataArguments(request.url, L"browser", L"edge", {}, paths.ytDlpExePath());
-    Require(std::ranges::find(preview, cookieFile.wstring()) != preview.end(), "preview must also use managed cookies");
+    fs::path runtimeCopy;
+    {
+        const ManagedCookieLease lease(request.cookieSource, request.cookiesBrowser, request.ytDlpExePath);
+        runtimeCopy = lease.path();
+        Require(!runtimeCopy.empty() && fs::exists(runtimeCopy), "a run must get a decrypted cookie file");
+        const auto args = BuildDownloadArguments(request, nullptr, {}, lease.path());
+        Require(std::ranges::find(args, L"--cookies-from-browser") == args.end(), "managed session must avoid browser database decryption");
+        Require(std::ranges::find(args, runtimeCopy.wstring()) != args.end(), "download must use managed cookies");
+        const auto preview = BuildMetadataArguments(request.url, L"browser", L"edge", {}, {}, nullptr, lease.path());
+        Require(std::ranges::find(preview, runtimeCopy.wstring()) != preview.end(), "preview must also use managed cookies");
+        // yt-dlp rewrites its cookie file on exit; the refresh must survive, encrypted.
+        std::ofstream out(runtimeCopy, std::ios::binary | std::ios::trunc);
+        out << session << ".youtube.com\tTRUE\t/\tTRUE\t0\tNEW\trefreshed\n";
+    }
+    Require(!fs::exists(runtimeCopy), "decrypted copy must be deleted after the run");
+    Require(LoadManagedCookies(cookieFile).find("refreshed") != std::string::npos, "cookies refreshed by yt-dlp must be kept");
+    const auto fallback = BuildDownloadArguments(request);
+    Require(std::ranges::find(fallback, L"--cookies-from-browser") != fallback.end(), "without a session copy the browser is read directly");
+    {
+        const ManagedCookieLease off(L"off", L"edge", request.ytDlpExePath);
+        Require(off.path().empty(), "cookies off must not decrypt the session");
+    }
     request.cookieSource = L"off";
     const auto off = BuildDownloadArguments(request);
     Require(std::ranges::find(off, L"--cookies") == off.end(), "cookies off must ignore managed session");

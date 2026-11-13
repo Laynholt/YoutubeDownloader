@@ -1461,6 +1461,96 @@ ToolInstallStatus YtDlpManager::InstallOrUpdate(const ReleaseAssetInfo& release,
     return Status();
 }
 
+std::wstring ParseSha256Digest(const std::string& text) {
+    // Deno publishes PowerShell Get-FileHash output; take the first 64-hex-digit token.
+    std::string token;
+    for (const char ch : text + " ") {
+        if (std::isxdigit(static_cast<unsigned char>(ch))) {
+            token += ch;
+            continue;
+        }
+        if (token.size() == 64) {
+            return NormalizeSha256Hex(token);
+        }
+        token.clear();
+    }
+    return {};
+}
+
+DenoManager::DenoManager(AppPaths paths)
+    : m_paths(std::move(paths)) {
+}
+
+const char* DenoManager::ZipAssetName() {
+    return "deno-x86_64-pc-windows-msvc.zip";
+}
+
+ToolInstallStatus DenoManager::Status() const {
+    ToolInstallStatus status;
+    status.executable = m_paths.localDenoExePath();
+    status.version = ReadTextFile(m_paths.localDenoVersionPath());
+    status.installed = IsExecutableFile(status.executable) && !status.version.empty();
+    return status;
+}
+
+ReleaseAssetInfo DenoManager::CheckLatestRelease(HANDLE cancelEvent) const {
+    const std::string json = WinHttpClient::GetString(
+        L"https://api.github.com/repos/denoland/deno/releases/latest",
+        cancelEvent
+    );
+    return ParseGitHubReleaseAsset(json, ZipAssetName());
+}
+
+ToolInstallStatus DenoManager::Install(const ReleaseAssetInfo& release, HANDLE cancelEvent) const {
+    if (!release.found || release.downloadUrl.empty()) {
+        throw std::runtime_error("Deno release asset was not found");
+    }
+    const std::wstring expectedSha256 = ParseSha256Digest(
+        WinHttpClient::GetString(release.downloadUrl + L".sha256sum", cancelEvent));
+    if (expectedSha256.empty()) {
+        throw std::runtime_error("Deno checksum was not found");
+    }
+
+    const std::filesystem::path archiveTmp = m_paths.stuffDir() / L"deno.zip.tmp";
+    const std::filesystem::path archive = m_paths.stuffDir() / L"deno.zip";
+    const std::filesystem::path extractDir = m_paths.stuffDir() / L"deno_extract";
+    CleanupPaths cleanup({archiveTmp, archive, extractDir});
+
+    std::error_code ec;
+    std::filesystem::create_directories(m_paths.stuffDir(), ec);
+    std::filesystem::remove(archiveTmp, ec);
+    std::filesystem::remove(archive, ec);
+    std::filesystem::remove_all(extractDir, ec);
+
+    WinHttpClient::DownloadFile(release.downloadUrl, archiveTmp, {}, cancelEvent);
+    if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
+        throw std::runtime_error("operation canceled");
+    }
+    if (FileSha256Hex(archiveTmp) != expectedSha256) {
+        throw std::runtime_error("Deno checksum validation failed");
+    }
+    std::filesystem::rename(archiveTmp, archive, ec);
+    if (ec) {
+        throw std::runtime_error("failed to finalize Deno archive");
+    }
+    ExtractZip(archive, extractDir, cancelEvent, "failed to extract Deno archive");
+
+    const std::filesystem::path extracted = extractDir / L"deno.exe";
+    const std::wstring version = NormalizeVersion(ReadExecutableVersion(extracted, {L"--version"}, cancelEvent));
+    if (version.empty() || version != NormalizeVersion(release.version)) {
+        throw std::runtime_error("downloaded Deno executable failed version validation");
+    }
+
+    std::filesystem::create_directories(m_paths.localDenoDir(), ec);
+    std::filesystem::copy_file(extracted, m_paths.localDenoExePath(),
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+        throw std::runtime_error("failed to copy Deno executable");
+    }
+    WriteTextFile(m_paths.localDenoVersionPath(), version);
+    return Status();
+}
+
 const char* AppUpdateService::ExeAssetName() {
     return "YoutubeDownloader.exe";
 }

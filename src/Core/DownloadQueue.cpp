@@ -812,9 +812,10 @@ DownloadTaskResult DownloadQueue::DefaultExecutor(
     options.onStdoutLine = handleOutputLine;
     options.onStderrLine = handleOutputLine;
 
+    const ManagedCookieLease cookies(task.request.cookieSource, task.request.cookiesBrowser, task.request.ytDlpExePath, m_logger);
     ProcessRunResult result;
     try {
-        options.arguments = BuildDownloadArguments(task.request, m_logger, mergeProgressFile);
+        options.arguments = BuildDownloadArguments(task.request, m_logger, mergeProgressFile, cookies.path());
         if (!mergeProgressFile.empty()) {
             mergeWatcher = std::jthread([&](std::stop_token watcherStop) {
                 std::streamoff offset = 0;

@@ -57,6 +57,7 @@ if(MSVC)
 endif()
 
 target_link_libraries(YoutubeDownloaderCore PUBLIC
+    crypt32
     winhttp
     gdiplus
 )

@@ -1,6 +1,7 @@
 #include "YtDlpClient.h"
 
 #include "BackendText.h"
+#include "AppPaths.h"
 #include "BrowserCookies.h"
 #include "Config.h"
 #include "ProcessRunner.h"
@@ -405,20 +406,33 @@ VideoPreview ParsePreviewObject(const nlohmann::json& object) {
     return preview;
 }
 
+// Signed-in YouTube playback needs a JS runtime to solve player challenges: prefer the
+// app's own Deno, and also allow an installed Node.js. Missing runtimes are ignored.
+void AppendJsRuntimeArguments(std::vector<std::wstring>& args, const std::filesystem::path& ytDlpExe) {
+    if (!ytDlpExe.empty()) {
+        const auto deno = AppPaths(ytDlpExe.parent_path().parent_path().parent_path()).localDenoExePath();
+        std::error_code error;
+        if (std::filesystem::is_regular_file(deno, error)) {
+            args.push_back(L"--js-runtimes");
+            args.push_back(L"deno:" + deno.wstring());
+        }
+    }
+    args.push_back(L"--js-runtimes");
+    args.push_back(L"node");
+}
+
 void AppendCookieArguments(
     std::vector<std::wstring>& args,
     const std::wstring& source,
     const std::wstring& browser,
     const std::filesystem::path& path,
-    const std::filesystem::path& ytDlpExe,
+    const std::filesystem::path& managed,
     Logger* logger
 ) {
     const std::wstring normalizedSource = NormalizeCookieSource(source);
     if (normalizedSource == L"browser") {
         const std::wstring normalizedBrowser = NormalizeCookieBrowser(browser);
-        const auto managed = ManagedBrowserCookiesPath(ytDlpExe, normalizedBrowser);
-        std::error_code error;
-        if (!managed.empty() && std::filesystem::is_regular_file(managed, error)) {
+        if (!managed.empty()) {
             args.push_back(L"--cookies");
             args.push_back(managed.wstring());
             LogCookieFileLoaded(logger, managed, L"cache", normalizedBrowser);
@@ -462,24 +476,25 @@ std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& cookiesBrowser,
     const std::filesystem::path& cookiesPath,
     const std::filesystem::path& ytDlpExe,
-    Logger* logger
+    Logger* logger,
+    const std::filesystem::path& managedCookies
 ) {
     std::vector<std::wstring> args;
     args.push_back(L"--dump-single-json");
     args.push_back(L"--ignore-no-formats-error");
     args.push_back(L"--no-playlist");
     args.push_back(L"--no-warnings");
-    AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath, ytDlpExe, logger);
+    AppendJsRuntimeArguments(args, ytDlpExe);
+    AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath, managedCookies, logger);
     args.push_back(url);
     return args;
 }
 
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request, Logger* logger,
-    const std::filesystem::path& mergeProgressFile) {
+    const std::filesystem::path& mergeProgressFile, const std::filesystem::path& managedCookies) {
     std::vector<std::wstring> args;
     args.push_back(L"--newline");
     args.push_back(L"--progress");
-    args.push_back(L"--no-warnings");
     args.push_back(L"--retries");
     args.push_back(L"10");
     args.push_back(L"--fragment-retries");
@@ -502,7 +517,8 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
         args.push_back(L"Merger+ffmpeg_o:-progress \"" + mergeProgressFile.generic_wstring() + L"\" -stats_period 0.2");
     }
 
-    AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath, request.ytDlpExePath, logger);
+    AppendJsRuntimeArguments(args, request.ytDlpExePath);
+    AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath, managedCookies, logger);
 
     if (request.ffmpegAvailable && !request.ffmpegExePath.empty()) {
         args.push_back(L"--ffmpeg-location");
@@ -817,6 +833,7 @@ YtDlpClient::YtDlpClient(YtDlpClientOptions options)
 }
 
 VideoPreview YtDlpClient::FetchPreview(const std::wstring& url, HANDLE cancelEvent) const {
+    const ManagedCookieLease cookies(m_options.cookieSource, m_options.cookiesBrowser, m_options.ytDlpExePath, m_options.logger);
     ProcessRunOptions options;
     options.executable = m_options.ytDlpExePath;
     options.arguments = BuildMetadataArguments(
@@ -825,7 +842,8 @@ VideoPreview YtDlpClient::FetchPreview(const std::wstring& url, HANDLE cancelEve
         m_options.cookiesBrowser,
         m_options.cookiesPath,
         m_options.ytDlpExePath,
-        m_options.logger
+        m_options.logger,
+        cookies.path()
     );
     options.timeoutMs = 30000;
     options.cancelEvent = cancelEvent;

@@ -15,5 +15,6 @@ The application can download or use these tools as separate executables. They ar
 - BtbN/FFmpeg-Builds scripts: https://github.com/BtbN/FFmpeg-Builds, MIT License. The produced FFmpeg binaries are governed by FFmpeg and included codec/library licenses.
 - `whisper.cpp`: https://github.com/ggml-org/whisper.cpp, MIT License.
 - `vot_exe`: https://github.com/Laynholt/vot_exe, MIT License.
+- Deno: https://github.com/denoland/deno, MIT License.
 
 If release packages ever bundle downloaded tool binaries, include the corresponding upstream license files and source/build information required by those tools.

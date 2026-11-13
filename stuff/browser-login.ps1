@@ -22,11 +22,49 @@ function ConvertTo-YouTubeCookieFile($Cookies) {
     return ($lines -join "`r`n") + "`r`n"
 }
 
+# The session file is DPAPI-encrypted for the current Windows user; the entropy matches BrowserCookies.cpp.
+function Protect-CookieText([string]$Text) {
+    Add-Type -AssemblyName System.Security
+    return [Security.Cryptography.ProtectedData]::Protect([Text.UTF8Encoding]::new($false).GetBytes($Text),
+        [Text.Encoding]::UTF8.GetBytes('YoutubeDownloader cookies v1'), 'CurrentUser')
+}
+
+function Unprotect-CookieText([byte[]]$Data) {
+    Add-Type -AssemblyName System.Security
+    return [Text.UTF8Encoding]::new($false).GetString([Security.Cryptography.ProtectedData]::Unprotect($Data,
+        [Text.Encoding]::UTF8.GetBytes('YoutubeDownloader cookies v1'), 'CurrentUser'))
+}
+
 function Test-YouTubeLogin($Cookies) {
     return @($Cookies | Where-Object {
         (Test-YouTubeDomain $_.domain) -and $_.value -and
         $_.name -in @('SAPISID', '__Secure-1PAPISID', '__Secure-3PAPISID')
     }).Count -gt 0
+}
+
+function Test-YouTubeAddress([string]$Address) {
+    # The Google sign-in page is also titled "YouTube", so the address bar is the only reliable signal.
+    return $Address -match '^(https?://)?(www\.|m\.)?youtube\.com(/|$)' -and $Address -notmatch '^(https?://)?[^/]+/signin'
+}
+
+function Get-BrowserAddresses($Browser) {
+    # Reads the address bar through UI Automation: the sign-in window stays a normal, non-automated browser.
+    try {
+        Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+        $Browser.Refresh()
+        if ($Browser.MainWindowHandle -eq [IntPtr]::Zero) { return @() }
+        $root = [Windows.Automation.AutomationElement]::FromHandle($Browser.MainWindowHandle)
+        $edit = [Windows.Automation.PropertyCondition]::new(
+            [Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Edit)
+        $addresses = @()
+        foreach ($element in $root.FindAll([Windows.Automation.TreeScope]::Descendants, $edit)) {
+            $pattern = $null
+            if ($element.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+                $addresses += [string]$pattern.Current.Value
+            }
+        }
+        return $addresses
+    } catch { return @() }
 }
 
 function Get-LocalJson([int]$Port, [string]$Path) {
@@ -87,7 +125,7 @@ function Start-YouTubeLogin([string]$BrowserExe, [string]$Profile, [string]$Outp
     # The session files are private to the Windows user running the app.
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $acl = [Security.AccessControl.DirectorySecurity]::new()
-    $acl.SetOwner($sid)
+    # No SetOwner: rewriting the owner needs a privilege a normal user lacks; the user already owns the new directory.
     $acl.SetAccessRuleProtection($true, $false)
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl',
         'ContainerInherit, ObjectInherit', 'None', 'Allow'))
@@ -106,20 +144,30 @@ function Start-YouTubeLogin([string]$BrowserExe, [string]$Profile, [string]$Outp
         $portFile = Join-Path $Profile 'DevToolsActivePort'
         if ([IO.File]::Exists($portFile)) { [IO.File]::Delete($portFile) }
         # Google sign-in runs in a normal browser, with no debugging endpoint.
-        $arguments = '--user-data-dir="' + $Profile +
-            '" --no-first-run --no-default-browser-check --disable-background-mode --new-window https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26next%3D%252F'
+        # Extensions and sync stay off so only the sign-in page opens.
+        $cleanProfile = ' --no-first-run --no-default-browser-check --disable-background-mode --disable-extensions --disable-sync'
+        $arguments = '--user-data-dir="' + $Profile + '"' + $cleanProfile +
+            ' --new-window https://accounts.google.com/ServiceLogin?service=youtube&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue%26app%3Ddesktop%26next%3D%252F'
         $browser = Start-Process -FilePath $BrowserExe -ArgumentList $arguments -WindowStyle Normal -PassThru
         $started = [DateTime]::UtcNow
+        $closing = $false
         while (-not $browser.HasExited) {
             if (([DateTime]::UtcNow - $started).TotalMinutes -ge 10) { throw 'dialog.cookies_login_timeout' }
-            Start-Sleep -Milliseconds 300
+            if (-not $closing -and @(Get-BrowserAddresses $browser | Where-Object { Test-YouTubeAddress $_ }).Count -gt 0) {
+                # YouTube opened after sign-in: give it a moment to store cookies, then close the window normally.
+                Start-Sleep -Seconds 2
+                $browser.CloseMainWindow() | Out-Null
+                $closing = $true
+            }
+            Start-Sleep -Milliseconds 700
         }
         $browser.Dispose()
         $browser = $null
+        [Console]::Out.WriteLine('dialog.cookies_login_saving')
         # Only after the user closes the login window, read saved YouTube cookies
         # through the browser itself. No Google login page is automated.
         $arguments = '--user-data-dir="' + $Profile + '" --headless=new --remote-debugging-port=0' +
-            ' --remote-debugging-address=127.0.0.1 --no-first-run --no-default-browser-check --disable-background-mode about:blank'
+            ' --remote-debugging-address=127.0.0.1' + $cleanProfile + ' about:blank'
         $browser = Start-Process -FilePath $BrowserExe -ArgumentList $arguments -WindowStyle Hidden -PassThru
         $started = [DateTime]::UtcNow
         $port = 0
@@ -150,7 +198,7 @@ function Start-YouTubeLogin([string]$BrowserExe, [string]$Profile, [string]$Outp
                     continue
                 }
                 if (-not (Test-YouTubeLogin $cookies)) { throw 'dialog.cookies_login_closed' }
-                [IO.File]::WriteAllText($temporary, (ConvertTo-YouTubeCookieFile $cookies), [Text.UTF8Encoding]::new($false))
+                [IO.File]::WriteAllBytes($temporary, (Protect-CookieText (ConvertTo-YouTubeCookieFile $cookies)))
                 if ([IO.File]::Exists($OutputFile)) { [IO.File]::Replace($temporary, $OutputFile, $null) }
                 else { [IO.File]::Move($temporary, $OutputFile) }
                 return

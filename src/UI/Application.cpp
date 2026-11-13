@@ -2748,6 +2748,22 @@ void Application::StartToolCheck() {
             m_toolCheckResult = std::move(result);
         }
         PostMessageW(window, kMsgToolCheckComplete, 0, 0);
+
+        // After yt-dlp is reported ready: Deno is a one-time ~40 MB download, so it must not delay startup.
+        // shortcut: Deno is installed once and not updated; add updates if yt-dlp raises its minimum version.
+        try {
+            std::stop_callback stopCallback(stopToken, [handle = cancelEvent.get()]() { SetEvent(handle); });
+            const DenoManager deno(paths);
+            if (!deno.Status().installed && !stopToken.stop_requested()) {
+                if (m_logger) { m_logger->Info(L"Deno installation started"); }
+                const ToolInstallStatus status = deno.Install(deno.CheckLatestRelease(cancelEvent.get()), cancelEvent.get());
+                if (m_logger) { m_logger->Info(L"Deno installation completed: version=" + status.version); }
+            }
+        } catch (const std::exception& ex) {
+            if (m_logger && !stopToken.stop_requested()) {
+                m_logger->Error(L"Deno installation failed: " + Utf8ToWide(ex.what()));
+            }
+        } catch (...) {}
     });
 }
 

@@ -157,6 +157,23 @@ private:
     AppPaths m_paths;
 };
 
+// Deno is the JavaScript runtime yt-dlp needs to solve YouTube player challenges
+// (signed-in downloads fail without one). It is installed once into tools/deno.
+std::wstring ParseSha256Digest(const std::string& text);
+
+class DenoManager {
+public:
+    explicit DenoManager(AppPaths paths);
+
+    static const char* ZipAssetName();
+    ToolInstallStatus Status() const;
+    ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr) const;
+    ToolInstallStatus Install(const ReleaseAssetInfo& release, HANDLE cancelEvent = nullptr) const;
+
+private:
+    AppPaths m_paths;
+};
+
 namespace AppUpdateService {
 const char* ExeAssetName();
 const char* Sha256SumsAssetName();

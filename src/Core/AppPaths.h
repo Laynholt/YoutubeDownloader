@@ -37,6 +37,9 @@ public:
     std::filesystem::path localVotDir() const { return toolsDir() / L"vot"; }
     std::filesystem::path localVotExePath() const { return localVotDir() / L"vot-helper.exe"; }
     std::filesystem::path localVotVersionPath() const { return localVotDir() / L"version.txt"; }
+    std::filesystem::path localDenoDir() const { return toolsDir() / L"deno"; }
+    std::filesystem::path localDenoExePath() const { return localDenoDir() / L"deno.exe"; }
+    std::filesystem::path localDenoVersionPath() const { return localDenoDir() / L"version.txt"; }
     std::filesystem::path transcriptionTempDir() const { return stuffDir() / L"transcription_tmp"; }
     std::filesystem::path voiceOverTempDir() const { return stuffDir() / L"voiceover_tmp"; }
 

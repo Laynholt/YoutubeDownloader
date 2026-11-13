@@ -78,14 +78,16 @@ struct YtDlpClientOptions {
 };
 
 std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& request, Logger* logger = nullptr,
-    const std::filesystem::path& mergeProgressFile = {});
+    const std::filesystem::path& mergeProgressFile = {}, const std::filesystem::path& managedCookies = {});
 std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& url,
     const std::wstring& cookieSource,
     const std::wstring& cookiesBrowser,
     const std::filesystem::path& cookiesPath,
     const std::filesystem::path& ytDlpExe = {},
-    Logger* logger = nullptr
+    Logger* logger = nullptr,
+    // Plaintext copy from ManagedCookieLease; empty falls back to reading the browser directly.
+    const std::filesystem::path& managedCookies = {}
 );
 std::filesystem::path ExtractYtDlpOutputPath(const std::wstring& line);
 std::vector<OutputDirectoryFile> SnapshotOutputDirectory(const std::filesystem::path& directory);
