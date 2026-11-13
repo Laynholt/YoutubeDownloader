@@ -1392,6 +1392,7 @@ void TestYtDlpDownloadArguments() {
             L"bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]",
         "mp4 container should request mp4-compatible streams"
     );
+    Require(ContainsArg(args, L"--embed-chapters"), "chapters should be embedded when ffmpeg is available");
     Require(
         !ContainsArg(args, L"--sponsorblock-remove"),
         "SponsorBlock should be disabled by default"

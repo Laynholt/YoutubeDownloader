@@ -514,6 +514,11 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
         args.push_back(request.container);
     }
 
+    if (request.ffmpegAvailable) {
+        // Carries the author's YouTube chapters into the file; yt-dlp skips the step when a video has none.
+        args.push_back(L"--embed-chapters");
+    }
+
     if (request.sponsorBlockMode == L"sponsor" ||
         request.sponsorBlockMode == L"sponsor_selfpromo") {
         args.push_back(L"--sponsorblock-remove");
