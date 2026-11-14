@@ -44,6 +44,7 @@ enum class ProgressTaskKind {
     WhisperInstall,
     WhisperModelDownload,
     VotInstall,
+    DenoInstall,
     AppUpdate
 };
 

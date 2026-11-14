@@ -1485,6 +1485,21 @@ const char* DenoManager::ZipAssetName() {
     return "deno-x86_64-pc-windows-msvc.zip";
 }
 
+std::wstring DenoManager::ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent) {
+    return NormalizeVersion(ReadExecutableVersion(executable, {L"--version"}, cancelEvent));
+}
+
+ToolInstallStatus DenoManager::Resolve(const AppConfig& config) const {
+    if (IsExecutableFile(config.denoPath)) {
+        ToolInstallStatus status;
+        status.installed = true;
+        status.executable = config.denoPath;
+        status.version = NormalizeVersion(config.denoVersion);
+        return status;
+    }
+    return Status();
+}
+
 ToolInstallStatus DenoManager::Status() const {
     ToolInstallStatus status;
     status.executable = m_paths.localDenoExePath();
@@ -1501,7 +1516,8 @@ ReleaseAssetInfo DenoManager::CheckLatestRelease(HANDLE cancelEvent) const {
     return ParseGitHubReleaseAsset(json, ZipAssetName());
 }
 
-ToolInstallStatus DenoManager::Install(const ReleaseAssetInfo& release, HANDLE cancelEvent) const {
+ToolInstallStatus DenoManager::Install(const ReleaseAssetInfo& release, HANDLE cancelEvent,
+    const ProgressCallback& onProgress) const {
     if (!release.found || release.downloadUrl.empty()) {
         throw std::runtime_error("Deno release asset was not found");
     }
@@ -1522,7 +1538,19 @@ ToolInstallStatus DenoManager::Install(const ReleaseAssetInfo& release, HANDLE c
     std::filesystem::remove(archive, ec);
     std::filesystem::remove_all(extractDir, ec);
 
-    WinHttpClient::DownloadFile(release.downloadUrl, archiveTmp, {}, cancelEvent);
+    if (onProgress) {
+        onProgress(0, 0, L"tools.downloading_deno");
+    }
+    WinHttpClient::DownloadFile(
+        release.downloadUrl,
+        archiveTmp,
+        [onProgress](std::uint64_t downloaded, std::uint64_t total) {
+            if (onProgress) {
+                onProgress(downloaded, total, L"tools.downloading_deno");
+            }
+        },
+        cancelEvent
+    );
     if (cancelEvent && WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0) {
         throw std::runtime_error("operation canceled");
     }
@@ -1533,10 +1561,13 @@ ToolInstallStatus DenoManager::Install(const ReleaseAssetInfo& release, HANDLE c
     if (ec) {
         throw std::runtime_error("failed to finalize Deno archive");
     }
+    if (onProgress) {
+        onProgress(0, 0, L"tools.installing_deno");
+    }
     ExtractZip(archive, extractDir, cancelEvent, "failed to extract Deno archive");
 
     const std::filesystem::path extracted = extractDir / L"deno.exe";
-    const std::wstring version = NormalizeVersion(ReadExecutableVersion(extracted, {L"--version"}, cancelEvent));
+    const std::wstring version = ExecutableVersion(extracted, cancelEvent);
     if (version.empty() || version != NormalizeVersion(release.version)) {
         throw std::runtime_error("downloaded Deno executable failed version validation");
     }

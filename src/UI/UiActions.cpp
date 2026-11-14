@@ -369,6 +369,8 @@ std::wstring ProgressTaskFailureMessage(ProgressTaskKind kind) {
         return L"dialog.failed_to_download_the_whisper_model";
     case ProgressTaskKind::VotInstall:
         return L"dialog.failed_to_install_vot_helper";
+    case ProgressTaskKind::DenoInstall:
+        return L"dialog.failed_to_install_deno";
     case ProgressTaskKind::WhisperInstall:
         return L"dialog.failed_to_install_whisper_cpp";
     case ProgressTaskKind::FfmpegInstall:
@@ -387,6 +389,8 @@ std::wstring ProgressTaskUnknownErrorMessage(ProgressTaskKind kind) {
         return L"dialog.unknown_whisper_model_download_error";
     case ProgressTaskKind::VotInstall:
         return L"dialog.unknown_vot_helper_installation_error";
+    case ProgressTaskKind::DenoInstall:
+        return L"dialog.unknown_deno_installation_error";
     case ProgressTaskKind::WhisperInstall:
         return L"dialog.unknown_whisper_cpp_installation_error";
     case ProgressTaskKind::FfmpegInstall:
@@ -409,6 +413,8 @@ std::wstring ProgressTaskSuccessMessage(ProgressTaskKind kind, bool whisperModel
         return L"dialog.whisper_model_downloaded";
     case ProgressTaskKind::VotInstall:
         return L"dialog.vot_helper_installed";
+    case ProgressTaskKind::DenoInstall:
+        return L"dialog.deno_installed";
     case ProgressTaskKind::FfmpegInstall:
     default:
         return L"dialog.ffmpeg_installed";

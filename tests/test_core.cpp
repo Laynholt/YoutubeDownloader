@@ -130,6 +130,8 @@ void TestConfigDefaultsAndRoundTrip() {
     saved.whisperLanguage = L"ru";
     saved.votExePath = root / L"vot" / L"vot-helper.exe";
     saved.votExeVersion = L"2.4.12";
+    saved.denoPath = root / L"deno" / L"deno.exe";
+    saved.denoVersion = L"2.9.8";
     saved.votSubtitleLanguage = L"en";
     saved.voiceOverLanguage = L"en";
     saved.voiceOverOriginalVolumePercent = 40;
@@ -162,6 +164,8 @@ void TestConfigDefaultsAndRoundTrip() {
     Require(loaded.whisperLanguage == L"ru", "whisper language round-trip mismatch");
     Require(loaded.votExePath == saved.votExePath, "vot path round-trip mismatch");
     Require(loaded.votExeVersion == saved.votExeVersion, "vot version round-trip mismatch");
+    Require(loaded.denoPath == saved.denoPath, "deno path round-trip mismatch");
+    Require(loaded.denoVersion == saved.denoVersion, "deno version round-trip mismatch");
     Require(loaded.votSubtitleLanguage == L"en", "VOT subtitle language round-trip mismatch");
     Require(loaded.voiceOverLanguage == L"en", "voice-over language round-trip mismatch");
     Require(loaded.voiceOverOriginalVolumePercent == 40, "voice-over original volume round-trip mismatch");
@@ -468,6 +472,12 @@ void TestPostProcessingModeDisplayText() {
         ProgressTaskFailureMessage(ProgressTaskKind::VotInstall) == L"dialog.failed_to_install_vot_helper",
         "VOT progress failure key mismatch"
     );
+    Require(ProgressTaskFailureMessage(ProgressTaskKind::DenoInstall) == L"dialog.failed_to_install_deno",
+        "Deno progress failure key mismatch");
+    Require(ProgressTaskUnknownErrorMessage(ProgressTaskKind::DenoInstall) == L"dialog.unknown_deno_installation_error",
+        "Deno progress unknown error key mismatch");
+    Require(ProgressTaskSuccessMessage(ProgressTaskKind::DenoInstall, true) == L"dialog.deno_installed",
+        "Deno progress success key mismatch");
     Require(
         ProgressTaskFailureMessage(ProgressTaskKind::AppUpdate) == L"dialog.failed_to_update_the_application",
         "app update progress failure key mismatch"
@@ -1402,7 +1412,7 @@ void TestYtDlpDownloadArguments() {
         fs::create_directories(denoPaths.localDenoDir());
         { std::ofstream out(denoPaths.localDenoExePath()); }
         YtDlpDownloadRequest denoRequest = request;
-        denoRequest.ytDlpExePath = denoPaths.ytDlpExePath();
+        denoRequest.denoExePath = denoPaths.localDenoExePath();
         const auto denoArgs = BuildDownloadArguments(denoRequest);
         Require(denoArgs.at(ArgIndex(denoArgs, L"--js-runtimes") + 1) == L"deno:" + denoPaths.localDenoExePath().wstring(),
             "download must use the app's Deno for YouTube challenges");
@@ -2183,6 +2193,19 @@ void TestVotExeResolutionAndChecksumParsing() {
     Require(custom.executable == config.votExePath, "custom VOT exe path mismatch");
     Require(custom.version == L"0.1.0", "custom VOT version mismatch");
 
+    const DenoManager deno(paths);
+    Require(!deno.Resolve(config).installed, "Deno must be missing before it is installed");
+    fs::create_directories(paths.localDenoDir());
+    { std::ofstream out(paths.localDenoExePath()); out << "local deno"; }
+    { std::ofstream out(paths.localDenoVersionPath()); out << "2.9.8"; }
+    Require(deno.Resolve(config).executable == paths.localDenoExePath(), "local Deno must resolve");
+    config.denoPath = root / L"custom" / L"deno.exe";
+    config.denoVersion = L"2.1.0";
+    Require(deno.Resolve(config).executable == paths.localDenoExePath(), "a missing chosen deno.exe must fall back to the local copy");
+    { std::ofstream out(config.denoPath); out << "custom deno"; }
+    const ToolInstallStatus customDeno = deno.Resolve(config);
+    Require(customDeno.executable == config.denoPath && customDeno.version == L"2.1.0", "the chosen deno.exe must win");
+
     const fs::path selectedDir = root / L"selected";
     fs::create_directories(selectedDir);
     {
@@ -2702,6 +2725,20 @@ void TestDownloadQueueStoreNormalizesSponsorBlockMode() {
         loaded[1].request.sponsorBlockMode == L"off",
         "unknown SponsorBlock mode should normalize to off"
     );
+}
+
+void TestDownloadQueueStoreMigratesDenoPath() {
+    const fs::path root = MakeTempRoot(L"YoutubeDownloaderTests_QueueStoreDeno");
+    const AppPaths paths(root);
+    fs::create_directories(paths.stuffDir());
+    {
+        std::ofstream out(paths.downloadQueuePath(), std::ios::binary | std::ios::trunc);
+        out << R"json({"version":1,"tasks":[{"id":1,"url":"https://example.invalid/a","yt_dlp_exe_path":")json"
+            << WideToUtf8(paths.ytDlpExePath().generic_wstring()) << R"json("}]})json";
+    }
+    const std::vector<DownloadTaskSnapshot> loaded = DownloadQueueStore::Load(paths);
+    Require(loaded.size() == 1, "queue store should load the 1.4.0 task");
+    Require(loaded[0].request.denoExePath == paths.localDenoExePath(), "1.4.0 tasks must find the local Deno");
 }
 
 void TestDownloadQueueStoreSkipsInvalidEntries() {
@@ -4445,6 +4482,7 @@ int main(int argc, char** argv) {
     TestDownloadQueueStoreRoundTripSnapshots();
     TestDownloadQueueStoreRecoversFromSharingViolation();
     TestDownloadQueueStoreNormalizesSponsorBlockMode();
+    TestDownloadQueueStoreMigratesDenoPath();
     TestDownloadQueueStoreSkipsInvalidEntries();
     TestConfigDefaultsAndRoundTrip();
     TestConfigNormalizesCookieSettings();

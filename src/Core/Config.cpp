@@ -329,6 +329,8 @@ AppConfig ConfigStore::Load(const AppPaths& paths) {
         config.whisperModelPath = PathFromJsonString(json, "whisper_model_path", config.whisperModelPath);
         config.votExePath = PathFromJsonString(json, "vot_exe_path", config.votExePath);
         config.votExeVersion = WStringFromJson(json, "vot_exe_version", config.votExeVersion);
+        config.denoPath = PathFromJsonString(json, "deno_path", config.denoPath);
+        config.denoVersion = WStringFromJson(json, "deno_version", config.denoVersion);
         config.quality = WStringFromJson(json, "quality", config.quality);
         config.container = WStringFromJson(json, "container", config.container);
         config.sponsorBlockMode = NormalizeSponsorBlockMode(
@@ -381,6 +383,8 @@ void ConfigStore::Save(const AppPaths& paths, const AppConfig& config) {
     json["whisper_model_path"] = PathToJsonString(config.whisperModelPath);
     json["vot_exe_path"] = PathToJsonString(config.votExePath);
     json["vot_exe_version"] = WideToUtf8(config.votExeVersion);
+    json["deno_path"] = PathToJsonString(config.denoPath);
+    json["deno_version"] = WideToUtf8(config.denoVersion);
     json["quality"] = WideToUtf8(config.quality);
     json["container"] = WideToUtf8(config.container);
     json["sponsorblock_mode"] = WideToUtf8(NormalizeSponsorBlockMode(config.sponsorBlockMode));

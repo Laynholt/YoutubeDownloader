@@ -2705,8 +2705,9 @@ void Application::StartToolCheck() {
         m_logger->Info(L"yt-dlp tool check started");
     }
     const AppPaths paths = *m_paths;
+    const AppConfig config = m_config;
     HWND window = m_window;
-    m_toolCheckWorker = std::jthread([this, paths, window](std::stop_token stopToken) {
+    m_toolCheckWorker = std::jthread([this, paths, config, window](std::stop_token stopToken) {
         ToolCheckResult result;
         UniqueHandle cancelEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         try {
@@ -2750,11 +2751,11 @@ void Application::StartToolCheck() {
         PostMessageW(window, kMsgToolCheckComplete, 0, 0);
 
         // After yt-dlp is reported ready: Deno is a one-time ~40 MB download, so it must not delay startup.
-        // shortcut: Deno is installed once and not updated; add updates if yt-dlp raises its minimum version.
+        // Updates are manual (Tools > Deno > Configure), so startup never re-downloads a working Deno.
         try {
             std::stop_callback stopCallback(stopToken, [handle = cancelEvent.get()]() { SetEvent(handle); });
             const DenoManager deno(paths);
-            if (!deno.Status().installed && !stopToken.stop_requested()) {
+            if (!deno.Resolve(config).installed && !stopToken.stop_requested()) {
                 if (m_logger) { m_logger->Info(L"Deno installation started"); }
                 const ToolInstallStatus status = deno.Install(deno.CheckLatestRelease(cancelEvent.get()), cancelEvent.get());
                 if (m_logger) { m_logger->Info(L"Deno installation completed: version=" + status.version); }
@@ -2840,6 +2841,7 @@ void Application::StartPreviewFetch() {
     YtDlpClientOptions options;
     options.logger = m_logger.get();
     options.ytDlpExePath = m_ytDlpStatus.executable;
+    options.denoExePath = DenoManager(*m_paths).Resolve(m_config).executable;
     options.thumbCacheDir = m_paths->thumbCacheDir();
     options.cookieSource = m_config.cookieSource;
     options.cookiesBrowser = m_config.cookiesBrowser;
@@ -2922,9 +2924,11 @@ void Application::EnqueueCurrentUrl() {
         preview = m_preview;
     }
 
+    const std::filesystem::path denoExe = DenoManager(*m_paths).Resolve(m_config).executable;
     auto makeRequest = [&](const std::wstring& itemUrl) {
         YtDlpDownloadRequest request;
         request.ytDlpExePath = m_ytDlpStatus.executable;
+        request.denoExePath = denoExe;
         request.url = itemUrl;
         request.outputDirectory = m_config.downloadDir;
         request.cookieSource = m_config.cookieSource;

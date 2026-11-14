@@ -158,17 +158,25 @@ private:
 };
 
 // Deno is the JavaScript runtime yt-dlp needs to solve YouTube player challenges
-// (signed-in downloads fail without one). It is installed once into tools/deno.
+// (signed-in downloads fail without one). It is installed into tools/deno on first start;
+// the user can reinstall the latest release or choose their own deno.exe in the Tools settings.
 std::wstring ParseSha256Digest(const std::string& text);
 
 class DenoManager {
 public:
+    using ProgressCallback = std::function<void(std::uint64_t downloaded, std::uint64_t total, const std::wstring& status)>;
+
     explicit DenoManager(AppPaths paths);
 
     static const char* ZipAssetName();
+    static std::wstring ExecutableVersion(const std::filesystem::path& executable, HANDLE cancelEvent = nullptr);
+    // The app's own copy in tools/deno.
     ToolInstallStatus Status() const;
+    // The user's deno.exe when it exists, otherwise the app's own copy.
+    ToolInstallStatus Resolve(const AppConfig& config) const;
     ReleaseAssetInfo CheckLatestRelease(HANDLE cancelEvent = nullptr) const;
-    ToolInstallStatus Install(const ReleaseAssetInfo& release, HANDLE cancelEvent = nullptr) const;
+    ToolInstallStatus Install(const ReleaseAssetInfo& release, HANDLE cancelEvent = nullptr,
+        const ProgressCallback& onProgress = {}) const;
 
 private:
     AppPaths m_paths;

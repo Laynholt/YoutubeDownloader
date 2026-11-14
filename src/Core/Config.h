@@ -53,6 +53,8 @@ struct AppConfig {
     std::filesystem::path whisperModelPath;
     std::filesystem::path votExePath;
     std::wstring votExeVersion;
+    std::filesystem::path denoPath;
+    std::wstring denoVersion;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
     std::wstring sponsorBlockMode = L"off";

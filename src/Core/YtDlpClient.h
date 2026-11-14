@@ -20,6 +20,7 @@ struct YtDlpDownloadRequest {
     std::wstring cookiesBrowser;
     std::filesystem::path cookiesPath;
     std::filesystem::path ffmpegExePath;
+    std::filesystem::path denoExePath;
     std::wstring quality = L"max";
     std::wstring container = L"auto";
     std::wstring sponsorBlockMode = L"off";
@@ -70,6 +71,7 @@ struct VideoPreview {
 
 struct YtDlpClientOptions {
     std::filesystem::path ytDlpExePath;
+    std::filesystem::path denoExePath;
     std::filesystem::path thumbCacheDir;
     std::wstring cookieSource = L"off";
     std::wstring cookiesBrowser;
@@ -84,7 +86,7 @@ std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& cookieSource,
     const std::wstring& cookiesBrowser,
     const std::filesystem::path& cookiesPath,
-    const std::filesystem::path& ytDlpExe = {},
+    const std::filesystem::path& denoExe = {},
     Logger* logger = nullptr,
     // Plaintext copy from ManagedCookieLease; empty falls back to reading the browser directly.
     const std::filesystem::path& managedCookies = {}

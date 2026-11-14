@@ -1,5 +1,6 @@
 #include "DownloadQueueStore.h"
 
+#include "AppPaths.h"
 #include "BackendText.h"
 #include "Config.h"
 
@@ -143,6 +144,7 @@ nlohmann::json TaskToJson(const DownloadTaskSnapshot& task) {
     json["cookies_browser"] = WideToUtf8(NormalizeCookieBrowser(task.request.cookiesBrowser));
     json["cookies_path"] = PathToJsonString(task.request.cookiesPath);
     json["ffmpeg_exe_path"] = PathToJsonString(task.request.ffmpegExePath);
+    json["deno_exe_path"] = PathToJsonString(task.request.denoExePath);
     json["quality"] = WideToUtf8(task.request.quality);
     json["container"] = WideToUtf8(task.request.container);
     json["sponsorblock_mode"] = WideToUtf8(task.request.sponsorBlockMode);
@@ -191,6 +193,12 @@ std::optional<DownloadTaskSnapshot> TaskFromJson(const nlohmann::json& json) {
     );
     task.request.cookiesPath = PathFromJsonString(json, "cookies_path");
     task.request.ffmpegExePath = PathFromJsonString(json, "ffmpeg_exe_path");
+    task.request.denoExePath = PathFromJsonString(json, "deno_exe_path");
+    if (task.request.denoExePath.empty() && !task.request.ytDlpExePath.empty()) {
+        // Tasks queued by 1.4.0 have no Deno path; it then lived next to yt-dlp in tools/.
+        task.request.denoExePath =
+            AppPaths(task.request.ytDlpExePath.parent_path().parent_path().parent_path()).localDenoExePath();
+    }
     task.request.quality = WStringFromJson(json, "quality", L"max");
     task.request.container = WStringFromJson(json, "container", L"auto");
     task.request.sponsorBlockMode = NormalizeSponsorBlockMode(

@@ -41,6 +41,8 @@ bool ShowWhisperModelDownloadProgress(
     const WhisperModelInfo& model
 );
 bool ShowVotInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowDenoDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
+bool ShowDenoInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config);
 bool ShowAppUpdateProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, const ReleaseAssetInfo& release);
 
 namespace {
@@ -102,6 +104,7 @@ enum class DialogType {
     Ffmpeg,
     Whisper,
     Vot,
+    Deno,
     VotCandidate,
     WhisperModel,
     Progress
@@ -113,6 +116,7 @@ enum class ProgressMode {
     WhisperInstall,
     WhisperModelDownload,
     VotInstall,
+    DenoInstall,
     AppUpdate
 };
 
@@ -178,6 +182,7 @@ enum DialogCommand {
     IdCookiePathEdit = 164,
     IdCookieBrowse = 165,
     IdDenoDetails = 166,
+    IdDenoSetup = 167,
     IdWhisperModelBase = 300,
     IdVotCandidateBase = 500
 };
@@ -1257,6 +1262,29 @@ std::wstring VotDialogMessage(const VotExeStatus& status) {
     return L"dialog.vot_helper_exe_is_required_for_voice_over_translation_an";
 }
 
+std::wstring DenoDialogTitle(const ToolInstallStatus& status) {
+    return status.installed ? L"dialog.deno_ready" : L"dialog.deno_not_installed";
+}
+
+std::wstring DenoDialogMessage(const ToolInstallStatus& status) {
+    if (status.installed) {
+        return L"dialog.deno_exe_is_used_for_signed_in_downloads" + status.executable.wstring();
+    }
+    return L"dialog.deno_exe_is_required_for_signed_in_downloads";
+}
+
+bool ApplySelectedDenoPath(HWND owner, HINSTANCE instance, AppConfig& config, const std::filesystem::path& folder) {
+    const std::filesystem::path exe = folder / L"deno.exe";
+    const std::wstring version = IsRegularFile(exe) ? DenoManager::ExecutableVersion(exe) : std::wstring{};
+    if (version.empty()) {
+        ShowErrorDialog(owner, instance, L"dialog.deno_not_installed", L"dialog.deno_exe_was_not_found_or_does_not_start");
+        return false;
+    }
+    config.denoPath = exe;
+    config.denoVersion = version;
+    return true;
+}
+
 std::filesystem::path ResolveDialogWhisperModelPath(const DialogState* state) {
     if (!state || !state->config) {
         return {};
@@ -2058,6 +2086,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     HWND ffmpegDetails = GetDlgItem(state->window, IdFfmpegDetails);
     HWND ytDlpDetails = GetDlgItem(state->window, IdYtDlpDetails);
     HWND denoDetails = GetDlgItem(state->window, IdDenoDetails);
+    HWND denoSetup = GetDlgItem(state->window, IdDenoSetup);
 
     card = SettingsDownloadsParallelCardRect(state, width, height);
     const RECT parallelValue = SettingsParallelValueRect(state, width, height);
@@ -2132,7 +2161,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     layoutToolCard(1, ffmpeg, ffmpegDetails);
     layoutToolCard(2, chooseWhisper, chooseWhisperDetails);
     layoutToolCard(3, chooseVot, chooseVotDetails);
-    layoutToolCard(4, nullptr, denoDetails);
+    layoutToolCard(4, denoSetup, denoDetails);
 
     if (ffmpeg) {
         const std::wstring text = Localization::UiText(ToolSetupButtonText());
@@ -2145,6 +2174,10 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     if (chooseVot) {
         const std::wstring text = Localization::UiText(ToolSetupButtonText());
         SetWindowTextW(chooseVot, text.c_str());
+    }
+    if (denoSetup) {
+        const std::wstring text = Localization::UiText(ToolSetupButtonText());
+        SetWindowTextW(denoSetup, text.c_str());
     }
 
     SetSettingsControlsVisibleInViewport(state->window, {
@@ -2161,7 +2194,7 @@ void LayoutSettingsScrollableControls(DialogState* state, int width, int height)
     }
     SetSettingsControlsVisibleInViewport(state->window, {
         IdFfmpeg, IdChooseWhisperFolder, IdChooseVotFolder,
-        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails, IdDenoDetails
+        IdYtDlpDetails, IdFfmpegDetails, IdWhisperDetails, IdVotDetails, IdDenoDetails, IdDenoSetup
     }, state->settingsSection == SettingsSection::Tools, viewport);
 }
 
@@ -2352,6 +2385,7 @@ void LayoutDialog(DialogState* state, int width, int height) {
     case DialogType::Ffmpeg:
     case DialogType::Whisper:
     case DialogType::Vot:
+    case DialogType::Deno:
         LayoutFfmpegDialog(state, width, height);
         break;
     case DialogType::WhisperModel:
@@ -3058,7 +3092,7 @@ void DrawSettingsDialog(DialogState* state, HDC dc, const RECT& client) {
             DrawUtilityStatusLine(dc, L"vot-helper.exe:", votStatus.executable, toolCard.left + 18, toolCard.top + 98, toolCard.right - 18, textFont);
         }
 
-        const ToolInstallStatus denoStatus = state->paths ? DenoManager(*state->paths).Status() : ToolInstallStatus{};
+        const ToolInstallStatus denoStatus = state->paths ? DenoManager(*state->paths).Resolve(state->workingConfig) : ToolInstallStatus{};
         toolCard = SettingsToolCardRect(state, client.right, client.bottom, 4);
         DrawSettingsCard(dc, toolCard, L"Deno", denoStatus.installed ? L"dialog.deno_found" : L"dialog.deno_not_found", labelFont, textFont, 280);
         DrawToolStatusPill(dc, {toolCard.left + 18, toolCard.top + 68, toolCard.left + 112, toolCard.top + 92}, denoStatus.installed ? L"dialog.ready" : L"dialog.no", denoStatus.installed, smallFont);
@@ -3179,6 +3213,8 @@ ProgressTaskKind ProgressKindFor(ProgressMode mode) {
         return ProgressTaskKind::WhisperModelDownload;
     case ProgressMode::VotInstall:
         return ProgressTaskKind::VotInstall;
+    case ProgressMode::DenoInstall:
+        return ProgressTaskKind::DenoInstall;
     case ProgressMode::FfmpegInstall:
     default:
         return ProgressTaskKind::FfmpegInstall;
@@ -3237,6 +3273,17 @@ void CreateVotControls(DialogState* state) {
     HWND skipButton = CreateDarkButton(state->window, state->instance, L"app.close", IdSkip, false, false);
     AddDialogTooltip(state, installButton, L"dialog.downloads_and_configures_vot_helper_exe");
     AddDialogTooltip(state, folderButton, L"dialog.choose_the_folder_containing_vot_helper_exe");
+    AddDialogTooltip(state, skipButton, L"dialog.closes_the_window_without_changes");
+}
+
+void CreateDenoControls(DialogState* state) {
+    const bool installed = state->paths && state->config && DenoManager(*state->paths).Resolve(*state->config).installed;
+    HWND installButton = CreateDarkButton(state->window, state->instance,
+        installed ? L"dialog.reinstall_deno" : L"dialog.install", IdInstall, true, false);
+    HWND folderButton = CreateDarkButton(state->window, state->instance, L"dialog.choose_folder", IdChooseFolder, false, false);
+    HWND skipButton = CreateDarkButton(state->window, state->instance, L"app.close", IdSkip, false, false);
+    AddDialogTooltip(state, installButton, L"dialog.downloads_the_latest_deno_from_github");
+    AddDialogTooltip(state, folderButton, L"dialog.choose_the_folder_containing_deno_exe");
     AddDialogTooltip(state, skipButton, L"dialog.closes_the_window_without_changes");
 }
 
@@ -3408,6 +3455,25 @@ void StartVotInstallWorker(DialogState* state) {
     });
 }
 
+void StartDenoInstallWorker(DialogState* state) {
+    if (!state || !state->paths || !state->config || !state->cancelEvent) {
+        return;
+    }
+
+    const AppPaths paths = *state->paths;
+    AppConfig* config = state->config;
+    HANDLE cancelEvent = state->cancelEvent;
+
+    StartProgressWorker(state, ProgressTaskKind::DenoInstall, [paths, config, cancelEvent](const ProgressReporter& reportProgress) {
+        const DenoManager deno(paths);
+        reportProgress(0, 0, L"tools.downloading_deno");
+        deno.Install(deno.CheckLatestRelease(cancelEvent), cancelEvent, reportProgress);
+        // The fresh copy in tools/deno replaces a manually chosen deno.exe.
+        config->denoPath.clear();
+        config->denoVersion.clear();
+    });
+}
+
 void StartAppUpdateWorker(DialogState* state) {
     if (!state || !state->paths || !state->cancelEvent) {
         return;
@@ -3480,6 +3546,8 @@ void CreateProgressControls(DialogState* state) {
         StartWhisperModelDownloadWorker(state);
     } else if (state->progressMode == ProgressMode::VotInstall) {
         StartVotInstallWorker(state);
+    } else if (state->progressMode == ProgressMode::DenoInstall) {
+        StartDenoInstallWorker(state);
     }
 }
 
@@ -3562,6 +3630,7 @@ void CreateSettingsControls(DialogState* state) {
     HWND whisperDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdWhisperDetails, false);
     HWND votDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdVotDetails, false);
     HWND denoDetailsButton = CreateDarkButton(state->window, state->instance, L"dialog.details", IdDenoDetails, false);
+    HWND denoSetupButton = CreateDarkButton(state->window, state->instance, ToolSetupButtonText().c_str(), IdDenoSetup, false);
     HWND autoUpdateButton = CreateDarkButton(
         state->window,
         state->instance,
@@ -3655,6 +3724,7 @@ void CreateSettingsControls(DialogState* state) {
     AddDialogTooltip(state, translationToolsButton, L"dialog.goes_to_tool_selection_and_installation");
     AddDialogTooltip(state, ytDlpDetailsButton, L"dialog.shows_or_hides_the_yt_dlp_path");
     AddDialogTooltip(state, denoDetailsButton, L"dialog.shows_or_hides_the_deno_path");
+    AddDialogTooltip(state, denoSetupButton, L"dialog.reinstall_deno_or_choose_your_own_deno_exe");
     AddDialogTooltip(state, ffmpegDetailsButton, L"dialog.shows_or_hides_the_ffmpeg_path");
     AddDialogTooltip(state, whisperDetailsButton, L"dialog.shows_or_hides_whisper_cpp_and_model_paths");
     AddDialogTooltip(state, votDetailsButton, L"dialog.shows_or_hides_the_vot_helper_exe_path");
@@ -3859,6 +3929,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 CreateWhisperControls(state);
             } else if (state->type == DialogType::Vot) {
                 CreateVotControls(state);
+            } else if (state->type == DialogType::Deno) {
+                CreateDenoControls(state);
             } else if (state->type == DialogType::WhisperModel) {
                 CreateWhisperModelControls(state);
             } else if (state->type == DialogType::VotCandidate) {
@@ -3906,7 +3978,8 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
             PaintBuffered(window, [state](HDC dc, const RECT& client) {
                 if (state->type == DialogType::Settings) {
                     DrawSettingsDialog(state, dc, client);
-                } else if (state->type == DialogType::Ffmpeg || state->type == DialogType::Whisper || state->type == DialogType::Vot) {
+                } else if (state->type == DialogType::Ffmpeg || state->type == DialogType::Whisper ||
+                    state->type == DialogType::Vot || state->type == DialogType::Deno) {
                     DrawFfmpegDialog(state, dc, client);
                 } else if (state->type == DialogType::WhisperModel) {
                     DrawWhisperModelDialog(state, dc, client);
@@ -4418,6 +4491,19 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 relayoutSettingsCards();
                 RefreshSettingsButtons(state);
                 return 0;
+            case IdDenoSetup:
+                if (state->type == DialogType::Settings && state->paths &&
+                    ShowDenoDialog(window, state->instance, *state->paths, state->workingConfig)) {
+                    RefreshSettingsButtons(state);
+                    InvalidateRect(window, nullptr, FALSE);
+                    if (state->config) {
+                        *state->config = state->workingConfig;
+                    }
+                    if (state->savedResult) {
+                        *state->savedResult = true;
+                    }
+                }
+                return 0;
             case IdDenoDetails:
                 state->denoDetailsExpanded = !state->denoDetailsExpanded;
                 relayoutSettingsCards();
@@ -4487,6 +4573,15 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                     }
                     return 0;
                 }
+                if (state->type == DialogType::Deno && state->paths && state->config) {
+                    if (ShowDenoInstallProgress(window, state->instance, *state->paths, *state->config)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
                 CloseDialogWindow(window);
                 return 0;
             case IdWhisperDownloadModel:
@@ -4514,6 +4609,16 @@ LRESULT CALLBACK DialogWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
                 if (state->type == DialogType::Whisper && state->config) {
                     const std::optional<std::filesystem::path> selected = PickFolder(window, L"dialog.choose_the_whisper_folder");
                     if (selected && ApplySelectedWhisperPath(window, state->instance, *state->config, *selected)) {
+                        if (state->savedResult) {
+                            *state->savedResult = true;
+                        }
+                        DestroyWindow(window);
+                    }
+                    return 0;
+                }
+                if (state->type == DialogType::Deno && state->config) {
+                    const std::optional<std::filesystem::path> selected = PickFolder(window, L"dialog.choose_the_deno_folder");
+                    if (selected && ApplySelectedDenoPath(window, state->instance, *state->config, *selected)) {
                         if (state->savedResult) {
                             *state->savedResult = true;
                         }
@@ -5778,6 +5883,39 @@ bool ShowVotDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppCon
     bool saved = false;
     state->savedResult = &saved;
     ShowModal(state, 620, 370);
+    return saved;
+}
+
+bool ShowDenoDialog(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Deno;
+    state->instance = instance;
+    state->owner = owner;
+    state->paths = paths.root().empty() ? nullptr : &paths;
+    state->config = &config;
+    const ToolInstallStatus status = state->paths ? DenoManager(*state->paths).Resolve(config) : ToolInstallStatus{};
+    state->title = DenoDialogTitle(status);
+    state->message = DenoDialogMessage(status);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 620, 370);
+    return saved;
+}
+
+bool ShowDenoInstallProgress(HWND owner, HINSTANCE instance, const AppPaths& paths, AppConfig& config) {
+    auto* state = new DialogState{};
+    state->type = DialogType::Progress;
+    state->progressMode = ProgressMode::DenoInstall;
+    state->instance = instance;
+    state->owner = owner;
+    state->title = L"dialog.installing_deno";
+    state->message = L"dialog.preparing";
+    state->paths = &paths;
+    state->config = &config;
+    state->cancelEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    bool saved = false;
+    state->savedResult = &saved;
+    ShowModal(state, 560, 270);
     return saved;
 }
 

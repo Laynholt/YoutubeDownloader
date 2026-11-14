@@ -408,14 +408,11 @@ VideoPreview ParsePreviewObject(const nlohmann::json& object) {
 
 // Signed-in YouTube playback needs a JS runtime to solve player challenges: prefer the
 // app's own Deno, and also allow an installed Node.js. Missing runtimes are ignored.
-void AppendJsRuntimeArguments(std::vector<std::wstring>& args, const std::filesystem::path& ytDlpExe) {
-    if (!ytDlpExe.empty()) {
-        const auto deno = AppPaths(ytDlpExe.parent_path().parent_path().parent_path()).localDenoExePath();
-        std::error_code error;
-        if (std::filesystem::is_regular_file(deno, error)) {
-            args.push_back(L"--js-runtimes");
-            args.push_back(L"deno:" + deno.wstring());
-        }
+void AppendJsRuntimeArguments(std::vector<std::wstring>& args, const std::filesystem::path& denoExe) {
+    std::error_code error;
+    if (!denoExe.empty() && std::filesystem::is_regular_file(denoExe, error)) {
+        args.push_back(L"--js-runtimes");
+        args.push_back(L"deno:" + denoExe.wstring());
     }
     args.push_back(L"--js-runtimes");
     args.push_back(L"node");
@@ -475,7 +472,7 @@ std::vector<std::wstring> BuildMetadataArguments(
     const std::wstring& cookieSource,
     const std::wstring& cookiesBrowser,
     const std::filesystem::path& cookiesPath,
-    const std::filesystem::path& ytDlpExe,
+    const std::filesystem::path& denoExe,
     Logger* logger,
     const std::filesystem::path& managedCookies
 ) {
@@ -484,7 +481,7 @@ std::vector<std::wstring> BuildMetadataArguments(
     args.push_back(L"--ignore-no-formats-error");
     args.push_back(L"--no-playlist");
     args.push_back(L"--no-warnings");
-    AppendJsRuntimeArguments(args, ytDlpExe);
+    AppendJsRuntimeArguments(args, denoExe);
     AppendCookieArguments(args, cookieSource, cookiesBrowser, cookiesPath, managedCookies, logger);
     args.push_back(url);
     return args;
@@ -517,7 +514,7 @@ std::vector<std::wstring> BuildDownloadArguments(const YtDlpDownloadRequest& req
         args.push_back(L"Merger+ffmpeg_o:-progress \"" + mergeProgressFile.generic_wstring() + L"\" -stats_period 0.2");
     }
 
-    AppendJsRuntimeArguments(args, request.ytDlpExePath);
+    AppendJsRuntimeArguments(args, request.denoExePath);
     AppendCookieArguments(args, request.cookieSource, request.cookiesBrowser, request.cookiesPath, managedCookies, logger);
 
     if (request.ffmpegAvailable && !request.ffmpegExePath.empty()) {
@@ -841,7 +838,7 @@ VideoPreview YtDlpClient::FetchPreview(const std::wstring& url, HANDLE cancelEve
         m_options.cookieSource,
         m_options.cookiesBrowser,
         m_options.cookiesPath,
-        m_options.ytDlpExePath,
+        m_options.denoExePath,
         m_options.logger,
         cookies.path()
     );
